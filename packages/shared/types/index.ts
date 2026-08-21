@@ -43,12 +43,37 @@ export interface ScriptSettings {
   maxRuntimeMinutes: number
 }
 
+export type CombatTargetStrategy = 'nearest' | 'weakest' | 'strongest' | 'first'
+
+export interface CombatSpell {
+  id: number
+  name: string
+}
+
+export interface CombatSettings {
+  enabled: boolean
+  combo: CombatSpell[]
+  targetStrategy: CombatTargetStrategy
+  autoReady: boolean
+  turnStartDelayMs: number
+  castDelayMs: number
+  endTurnAfterCombo: boolean
+}
+
+export const COMBAT_TARGET_LABELS: Record<CombatTargetStrategy, string> = {
+  nearest: 'Nearest enemy',
+  weakest: 'Lowest health',
+  strongest: 'Highest health',
+  first: 'First in the list'
+}
+
 export interface AppSettings {
   language: Language
   window: WindowSettings
   proxy: ProxySettings
   game: GameSettings
   scripts: ScriptSettings
+  combat: CombatSettings
   version: string
 }
 
@@ -92,6 +117,7 @@ export type HotkeyAction =
   | 'zoom-out'
   | 'run-script'
   | 'stop-scripts'
+  | 'toggle-combat-ai'
 
 export interface Character {
   id: string
@@ -186,7 +212,8 @@ export const HOTKEY_ACTIONS: HotkeyAction[] = [
   'zoom-in',
   'zoom-out',
   'run-script',
-  'stop-scripts'
+  'stop-scripts',
+  'toggle-combat-ai'
 ]
 
 export const HOTKEY_ACTION_LABELS: Record<HotkeyAction, string> = {
@@ -204,7 +231,8 @@ export const HOTKEY_ACTION_LABELS: Record<HotkeyAction, string> = {
   'zoom-in': 'Zoom In',
   'zoom-out': 'Zoom Out',
   'run-script': 'Run Selected Script',
-  'stop-scripts': 'Stop All Scripts'
+  'stop-scripts': 'Stop All Scripts',
+  'toggle-combat-ai': 'Toggle Combat AI'
 }
 
 export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
@@ -222,7 +250,8 @@ export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
   'zoom-in': 'Ctrl+=',
   'zoom-out': 'Ctrl+-',
   'run-script': 'Ctrl+Shift+R',
-  'stop-scripts': 'Ctrl+Shift+X'
+  'stop-scripts': 'Ctrl+Shift+X',
+  'toggle-combat-ai': 'Ctrl+Shift+F'
 }
 
 export const RESOLUTIONS = [

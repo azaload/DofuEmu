@@ -148,6 +148,40 @@ await api.waitRandom(60000, 180000)
 `
   },
   {
+    id: 'combat-combo',
+    name: 'Combat: spell combo',
+    description: 'Casts a fixed spell combo on a target every turn, then passes the turn.',
+    target: 'active-tab',
+    loop: true,
+    loopDelayMs: 500,
+    source: `// Spell ids of the combo, cast in order every turn.
+// The Combat tab does the same thing without writing code — this template is
+// the starting point when you want custom logic (conditions, positioning...).
+const COMBO = [161, 165]
+const TARGET = 'nearest' // nearest | weakest | strongest | first
+
+await api.fight.waitForFight({ timeout: 600000 })
+await api.fight.waitForTurn({ timeout: 600000 })
+
+for (const spellId of COMBO) {
+  if (!api.fight.isMyTurn()) break
+
+  const target = api.fight.target(TARGET)
+  if (!target) {
+    api.log('No enemy left')
+    break
+  }
+
+  const cast = await api.fight.cast(spellId, target)
+  api.log(cast ? \`Cast \${spellId} on \${target.name ?? target.id}\` : \`Spell \${spellId} refused\`)
+  await api.waitRandom(600, 1200)
+}
+
+api.fight.endTurn()
+await api.fight.waitForTurnEnd({ timeout: 600000 })
+`
+  },
+  {
     id: 'fight-watch',
     name: 'Fight watcher',
     description: 'Logs fight starts and stops the other scripts when one begins.',

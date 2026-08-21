@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Globe, Keyboard, Users, Info, Terminal } from 'lucide-react'
+import { Globe, Keyboard, Users, Info, Terminal, Swords } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useTeamStore } from '@/stores/teamStore'
 import { recordKeyCombo } from '@/hooks/use-hotkeys'
 import { Row, Section, Select, TextInput, Toggle, ghostBtn, hoverColor } from '@/components/form'
 import { ScriptsScreen } from '@/screens/ScriptsScreen'
+import { CombatScreen } from '@/screens/CombatScreen'
 import { HOTKEY_ACTIONS, HOTKEY_ACTION_LABELS, RESOLUTIONS, LANGUAGES } from '@dofemu/shared'
 import { colors } from '@/theme'
 import type { HotkeyAction, Language } from '@dofemu/shared'
@@ -224,6 +225,7 @@ const TABS = [
   { id: 'General', icon: Globe },
   { id: 'Hotkeys', icon: Keyboard },
   { id: 'Teams', icon: Users },
+  { id: 'Combat', icon: Swords },
   { id: 'Scripts', icon: Terminal },
   { id: 'About', icon: Info },
 ] as const
@@ -264,6 +266,7 @@ export function SettingsScreen({ tab, onTabChange }: { tab: SettingsTabId; onTab
       {tab === 'General' && <GeneralTab />}
       {tab === 'Hotkeys' && <HotkeysTab />}
       {tab === 'Teams' && <TeamsTab />}
+      {tab === 'Combat' && <CombatScreen />}
       {tab === 'Scripts' && <ScriptsScreen />}
       {tab === 'About' && <AboutTab />}
     </div>

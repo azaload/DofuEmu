@@ -6,6 +6,8 @@ import type {
   GameSettings,
   HotkeyAction,
   ScriptSettings,
+  CombatSettings,
+  CombatSpell,
   DEFAULT_HOTKEYS
 } from '@dofemu/shared'
 
@@ -18,6 +20,7 @@ interface SettingsState {
   proxy: ProxySettings
   game: GameSettings
   scripts: ScriptSettings
+  combat: CombatSettings
   version: string
   isLoading: boolean
   isHydrated: boolean
@@ -31,6 +34,11 @@ interface SettingsState {
   setGameSettings: (settings: Partial<GameSettings>) => void
   setScriptSettings: (settings: Partial<ScriptSettings>) => void
   toggleScripts: () => void
+  setCombatSettings: (settings: Partial<CombatSettings>) => void
+  toggleCombatAi: () => void
+  addComboSpell: (spell: CombatSpell) => void
+  removeComboSpell: (index: number) => void
+  moveComboSpell: (index: number, direction: -1 | 1) => void
   setResolution: (width: number, height: number) => void
   toggleAudioMute: () => void
   toggleSoundOnFocus: () => void
@@ -54,7 +62,8 @@ const defaultHotkeys: HotkeyMap = {
   'zoom-in': 'Ctrl+=',
   'zoom-out': 'Ctrl+-',
   'run-script': 'Ctrl+Shift+R',
-  'stop-scripts': 'Ctrl+Shift+X'
+  'stop-scripts': 'Ctrl+Shift+X',
+  'toggle-combat-ai': 'Ctrl+Shift+F'
 }
 
 const defaultState = {
@@ -78,6 +87,15 @@ const defaultState = {
     autoInviteEnabled: true,
     notificationsEnabled: true
   },
+  combat: {
+    enabled: false,
+    combo: [] as CombatSpell[],
+    targetStrategy: 'nearest' as const,
+    autoReady: true,
+    turnStartDelayMs: 700,
+    castDelayMs: 900,
+    endTurnAfterCombo: true
+  },
   scripts: {
     enabled: true,
     humanDelays: true,
@@ -98,6 +116,7 @@ function persist(state: SettingsState) {
       proxy: state.proxy,
       game: state.game,
       scripts: state.scripts,
+      combat: state.combat,
       version: state.version
     })
     window.dofemu.setSettings(payload)
@@ -130,6 +149,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => {
           proxy: { ...defaultState.proxy, ...parsed.proxy },
           game: { ...defaultState.game, ...parsed.game },
           scripts: { ...defaultState.scripts, ...parsed.scripts },
+          combat: { ...defaultState.combat, ...parsed.combat },
           version: parsed.version ?? defaultState.version,
           isHydrated: true
         })
@@ -159,6 +179,32 @@ export const useSettingsStore = create<SettingsState>()((set, get) => {
 
     toggleScripts: () =>
       mutate((s) => ({ scripts: { ...s.scripts, enabled: !s.scripts.enabled } })),
+
+    setCombatSettings: (settings) =>
+      mutate((s) => ({ combat: { ...s.combat, ...settings } })),
+
+    toggleCombatAi: () =>
+      mutate((s) => ({ combat: { ...s.combat, enabled: !s.combat.enabled } })),
+
+    addComboSpell: (spell) =>
+      mutate((s) => ({ combat: { ...s.combat, combo: [...s.combat.combo, spell] } })),
+
+    removeComboSpell: (index) =>
+      mutate((s) => ({
+        combat: { ...s.combat, combo: s.combat.combo.filter((_, i) => i !== index) }
+      })),
+
+    moveComboSpell: (index, direction) =>
+      mutate((s) => {
+        const combo = [...s.combat.combo]
+        const target = index + direction
+        if (index < 0 || index >= combo.length || target < 0 || target >= combo.length) {
+          return { combat: s.combat }
+        }
+        const [moved] = combo.splice(index, 1)
+        combo.splice(target, 0, moved)
+        return { combat: { ...s.combat, combo } }
+      }),
 
     setResolution: (width, height) =>
       mutate((s) => ({

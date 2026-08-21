@@ -18,6 +18,7 @@ Unofficial desktop client for Dofus Touch.
 - Auto-group — followers auto-follow across maps
 - Auto-invite — automatic party invitations
 - Automation scripts — movement paths, resource circuits and custom JS per tab ([docs](docs/scripting.md))
+- Combat AI — casts a configured spell combo each turn, then passes ([docs](docs/combat.md))
 - Drag-to-reorder tabs
 - Character icon capture in tabs
 - Configurable hotkeys
@@ -49,6 +50,11 @@ pnpm run dev
 pnpm run build
 pnpm run dist
 ```
+
+## Combat AI
+
+**Settings → Combat** plays fight turns on its own: a fixed spell combo cast on a chosen
+target, then the turn is passed. See [docs/combat.md](docs/combat.md).
 
 ## Automation scripts
 
@@ -91,9 +97,9 @@ packages/
     game-base/    Game shell, CSS fixes, regex patches
     scripts/      Injected helper scripts
   renderer/       React frontend
-    screens/      GameScreen, SetupScreen, SettingsScreen, ScriptsScreen
+    screens/      GameScreen, SetupScreen, SettingsScreen, ScriptsScreen, CombatScreen
     stores/       Zustand stores (tabs, teams, settings, scripts)
-    mods/         Game mods (auto-group, party invite)
+    mods/         Game mods (auto-group, party invite, combat AI)
     scripts/      Automation engine (game API, runner, templates)
     components/   Shared components
     utils/        Utilities

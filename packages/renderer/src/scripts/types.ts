@@ -1,6 +1,7 @@
 import type { AutomationScript, ScriptLogLevel, ScriptSettings } from '@dofemu/shared'
 import type { DofusWindow } from '@/types/dofus-window'
 import type { CharacterInfo, Direction, MapInfo } from './game-bridge'
+import type { Fighter, SpellInfo } from './fight-bridge'
 
 export interface WaitUntilOptions {
   timeout?: number
@@ -16,6 +17,32 @@ export interface WaitForMessageOptions<T = Record<string, unknown>> {
 
 export interface MoveOptions {
   timeout?: number
+}
+
+export type TargetStrategy = 'nearest' | 'weakest' | 'strongest' | 'first'
+
+export interface CastOptions {
+  timeout?: number
+}
+
+/** Fight helpers, reachable from a script as `api.fight`. */
+export interface FightApi {
+  isActive: () => boolean
+  isMyTurn: () => boolean
+  me: () => Fighter | null
+  fighters: () => Fighter[]
+  enemies: () => Fighter[]
+  allies: () => Fighter[]
+  spells: () => SpellInfo[]
+  target: (strategy?: TargetStrategy) => Fighter | null
+  distanceTo: (target: Fighter | number) => number | null
+  cast: (spellId: number, target?: Fighter | number, options?: CastOptions) => Promise<boolean>
+  endTurn: () => void
+  ready: (isReady?: boolean) => void
+  waitForTurn: (options?: WaitUntilOptions) => Promise<void>
+  waitForTurnEnd: (options?: WaitUntilOptions) => Promise<void>
+  waitForFight: (options?: WaitUntilOptions) => Promise<void>
+  waitForFightEnd: (options?: WaitUntilOptions) => Promise<void>
 }
 
 /** Everything a user script can reach through its `api` argument. */
@@ -51,6 +78,8 @@ export interface ScriptApi {
   movePath: (path: string | Array<Direction | string>, options?: MoveOptions) => Promise<number>
   changeMap: (mapId: number, options?: MoveOptions) => Promise<number>
   travelTo: (x: number, y: number, options?: MoveOptions & { maxSteps?: number }) => Promise<number>
+
+  fight: FightApi
 
   interactives: () => Array<Record<string, unknown>>
   interact: (elementId: number, skillUid?: number) => void

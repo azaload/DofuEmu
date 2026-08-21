@@ -17,10 +17,29 @@ import {
   type EventEmitterLike
 } from './game-bridge'
 import {
+  castSpell,
+  cellDistance,
+  finishTurn,
+  getAllies,
+  getEnemies,
+  getFightManager,
+  getFighters,
+  getMyFighter,
+  getMyFighterId,
+  getSpells,
+  isFightStarted,
+  pickTarget,
+  setFightReady,
+  type Fighter
+} from './fight-bridge'
+import {
   ScriptAbortError,
+  type CastOptions,
+  type FightApi,
   type MoveOptions,
   type ScriptApi,
   type ScriptRuntimeContext,
+  type TargetStrategy,
   type WaitForMessageOptions,
   type WaitUntilOptions
 } from './types'
@@ -29,6 +48,9 @@ const DEFAULT_MOVE_TIMEOUT = 20000
 const DEFAULT_WAIT_TIMEOUT = 15000
 const DEFAULT_POLL_INTERVAL = 200
 const DEFAULT_TRAVEL_STEPS = 60
+const DEFAULT_CAST_TIMEOUT = 4000
+const DEFAULT_TURN_TIMEOUT = 300000
+const TURN_POLL_INTERVAL = 400
 const BROADCAST_PREFIX = 'dofemu-script:'
 
 function format(args: unknown[]): string {
@@ -109,6 +131,15 @@ export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
 
   const emitterFor = (source: 'connection' | 'gui'): EventEmitterLike | null =>
     source === 'gui' ? getGuiEmitter(gameWindow) : getConnectionManager(gameWindow)
+
+  const addListenerWithCleanup = (
+    source: 'connection' | 'gui',
+    event: string,
+    handler: (message: unknown) => void
+  ) => {
+    const dispose = addListener(emitterFor(source), event, (...args) => handler(args[0] ?? {}))
+    ctx.registerCleanup(dispose)
+  }
 
   const on = <T,>(
     name: string,
@@ -314,6 +345,132 @@ export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
     return true
   }
 
+  /**
+   * Whose turn it is. The fight manager exposes it on some builds; otherwise we
+   * follow the turn messages ourselves.
+   */
+  let trackedTurnFighterId: number | null = null
+  let turnTrackingStarted = false
+
+  const startTurnTracking = () => {
+    if (turnTrackingStarted) return
+    turnTrackingStarted = true
+    for (const source of ['gui', 'connection'] as const) {
+      addListenerWithCleanup(source, 'GameFightTurnStartMessage', (message) => {
+        trackedTurnFighterId = (message as { id?: number }).id ?? null
+      })
+      addListenerWithCleanup(source, 'GameFightTurnEndMessage', () => {
+        trackedTurnFighterId = null
+      })
+      addListenerWithCleanup(source, 'GameFightEndMessage', () => {
+        trackedTurnFighterId = null
+      })
+    }
+  }
+
+  const currentTurnFighterId = (): number | null => {
+    const manager = getFightManager(gameWindow) as Record<string, unknown> | null
+    const fromManager = manager?.currentFighterId ?? manager?.currentPlayerId
+    if (typeof fromManager === 'number' && Number.isFinite(fromManager)) return fromManager
+    return trackedTurnFighterId
+  }
+
+  const targetCellId = (target?: Fighter | number): number | null => {
+    if (typeof target === 'number') return target
+    if (target) return target.cellId
+    return null
+  }
+
+  const chooseTarget = (strategy: TargetStrategy = 'nearest') => pickTarget(gameWindow, strategy)
+
+  const fight: FightApi = {
+    isActive: () => isFightStarted(gameWindow),
+    isMyTurn: () => {
+      startTurnTracking()
+      const myId = getMyFighterId(gameWindow)
+      return myId !== null && currentTurnFighterId() === myId
+    },
+    me: () => getMyFighter(gameWindow),
+    fighters: () => getFighters(gameWindow),
+    enemies: () => getEnemies(gameWindow),
+    allies: () => getAllies(gameWindow),
+    spells: () => getSpells(gameWindow),
+    target: chooseTarget,
+    distanceTo: (target) => {
+      const me = getMyFighter(gameWindow)
+      const cell = targetCellId(target)
+      if (!me || me.cellId === null || cell === null) return null
+      return cellDistance(me.cellId, cell)
+    },
+
+    cast: async (spellId, target, options: CastOptions = {}) => {
+      throwIfAborted()
+      const cell = targetCellId(target) ?? targetCellId(chooseTarget() ?? undefined)
+      if (cell === null) throw new Error('No target cell for the spell')
+
+      const myId = getMyFighterId(gameWindow)
+      const confirmation = waitForMessage<{ sourceId?: number }>('GameActionFightSpellCastMessage', {
+        timeout: options.timeout ?? DEFAULT_CAST_TIMEOUT,
+        filter: (message) => myId === null || message.sourceId === myId
+      })
+
+      castSpell(gameWindow, spellId, cell)
+
+      let confirmed = true
+      try {
+        await confirmation
+      } catch (err) {
+        if (err instanceof ScriptAbortError) throw err
+        confirmed = false
+      }
+
+      await actionDelay()
+      return confirmed
+    },
+
+    endTurn: () => {
+      throwIfAborted()
+      finishTurn(gameWindow)
+    },
+
+    ready: (isReady = true) => {
+      throwIfAborted()
+      setFightReady(gameWindow, isReady)
+    },
+
+    waitForTurn: (options = {}) => {
+      startTurnTracking()
+      return waitUntil(() => fight.isMyTurn(), {
+        timeout: options.timeout ?? DEFAULT_TURN_TIMEOUT,
+        interval: options.interval ?? TURN_POLL_INTERVAL,
+        message: options.message ?? 'Timed out waiting for our turn'
+      })
+    },
+
+    waitForTurnEnd: (options = {}) => {
+      startTurnTracking()
+      return waitUntil(() => !fight.isMyTurn(), {
+        timeout: options.timeout ?? DEFAULT_TURN_TIMEOUT,
+        interval: options.interval ?? TURN_POLL_INTERVAL,
+        message: options.message ?? 'Timed out waiting for the turn to end'
+      })
+    },
+
+    waitForFight: (options = {}) =>
+      waitUntil(() => isFightStarted(gameWindow), {
+        timeout: options.timeout ?? DEFAULT_TURN_TIMEOUT,
+        interval: options.interval ?? TURN_POLL_INTERVAL,
+        message: options.message ?? 'Timed out waiting for a fight to start'
+      }),
+
+    waitForFightEnd: (options = {}) =>
+      waitUntil(() => !isFightStarted(gameWindow), {
+        timeout: options.timeout ?? DEFAULT_TURN_TIMEOUT,
+        interval: options.interval ?? TURN_POLL_INTERVAL,
+        message: options.message ?? 'Timed out waiting for the fight to end'
+      })
+  }
+
   const broadcastChannels = new Map<string, BroadcastChannel>()
   const channelFor = (channel: string): BroadcastChannel => {
     const existing = broadcastChannels.get(channel)
@@ -368,6 +525,8 @@ export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
     movePath,
     changeMap,
     travelTo,
+
+    fight,
 
     interactives: () => getInteractiveElements(gameWindow),
     interact,

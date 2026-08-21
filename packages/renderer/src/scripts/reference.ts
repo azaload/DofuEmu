@@ -50,6 +50,18 @@ export const API_REFERENCE: ApiReferenceGroup[] = [
     ]
   },
   {
+    title: 'Fight',
+    entries: [
+      { signature: 'api.fight.isActive() / isMyTurn()', description: 'Fight and turn state.' },
+      { signature: 'await api.fight.waitForTurn()', description: 'Wait until it is our turn (also waitForTurnEnd, waitForFight, waitForFightEnd).' },
+      { signature: 'api.fight.target(strategy)', description: 'Pick an enemy: nearest, weakest, strongest, first.' },
+      { signature: 'await api.fight.cast(spellId, target)', description: 'Cast a spell on a fighter or a cell; false when refused.' },
+      { signature: 'api.fight.endTurn() / ready()', description: 'Pass the turn, or ready up at fight start.' },
+      { signature: 'api.fight.me() / enemies() / allies()', description: 'Fighters with cell, life and team.' },
+      { signature: 'api.fight.spells()', description: 'Spells of the current character, with ids.' }
+    ]
+  },
+  {
     title: 'Protocol & tabs',
     entries: [
       { signature: 'api.send(name, data)', description: 'Send any raw network message.' },

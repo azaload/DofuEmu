@@ -79,6 +79,22 @@ Movement helpers resolve once the game confirms arrival and reject on timeout
 | `await api.waitUntil(fn, { timeout, interval, message })` | Poll until `fn()` returns true. |
 | `await api.waitForMessage(name, { timeout, filter, source })` | Resolve with the next matching network message. |
 
+### Fight
+
+| Call | Description |
+|------|-------------|
+| `api.fight.isActive()` / `isMyTurn()` | Fight and turn state. |
+| `await api.fight.waitForTurn()` | Wait for our turn. Also `waitForTurnEnd()`, `waitForFight()`, `waitForFightEnd()`. |
+| `api.fight.target(strategy)` | Pick an enemy: `nearest`, `weakest`, `strongest`, `first`. |
+| `await api.fight.cast(spellId, target)` | Cast on a fighter or a cell id; resolves `false` when the server refuses. |
+| `api.fight.endTurn()` / `ready()` | Pass the turn, ready up at fight start. |
+| `api.fight.me()` / `enemies()` / `allies()` | Fighters with cell, life and team. |
+| `api.fight.spells()` | Spells of the current character, with their ids. |
+| `api.fight.distanceTo(target)` | Grid distance from our fighter. |
+
+The no-code version of a fixed combo lives in **Settings → Combat** — see
+[combat.md](combat.md).
+
 ### Interaction
 
 | Call | Description |
@@ -118,6 +134,7 @@ The **From template…** menu creates a ready-made script:
 - **Resource circuit** — harvests everything on a map, then moves to the next one.
 - **Follow the leader** — the leader broadcasts its map changes, followers reproduce them.
 - **Anti-AFK** — small random moves at random intervals.
+- **Combat: spell combo** — casts a combo each turn and passes the turn.
 - **Fight watcher** — logs fight starts and notifies the other tabs.
 
 ## Import and export

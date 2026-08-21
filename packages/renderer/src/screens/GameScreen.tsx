@@ -10,6 +10,8 @@ import { startScript, stopAllScripts, stopScriptsForTab } from '@/scripts/runner
 import { useHotkeys } from '@/hooks/use-hotkeys'
 import { initAutoGroup, broadcastLeaderPosition, destroyAutoGroup, sendPartyInvite, autoAcceptPartyInvite } from '@/mods/auto-group'
 import { initNotificationFocus } from '@/mods/notification-focus'
+import { initCombatAi } from '@/mods/combat-ai'
+import { useCombatStore } from '@/stores/combatStore'
 import { colors } from '@/theme'
 import { DofusWindow, HTMLIFrameElementWithDofus } from '@/types/dofus-window'
 import { captureCharacterIcon } from '@/utils/capture-icon'
@@ -239,6 +241,11 @@ function GameIframe({ tab, gameSrc, isVisible }: { tab: GameTab; gameSrc: string
           })
         })
 
+        cleanupRef.current.push(initCombatAi(gameWindow, tab.id, {
+          getSettings: () => useSettingsStore.getState().combat,
+          onLog: (message) => useCombatStore.getState().appendLog(message)
+        }))
+
         cleanupRef.current.push(initNotificationFocus(gameWindow, tab.id, {
           shouldNotify: () => useSettingsStore.getState().game.notificationsEnabled,
           isActiveTab: (tabId) => useGameTabStore.getState().activeTabId === tabId,
@@ -416,6 +423,9 @@ export function GameScreen() {
         }
         case 'stop-scripts':
           stopAllScripts('Stopped with the hotkey')
+          break
+        case 'toggle-combat-ai':
+          useSettingsStore.getState().toggleCombatAi()
           break
       }
     },
