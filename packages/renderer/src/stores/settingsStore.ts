@@ -8,6 +8,7 @@ import type {
   ScriptSettings,
   CombatSettings,
   CombatSpell,
+  CombatTurnCombo,
   DEFAULT_HOTKEYS
 } from '@dofemu/shared'
 
@@ -36,9 +37,12 @@ interface SettingsState {
   toggleScripts: () => void
   setCombatSettings: (settings: Partial<CombatSettings>) => void
   toggleCombatAi: () => void
-  addComboSpell: (spell: CombatSpell) => void
-  removeComboSpell: (index: number) => void
-  moveComboSpell: (index: number, direction: -1 | 1) => void
+  /** `turn` is null for the default combo, or the turn number of an override. */
+  addComboSpell: (turn: number | null, spell: CombatSpell) => void
+  removeComboSpell: (turn: number | null, index: number) => void
+  moveComboSpell: (turn: number | null, index: number, direction: -1 | 1) => void
+  addTurnCombo: (turn: number) => void
+  removeTurnCombo: (turn: number) => void
   setResolution: (width: number, height: number) => void
   toggleAudioMute: () => void
   toggleSoundOnFocus: () => void
@@ -90,12 +94,15 @@ const defaultState = {
   combat: {
     enabled: false,
     combo: [] as CombatSpell[],
+    turnCombos: [] as CombatTurnCombo[],
     targetStrategy: 'nearest' as const,
     autoReady: true,
     turnStartDelayMs: 700,
     castDelayMs: 900,
     endTurnAfterCombo: true,
-    closeEndScreens: true
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1
   },
   scripts: {
     enabled: true,
@@ -106,6 +113,21 @@ const defaultState = {
     maxRuntimeMinutes: 120
   },
   version: '0.1.0'
+}
+
+/** Applies `update` to the default combo (turn null) or to a turn override. */
+function mapCombo(
+  combat: CombatSettings,
+  turn: number | null,
+  update: (combo: CombatSpell[]) => CombatSpell[]
+): CombatSettings {
+  if (turn === null) return { ...combat, combo: update(combat.combo) }
+  return {
+    ...combat,
+    turnCombos: combat.turnCombos.map((entry) =>
+      entry.turn === turn ? { ...entry, combo: update(entry.combo) } : entry
+    )
+  }
 }
 
 function persist(state: SettingsState) {
@@ -187,25 +209,46 @@ export const useSettingsStore = create<SettingsState>()((set, get) => {
     toggleCombatAi: () =>
       mutate((s) => ({ combat: { ...s.combat, enabled: !s.combat.enabled } })),
 
-    addComboSpell: (spell) =>
-      mutate((s) => ({ combat: { ...s.combat, combo: [...s.combat.combo, spell] } })),
+    addComboSpell: (turn, spell) =>
+      mutate((s) => ({ combat: mapCombo(s.combat, turn, (combo) => [...combo, spell]) })),
 
-    removeComboSpell: (index) =>
+    removeComboSpell: (turn, index) =>
       mutate((s) => ({
-        combat: { ...s.combat, combo: s.combat.combo.filter((_, i) => i !== index) }
+        combat: mapCombo(s.combat, turn, (combo) => combo.filter((_, i) => i !== index))
       })),
 
-    moveComboSpell: (index, direction) =>
+    moveComboSpell: (turn, index, direction) =>
+      mutate((s) => ({
+        combat: mapCombo(s.combat, turn, (combo) => {
+          const next = [...combo]
+          const target = index + direction
+          if (index < 0 || index >= next.length || target < 0 || target >= next.length) return combo
+          const [moved] = next.splice(index, 1)
+          next.splice(target, 0, moved)
+          return next
+        })
+      })),
+
+    addTurnCombo: (turn) =>
       mutate((s) => {
-        const combo = [...s.combat.combo]
-        const target = index + direction
-        if (index < 0 || index >= combo.length || target < 0 || target >= combo.length) {
+        if (turn < 1 || s.combat.turnCombos.some((entry) => entry.turn === turn)) {
           return { combat: s.combat }
         }
-        const [moved] = combo.splice(index, 1)
-        combo.splice(target, 0, moved)
-        return { combat: { ...s.combat, combo } }
+        return {
+          combat: {
+            ...s.combat,
+            turnCombos: [...s.combat.turnCombos, { turn, combo: [] }].sort((a, b) => a.turn - b.turn)
+          }
+        }
       }),
+
+    removeTurnCombo: (turn) =>
+      mutate((s) => ({
+        combat: {
+          ...s.combat,
+          turnCombos: s.combat.turnCombos.filter((entry) => entry.turn !== turn)
+        }
+      })),
 
     setResolution: (width, height) =>
       mutate((s) => ({

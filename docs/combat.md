@@ -8,9 +8,10 @@ Configure it in **Settings → Combat**. `Ctrl+Shift+F` toggles it on and off.
 ## How a turn is played
 
 1. A fight starts — if **Ready up automatically** is on, the AI sends the ready signal.
-2. Your character's turn begins. The AI waits **turn start delay** milliseconds.
-3. For each spell of the combo, in order: pick a target with the configured strategy and
-   cast, then wait **cast delay** milliseconds.
+2. Your character's turn begins. The AI picks the combo for that turn number (see below)
+   and waits **turn start delay** milliseconds.
+3. For each spell of the combo, in order: pick a target with the configured strategy,
+   walk closer if it is out of range, cast, then wait **cast delay** milliseconds.
 4. Once the combo is done, the turn is passed (unless **End turn after the combo** is off).
 
 Settings are read at the start of every turn, so editing the combo mid-fight applies from
@@ -36,6 +37,34 @@ Spells are identified by their in-game spell id. Two ways to fill the list:
 
 Use the arrows to reorder, the cross to remove. The number on the left is the cast order.
 
+## A different combo on a given turn
+
+The default combo runs on every turn. To open a fight differently — buffs on turn 1, then
+the usual rotation — add a turn-specific combo: in the **Spell combo** section, type a turn
+number next to **Add turn** and fill the list that appears.
+
+- The tabs show **Default** plus one per configured turn, with the number of spells in each.
+- Turn numbers count *your own* turns in the current fight: turn 1 is your first turn. The
+  counter resets at the start of every fight.
+- A turn with no override plays the default combo.
+- An override with an empty list is meaningful: that turn casts nothing and passes.
+
+## Moving towards enemies
+
+With **Move towards enemies** on (the default), a target out of range does not waste the
+turn: the AI spends the movement points it has left to get within the spell's range, then
+casts.
+
+The range comes from the game's own spell data when it exposes it; otherwise the
+**Fallback range** setting is used (1 = melee). The destination is chosen among the cells
+that bring the target in range: the AI walks as little as possible and stays as far as the
+range allows, avoiding cells occupied by other fighters.
+
+Distances are grid distances — obstacles and the real path length are not simulated — so
+the move is a best effort. If no reachable cell works, or there are no movement points
+left, it says so in the activity log and casts anyway (the server refuses what is out of
+range).
+
 ## Target strategies
 
 | Strategy | Picks |
@@ -52,10 +81,11 @@ the next enemy.
 
 This is deliberately the basic version:
 
-- No line of sight, range or action-point checks — a cast the server refuses is simply
-  skipped, and the AI moves on to the next spell.
-- No movement: the character stays where it is.
-- No positioning, no spell conditions, no target switching rules beyond the strategy above.
+- No line of sight or action-point checks — a cast the server refuses is simply skipped,
+  and the AI moves on to the next spell.
+- Movement is limited to closing in on the target: no kiting, no cover, no repositioning
+  between casts.
+- No spell conditions (cooldowns, states) beyond the turn-number combos above.
 - The AI does not look for fights: pair it with the hunt script below to farm.
 
 ## Chaining fights automatically

@@ -50,15 +50,26 @@ export interface CombatSpell {
   name: string
 }
 
+/** A combo that replaces the default one on a given turn of the fight. */
+export interface CombatTurnCombo {
+  turn: number
+  combo: CombatSpell[]
+}
+
 export interface CombatSettings {
   enabled: boolean
   combo: CombatSpell[]
+  turnCombos: CombatTurnCombo[]
   targetStrategy: CombatTargetStrategy
   autoReady: boolean
   turnStartDelayMs: number
   castDelayMs: number
   endTurnAfterCombo: boolean
   closeEndScreens: boolean
+  /** Walk towards the target with the remaining MP when it is out of range. */
+  approachEnemies: boolean
+  /** Cast range assumed when the game does not report the spell's own range. */
+  defaultSpellRange: number
 }
 
 export const COMBAT_TARGET_LABELS: Record<CombatTargetStrategy, string> = {

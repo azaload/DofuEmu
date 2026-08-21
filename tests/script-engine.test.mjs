@@ -68,6 +68,7 @@ function createFakeGameWindow() {
   const sent = []
 
   const closedWindows = []
+  const moves = []
   const cells = {}
   cells[EXIT_CELL_RIGHT] = { mapChangeData: 1 }
 
@@ -92,7 +93,7 @@ function createFakeGameWindow() {
   }
 
   const fighters = [
-    { id: 7, data: { teamId: 0, alive: true, disposition: { cellId: 280 }, stats: { lifePoints: 500, maxLifePoints: 500 }, name: 'Tester' } },
+    { id: 7, data: { teamId: 0, alive: true, disposition: { cellId: 280 }, stats: { lifePoints: 500, maxLifePoints: 500, actionPoints: 6, movementPoints: 3 }, name: 'Tester' } },
     { id: 20, data: { teamId: 1, alive: true, disposition: { cellId: 294 }, stats: { lifePoints: 120, maxLifePoints: 200 }, name: 'Close' } },
     { id: 21, data: { teamId: 1, alive: true, disposition: { cellId: 350 }, stats: { lifePoints: 40, maxLifePoints: 200 }, name: 'Weak' } }
   ]
@@ -153,7 +154,12 @@ function createFakeGameWindow() {
       on: connectionManager.on
     },
     isoEngine: {
-      mapRenderer: { mapId: MAP_A, map: buildMap(MAP_A), interactiveElements: {} },
+      mapRenderer: {
+        mapId: MAP_A,
+        map: buildMap(MAP_A),
+        interactiveElements: {},
+        isWalkable: () => true
+      },
       actorManager: {
         userActor: { cellId: 100 },
         actors: {
@@ -184,9 +190,11 @@ function createFakeGameWindow() {
         }
       },
       moveTo: (cellId) => {
+        state.moves.push(cellId)
         setTimeout(() => {
           state.cellId = cellId
           gameWindow.isoEngine.actorManager.userActor.cellId = cellId
+          fighters[0].data.disposition.cellId = cellId
         }, 5)
       }
     }
@@ -206,6 +214,7 @@ function createFakeGameWindow() {
   }
 
   state.closedWindows = closedWindows
+  state.moves = moves
   state.endFight = () => {
     gameWindow.gui.fightManager.isFightStarted = false
     gameWindow.gui.playerData.isFighting = false
@@ -487,6 +496,140 @@ async function testClosePopups(ScriptRunner) {
   console.log('ok - close end screens')
 }
 
+async function testTurnCombos() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Attack' }],
+    turnCombos: [{ turn: 1, combo: [{ id: 100, name: 'Buff' }, { id: 101, name: 'Boost' }] }],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: false,
+    defaultSpellRange: 1
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  const spellsCast = () =>
+    state.sent
+      .filter((message) => message.name === 'GameActionFightCastRequestMessage')
+      .map((message) => message.data.spellId)
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.deepStrictEqual(spellsCast(), [100, 101], 'turn 1 plays its own combo')
+  assert.ok(logs.some((line) => line.includes('Turn 1: playing the turn 1 combo')), 'the combo used is logged')
+
+  state.sent.length = 0
+  state.startTurn(20)
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.deepStrictEqual(spellsCast(), [165], 'turn 2 falls back to the default combo')
+
+  // An empty override means "cast nothing and pass".
+  state.sent.length = 0
+  combatSettings.turnCombos = [{ turn: 3, combo: [] }]
+  state.startTurn(20)
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.deepStrictEqual(spellsCast(), [], 'an empty turn combo casts nothing')
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameFightTurnFinishMessage'),
+    'the turn is still passed'
+  )
+
+  // A new fight restarts the turn count.
+  state.endFight()
+  state.sent.length = 0
+  state.startFight()
+  state.emit('GameFightStartingMessage', {})
+  combatSettings.turnCombos = [{ turn: 1, combo: [{ id: 100, name: 'Buff' }] }]
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.deepStrictEqual(spellsCast(), [100], 'the turn counter resets between fights')
+
+  dispose()
+  console.log('ok - per-turn combos')
+}
+
+async function testApproachWithMp() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Attack' }],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  // Enemy on cell 294 is 1 cell away: already in range, no move expected.
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  assert.strictEqual(state.moves.length, 0, 'no move when the target is already in range')
+
+  // Push the enemy out of range: the AI should walk with its 3 MP.
+  state.fighters[1].data.disposition.cellId = 322
+  state.sent.length = 0
+  state.startTurn(20)
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 400))
+
+  assert.strictEqual(state.moves.length, 1, 'one move is requested')
+  const destination = state.moves[0]
+  assert.notStrictEqual(destination, 322, 'the AI does not walk onto the enemy cell')
+  assert.ok(logs.some((line) => line.includes('Moving to cell')), 'the move is logged')
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
+    'the spell is cast after moving'
+  )
+
+  // With no MP left it should say so instead of moving.
+  // Put the character back where it started, far from the enemy.
+  state.fighters[0].data.stats.movementPoints = 0
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 322
+  state.moves.length = 0
+  state.startTurn(20)
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  assert.strictEqual(state.moves.length, 0, 'no move without MP')
+  assert.ok(logs.some((line) => line.includes('no MP left')), 'the missing MP is reported')
+
+  dispose()
+  console.log('ok - approach with MP')
+}
+
 async function testTemplatesCompile() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/templates.ts'))
   const { SCRIPT_TEMPLATES } = await import(
@@ -518,7 +661,10 @@ async function testCombatAi() {
   const combatSettings = {
     enabled: true,
     combo: [{ id: 161, name: 'Pressure' }, { id: 165, name: 'Bramble' }],
+    turnCombos: [],
     targetStrategy: 'weakest',
+    approachEnemies: false,
+    defaultSpellRange: 1,
     autoReady: true,
     turnStartDelayMs: 0,
     castDelayMs: 0,
@@ -590,6 +736,8 @@ async function main() {
   await testCombatAi()
   await testMonsterHunt(ScriptRunner)
   await testClosePopups(ScriptRunner)
+  await testTurnCombos()
+  await testApproachWithMp()
   await testTemplatesCompile()
 
   console.log('\nAll script engine tests passed.')

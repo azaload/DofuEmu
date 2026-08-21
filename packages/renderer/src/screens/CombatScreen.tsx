@@ -30,7 +30,17 @@ function iconBtn(disabled = false): React.CSSProperties {
 }
 
 function ComboEditor() {
-  const { combat, addComboSpell, removeComboSpell, moveComboSpell } = useSettingsStore()
+  const {
+    combat,
+    addComboSpell,
+    removeComboSpell,
+    moveComboSpell,
+    addTurnCombo,
+    removeTurnCombo
+  } = useSettingsStore()
+  // null = the default combo, a number = the override for that turn.
+  const [selectedTurn, setSelectedTurn] = useState<number | null>(null)
+  const [newTurn, setNewTurn] = useState('')
   const [detected, setDetected] = useState<SpellInfo[] | null>(null)
   const [manualId, setManualId] = useState('')
   const [manualName, setManualName] = useState('')
@@ -57,24 +67,94 @@ function ComboEditor() {
     )
   }
 
+  const activeCombo =
+    selectedTurn === null
+      ? combat.combo
+      : combat.turnCombos.find((entry) => entry.turn === selectedTurn)?.combo ?? []
+
   const addManual = () => {
     const id = parseInt(manualId, 10)
     if (!Number.isFinite(id) || id <= 0) {
       setNotice('Enter a numeric spell id')
       return
     }
-    addComboSpell({ id, name: manualName.trim() || `Spell ${id}` })
+    addComboSpell(selectedTurn, { id, name: manualName.trim() || `Spell ${id}` })
     setManualId('')
     setManualName('')
   }
 
+  const addTurn = () => {
+    const turn = parseInt(newTurn, 10)
+    if (!Number.isFinite(turn) || turn < 1) {
+      setNotice('Enter a turn number (1 or more)')
+      return
+    }
+    if (combat.turnCombos.some((entry) => entry.turn === turn)) {
+      setNotice(`Turn ${turn} already has its own combo`)
+      setSelectedTurn(turn)
+      return
+    }
+    addTurnCombo(turn)
+    setSelectedTurn(turn)
+    setNewTurn('')
+  }
+
+  const tabStyle = (active: boolean): React.CSSProperties => ({
+    display: 'flex', alignItems: 'center', gap: 4,
+    padding: '4px 10px', borderRadius: 999, cursor: 'pointer', fontSize: 11,
+    background: active ? colors.accentFocus : colors.surface,
+    border: `1px solid ${active ? colors.accentBorder : colors.borderSubtle}`,
+    color: active ? colors.accentText : colors.textMuted
+  })
+
   return (
     <Section title="Spell combo">
       <div style={{ fontSize: 11, color: colors.textDesc, lineHeight: 1.5, padding: '2px 0 8px' }}>
-        Cast in this order on every turn, then the turn is passed.
+        {selectedTurn === null
+          ? 'Cast in this order on every turn without its own combo, then the turn is passed.'
+          : `Replaces the default combo on turn ${selectedTurn}. An empty combo passes the turn.`}
       </div>
 
-      {combat.combo.map((spell, index) => (
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, paddingBottom: 10 }}>
+        <button onClick={() => setSelectedTurn(null)} style={tabStyle(selectedTurn === null)}>
+          Default ({combat.combo.length})
+        </button>
+        {combat.turnCombos.map((entry) => (
+          <button
+            key={entry.turn}
+            onClick={() => setSelectedTurn(entry.turn)}
+            style={tabStyle(selectedTurn === entry.turn)}
+          >
+            Turn {entry.turn} ({entry.combo.length})
+            <X
+              size={10}
+              onClick={(event) => {
+                event.stopPropagation()
+                removeTurnCombo(entry.turn)
+                if (selectedTurn === entry.turn) setSelectedTurn(null)
+              }}
+            />
+          </button>
+        ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <input
+            value={newTurn}
+            onChange={(event) => setNewTurn(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter') addTurn() }}
+            placeholder="turn"
+            type="number"
+            style={{
+              width: 54, background: colors.input, border: `1px solid ${colors.border}`,
+              borderRadius: 999, color: colors.textLight, fontSize: 11, padding: '4px 8px', outline: 'none'
+            }}
+          />
+          <button onClick={addTurn} style={tabStyle(false)}>
+            <Plus size={10} /> Add turn
+          </button>
+        </div>
+      </div>
+
+      {activeCombo.map((spell, index) => (
         <div
           key={`${spell.id}-${index}`}
           style={{
@@ -89,25 +169,31 @@ function ComboEditor() {
             {spell.name}
           </span>
           <span style={{ fontSize: 10, color: colors.textFaint, fontFamily: 'monospace' }}>#{spell.id}</span>
-          <button onClick={() => moveComboSpell(index, -1)} disabled={index === 0} style={iconBtn(index === 0)}>
+          <button
+            onClick={() => moveComboSpell(selectedTurn, index, -1)}
+            disabled={index === 0}
+            style={iconBtn(index === 0)}
+          >
             <ArrowUp size={11} />
           </button>
           <button
-            onClick={() => moveComboSpell(index, 1)}
-            disabled={index === combat.combo.length - 1}
-            style={iconBtn(index === combat.combo.length - 1)}
+            onClick={() => moveComboSpell(selectedTurn, index, 1)}
+            disabled={index === activeCombo.length - 1}
+            style={iconBtn(index === activeCombo.length - 1)}
           >
             <ArrowDown size={11} />
           </button>
-          <button onClick={() => removeComboSpell(index)} style={iconBtn()}>
+          <button onClick={() => removeComboSpell(selectedTurn, index)} style={iconBtn()}>
             <X size={11} />
           </button>
         </div>
       ))}
 
-      {combat.combo.length === 0 && (
+      {activeCombo.length === 0 && (
         <div style={{ color: colors.textDisabled, fontSize: 12, padding: 12, textAlign: 'center' }}>
-          No spell yet — detect them or add an id below.
+          {selectedTurn === null
+            ? 'No spell yet — detect them or add an id below.'
+            : `Turn ${selectedTurn} casts nothing and passes.`}
         </div>
       )}
 
@@ -127,7 +213,9 @@ function ComboEditor() {
             value=""
             onChange={(value) => {
               const spell = detected.find((candidate) => String(candidate.id) === value)
-              if (spell) addComboSpell({ id: spell.id, name: spell.name ?? `Spell ${spell.id}` })
+              if (spell) {
+                addComboSpell(selectedTurn, { id: spell.id, name: spell.name ?? `Spell ${spell.id}` })
+              }
             }}
             options={[
               { value: '', label: 'Add a detected spell...' },
@@ -232,6 +320,23 @@ export function CombatScreen() {
         <Row label="Ready up automatically" desc="Send ready when a fight starts">
           <Toggle checked={combat.autoReady} onChange={(v) => setCombatSettings({ autoReady: v })} />
         </Row>
+        <Row label="Move towards enemies" desc="Use the remaining MP when the target is out of range">
+          <Toggle
+            checked={combat.approachEnemies}
+            onChange={(v) => setCombatSettings({ approachEnemies: v })}
+          />
+        </Row>
+        {combat.approachEnemies && (
+          <Row label="Fallback range" desc="Cast range assumed when the game does not report the spell's">
+            <div style={{ width: 90 }}>
+              <TextInput
+                type="number"
+                value={String(combat.defaultSpellRange)}
+                onChange={(v) => setCombatSettings({ defaultSpellRange: Math.max(1, parseInt(v, 10) || 1) })}
+              />
+            </div>
+          </Row>
+        )}
         <Row label="Close end screens" desc="Dismiss the fight results and level-up windows">
           <Toggle
             checked={combat.closeEndScreens}
