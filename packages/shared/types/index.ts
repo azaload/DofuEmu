@@ -34,11 +34,21 @@ export interface GameSettings {
   notificationsEnabled: boolean
 }
 
+export interface ScriptSettings {
+  enabled: boolean
+  humanDelays: boolean
+  minActionDelayMs: number
+  maxActionDelayMs: number
+  stopOnFight: boolean
+  maxRuntimeMinutes: number
+}
+
 export interface AppSettings {
   language: Language
   window: WindowSettings
   proxy: ProxySettings
   game: GameSettings
+  scripts: ScriptSettings
   version: string
 }
 
@@ -80,6 +90,8 @@ export type HotkeyAction =
   | 'prev-tab'
   | 'zoom-in'
   | 'zoom-out'
+  | 'run-script'
+  | 'stop-scripts'
 
 export interface Character {
   id: string
@@ -96,6 +108,60 @@ export interface Team {
   leaderId: string
   memberIds: string[]
 }
+
+export type ScriptTarget = 'active-tab' | 'all-tabs' | 'team-leader' | 'team-followers'
+
+export interface AutomationScript {
+  id: string
+  name: string
+  description: string
+  source: string
+  target: ScriptTarget
+  loop: boolean
+  loopDelayMs: number
+  createdAt: number
+  updatedAt: number
+}
+
+export type ScriptRunStatus = 'running' | 'stopping' | 'stopped' | 'done' | 'error'
+
+export type ScriptLogLevel = 'info' | 'warn' | 'error'
+
+export interface ScriptLogEntry {
+  id: string
+  runId: string
+  scriptId: string
+  tabId: string
+  level: ScriptLogLevel
+  message: string
+  timestamp: number
+}
+
+export interface ScriptRun {
+  id: string
+  scriptId: string
+  tabId: string
+  status: ScriptRunStatus
+  iteration: number
+  startedAt: number
+  endedAt?: number
+  error?: string
+}
+
+export const SCRIPT_TARGET_LABELS: Record<ScriptTarget, string> = {
+  'active-tab': 'Active tab',
+  'all-tabs': 'All tabs',
+  'team-leader': 'Team leader',
+  'team-followers': 'Team followers'
+}
+
+export const SCRIPT_LIMITS = {
+  maxLogEntries: 300,
+  minLoopDelayMs: 0,
+  maxLoopDelayMs: 600000,
+  minRuntimeMinutes: 1,
+  maxRuntimeMinutes: 720
+} as const
 
 export interface AutoGroupState {
   enabled: boolean
@@ -118,7 +184,9 @@ export const HOTKEY_ACTIONS: HotkeyAction[] = [
   'next-tab',
   'prev-tab',
   'zoom-in',
-  'zoom-out'
+  'zoom-out',
+  'run-script',
+  'stop-scripts'
 ]
 
 export const HOTKEY_ACTION_LABELS: Record<HotkeyAction, string> = {
@@ -134,7 +202,9 @@ export const HOTKEY_ACTION_LABELS: Record<HotkeyAction, string> = {
   'next-tab': 'Next Tab',
   'prev-tab': 'Previous Tab',
   'zoom-in': 'Zoom In',
-  'zoom-out': 'Zoom Out'
+  'zoom-out': 'Zoom Out',
+  'run-script': 'Run Selected Script',
+  'stop-scripts': 'Stop All Scripts'
 }
 
 export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
@@ -150,7 +220,9 @@ export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
   'next-tab': 'Ctrl+Tab',
   'prev-tab': 'Ctrl+Shift+Tab',
   'zoom-in': 'Ctrl+=',
-  'zoom-out': 'Ctrl+-'
+  'zoom-out': 'Ctrl+-',
+  'run-script': 'Ctrl+Shift+R',
+  'stop-scripts': 'Ctrl+Shift+X'
 }
 
 export const RESOLUTIONS = [

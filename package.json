@@ -12,7 +12,8 @@
     "dist": "npm run build && electron-builder",
     "release": "npm run build && electron-builder --publish always",
     "realse": "pnpm run release",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:scripts": "node tests/script-engine.test.mjs"
   },
   "build": {
     "appId": "com.dofemu.app",

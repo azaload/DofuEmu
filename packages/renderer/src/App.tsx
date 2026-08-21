@@ -3,19 +3,32 @@ import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { X } from 'lucide-react'
 import { SetupScreen } from '@/screens/SetupScreen'
 import { GameScreen } from '@/screens/GameScreen'
-import { SettingsScreen } from '@/screens/SettingsScreen'
+import { SettingsScreen, type SettingsTabId } from '@/screens/SettingsScreen'
 import { colors } from '@/theme'
 
-const SettingsContext = createContext<{
+interface SettingsContextValue {
   settingsOpen: boolean
   setSettingsOpen: (v: boolean) => void
-}>({ settingsOpen: false, setSettingsOpen: () => {} })
+  settingsTab: SettingsTabId
+  setSettingsTab: (tab: SettingsTabId) => void
+  openSettings: (tab?: SettingsTabId) => void
+}
+
+const SettingsContext = createContext<SettingsContextValue>({
+  settingsOpen: false,
+  setSettingsOpen: () => {},
+  settingsTab: 'General',
+  setSettingsTab: () => {},
+  openSettings: () => {}
+})
 
 export const useSettings = () => useContext(SettingsContext)
 
 function SettingsOverlay() {
-  const { settingsOpen, setSettingsOpen } = useSettings()
+  const { settingsOpen, setSettingsOpen, settingsTab, setSettingsTab } = useSettings()
   if (!settingsOpen) return null
+
+  const wide = settingsTab === 'Scripts'
 
   return (
     <div
@@ -28,7 +41,7 @@ function SettingsOverlay() {
     >
       <div
         style={{
-          width: 460, maxHeight: '80vh',
+          width: wide ? 880 : 460, maxWidth: '94vw', maxHeight: wide ? '88vh' : '80vh',
           background: colors.bg, border: `1px solid ${colors.brandBorderFaint}`,
           borderRadius: 10, overflow: 'hidden', boxShadow: colors.modalShadow,
           display: 'flex', flexDirection: 'column'
@@ -49,7 +62,7 @@ function SettingsOverlay() {
           </button>
         </div>
         <div style={{ flex: 1, overflow: 'auto', padding: '0 18px 16px' }}>
-          <SettingsScreen />
+          <SettingsScreen tab={settingsTab} onTabChange={setSettingsTab} />
         </div>
       </div>
     </div>
@@ -58,11 +71,17 @@ function SettingsOverlay() {
 
 export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<SettingsTabId>('General')
 
   useEffect(() => { window.dofemu.appReadyToShow() }, [])
 
+  const openSettings = (tab?: SettingsTabId) => {
+    if (tab) setSettingsTab(tab)
+    setSettingsOpen(true)
+  }
+
   return (
-    <SettingsContext.Provider value={{ settingsOpen, setSettingsOpen }}>
+    <SettingsContext.Provider value={{ settingsOpen, setSettingsOpen, settingsTab, setSettingsTab, openSettings }}>
       <HashRouter>
         <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', overflow: 'hidden' }}>
           <Routes>

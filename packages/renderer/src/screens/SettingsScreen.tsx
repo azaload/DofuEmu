@@ -1,89 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Globe, Keyboard, Users, Info } from 'lucide-react'
+import { Globe, Keyboard, Users, Info, Terminal } from 'lucide-react'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useTeamStore } from '@/stores/teamStore'
 import { recordKeyCombo } from '@/hooks/use-hotkeys'
+import { Row, Section, Select, TextInput, Toggle, ghostBtn, hoverColor } from '@/components/form'
+import { ScriptsScreen } from '@/screens/ScriptsScreen'
 import { HOTKEY_ACTIONS, HOTKEY_ACTION_LABELS, RESOLUTIONS, LANGUAGES } from '@dofemu/shared'
 import { colors } from '@/theme'
 import type { HotkeyAction, Language } from '@dofemu/shared'
-
-const ghostBtn: React.CSSProperties = {
-  background: 'none', border: 'none', color: colors.textFaint,
-  fontSize: 10, cursor: 'pointer',
-}
-
-function hoverColor(e: React.MouseEvent, color: string) {
-  (e.currentTarget as HTMLElement).style.color = color
-}
-
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      onClick={() => onChange(!checked)}
-      style={{
-        width: 36, height: 20, borderRadius: 10, border: 'none', cursor: 'pointer',
-        background: checked ? colors.accent : colors.toggleOff,
-        position: 'relative', transition: 'background 0.2s', flexShrink: 0, padding: 0,
-      }}
-    >
-      <div style={{
-        position: 'absolute', top: 2, left: checked ? 18 : 2,
-        width: 16, height: 16, borderRadius: 8, background: colors.white,
-        transition: 'left 0.15s', boxShadow: colors.shadow,
-      }} />
-    </button>
-  )
-}
-
-function Select({ value, onChange, options, width }: { value: string; onChange: (v: string) => void; options: { value: string; label: string }[]; width?: number }) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      style={{
-        appearance: 'none', background: `${colors.input} url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23666'/%3E%3C/svg%3E") no-repeat right 10px center`,
-        border: `1px solid ${colors.border}`, borderRadius: 6, color: colors.textLight,
-        fontSize: 12, padding: '6px 28px 6px 10px', outline: 'none', width: width || 'auto', minWidth: 140,
-      }}
-    >
-      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </select>
-  )
-}
-
-function TextInput({ value, onChange, placeholder, type }: { value: string; onChange: (v: string) => void; placeholder?: string; type?: string }) {
-  return (
-    <input
-      type={type || 'text'} value={value} placeholder={placeholder}
-      onChange={(e) => onChange(e.target.value)}
-      style={{
-        background: colors.input, border: `1px solid ${colors.border}`, borderRadius: 6,
-        color: colors.textLight, fontSize: 12, padding: '6px 10px', outline: 'none', width: '100%',
-      }}
-    />
-  )
-}
-
-function Row({ label, desc, children }: { label: string; desc?: string; children: React.ReactNode }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0', minHeight: 36 }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, color: colors.textSecondary, lineHeight: 1.3 }}>{label}</div>
-        {desc && <div style={{ fontSize: 11, color: colors.textDesc, marginTop: 1, lineHeight: 1.2 }}>{desc}</div>}
-      </div>
-      <div style={{ marginLeft: 16, flexShrink: 0 }}>{children}</div>
-    </div>
-  )
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div style={{ marginBottom: 2 }}>
-      <div style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: colors.accent, padding: '10px 0 3px', opacity: 0.7 }}>{title}</div>
-      <div>{children}</div>
-    </div>
-  )
-}
 
 function GeneralTab() {
   const { language, window: win, proxy, game, setLanguage, setResolution, toggleAudioMute, toggleSoundOnFocus, setProxySettings, toggleAutoGroup, toggleAutoInvite, toggleNotifications } = useSettingsStore()
@@ -300,11 +224,13 @@ const TABS = [
   { id: 'General', icon: Globe },
   { id: 'Hotkeys', icon: Keyboard },
   { id: 'Teams', icon: Users },
+  { id: 'Scripts', icon: Terminal },
   { id: 'About', icon: Info },
 ] as const
 
-export function SettingsScreen() {
-  const [tab, setTab] = useState('General')
+export type SettingsTabId = (typeof TABS)[number]['id']
+
+export function SettingsScreen({ tab, onTabChange }: { tab: SettingsTabId; onTabChange: (tab: SettingsTabId) => void }) {
   const { loadSettings, isHydrated } = useSettingsStore()
   useEffect(() => { if (!isHydrated) loadSettings() }, [isHydrated, loadSettings])
 
@@ -317,7 +243,7 @@ export function SettingsScreen() {
           return (
             <button
               key={t.id}
-              onClick={() => setTab(t.id)}
+              onClick={() => onTabChange(t.id)}
               style={{
                 display: 'flex', alignItems: 'center', gap: 5,
                 padding: '6px 14px 8px', fontSize: 12, background: 'none', border: 'none', cursor: 'pointer',
@@ -338,6 +264,7 @@ export function SettingsScreen() {
       {tab === 'General' && <GeneralTab />}
       {tab === 'Hotkeys' && <HotkeysTab />}
       {tab === 'Teams' && <TeamsTab />}
+      {tab === 'Scripts' && <ScriptsScreen />}
       {tab === 'About' && <AboutTab />}
     </div>
   )

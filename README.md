@@ -17,6 +17,7 @@ Unofficial desktop client for Dofus Touch.
 - Team management with leader/follower roles
 - Auto-group — followers auto-follow across maps
 - Auto-invite — automatic party invitations
+- Automation scripts — movement paths, resource circuits and custom JS per tab ([docs](docs/scripting.md))
 - Drag-to-reorder tabs
 - Character icon capture in tabs
 - Configurable hotkeys
@@ -47,6 +48,16 @@ pnpm run dev
 ```bash
 pnpm run build
 pnpm run dist
+```
+
+## Automation scripts
+
+Write JavaScript that drives a tab — walk a path, harvest a circuit, relay the leader's
+map changes — from **Settings → Scripts**. See [docs/scripting.md](docs/scripting.md) for
+the API reference. Run the engine tests with:
+
+```bash
+pnpm run test:scripts
 ```
 
 ## Release Updates
@@ -80,9 +91,10 @@ packages/
     game-base/    Game shell, CSS fixes, regex patches
     scripts/      Injected helper scripts
   renderer/       React frontend
-    screens/      GameScreen, SetupScreen, SettingsScreen
-    stores/       Zustand stores (tabs, teams, settings)
+    screens/      GameScreen, SetupScreen, SettingsScreen, ScriptsScreen
+    stores/       Zustand stores (tabs, teams, settings, scripts)
     mods/         Game mods (auto-group, party invite)
+    scripts/      Automation engine (game API, runner, templates)
     components/   Shared components
     utils/        Utilities
   preload/        Electron preload bridge

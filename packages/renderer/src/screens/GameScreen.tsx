@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState, useCallback, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback, type CSSProperties } from 'react'
 import { useSettings } from '@/App'
-import { Plus, X, Settings, Minus, Square, Copy } from 'lucide-react'
+import { Plus, X, Settings, Minus, Square, Copy, Zap } from 'lucide-react'
 import { WindowButton } from '@/components/WindowButton'
 import { useGameTabStore, GameTab } from '@/stores/gameTabStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useTeamStore } from '@/stores/teamStore'
+import { useScriptStore } from '@/stores/scriptStore'
+import { startScript, stopAllScripts, stopScriptsForTab } from '@/scripts/runner'
 import { useHotkeys } from '@/hooks/use-hotkeys'
 import { initAutoGroup, broadcastLeaderPosition, destroyAutoGroup, sendPartyInvite, autoAcceptPartyInvite } from '@/mods/auto-group'
 import { initNotificationFocus } from '@/mods/notification-focus'
@@ -133,10 +135,17 @@ function GameIframe({ tab, gameSrc, isVisible }: { tab: GameTab; gameSrc: string
     cleanupRef.current = []
   }
 
-  useEffect(() => cleanupGameListeners, [])
+  useEffect(() => () => {
+    stopScriptsForTab(tab.id, 'Tab closed')
+    cleanupGameListeners()
+    if (window.parent.$gameWindows) {
+      window.parent.$gameWindows = window.parent.$gameWindows.filter((gw) => gw.$game_id !== tab.id)
+    }
+  }, [tab.id])
 
   const handleLoad = () => {
     if (!iframeRef.current) return
+    stopScriptsForTab(tab.id, 'Game window reloaded')
     cleanupGameListeners()
 
     const gameWindow = iframeRef.current.contentWindow
@@ -152,6 +161,7 @@ function GameIframe({ tab, gameSrc, isVisible }: { tab: GameTab; gameSrc: string
       }
       gameWindow.$game_id = tab.id
       window.parent.$current_id = tab.id
+      window.parent.$gameWindows = window.parent.$gameWindows.filter((gw) => gw.$game_id !== tab.id)
       window.parent.$gameWindows.push(gameWindow)
 
       setTabReady(tab.id, true)
@@ -286,7 +296,12 @@ export function GameScreen() {
   const { tabs, activeTabId, addTab, removeTab, setActiveTab, canAddTab, reorderTabs } = useGameTabStore()
   const { hotkeys, game, loadSettings, isHydrated } = useSettingsStore()
   const { activeTeamId, teams, characterTabMap } = useTeamStore()
-  const { setSettingsOpen } = useSettings()
+  const { setSettingsOpen, openSettings } = useSettings()
+  const scriptRuns = useScriptStore((state) => state.runs)
+  const activeRuns = useMemo(
+    () => Object.values(scriptRuns).filter((run) => run.status === 'running' || run.status === 'stopping'),
+    [scriptRuns]
+  )
   const [gameSrc, setGameSrc] = useState('')
   const [isMaximized, setIsMaximized] = useState(false)
   const [dragTabId, setDragTabId] = useState<string | null>(null)
@@ -392,6 +407,15 @@ export function GameScreen() {
           break
         case 'zoom-out':
           document.body.style.zoom = `${Math.max(0.5, parseFloat(document.body.style.zoom || '1') - 0.1)}`
+          break
+        case 'run-script': {
+          const scriptStore = useScriptStore.getState()
+          const scriptId = scriptStore.selectedScriptId ?? scriptStore.scripts[0]?.id
+          if (scriptId) startScript(scriptId)
+          break
+        }
+        case 'stop-scripts':
+          stopAllScripts('Stopped with the hotkey')
           break
       }
     },
@@ -552,6 +576,20 @@ export function GameScreen() {
           )}
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', height: '100%', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          <button
+            onClick={() => (activeRuns.length > 0 ? stopAllScripts('Stopped from the titlebar') : openSettings('Scripts'))}
+            title={activeRuns.length > 0 ? `Stop ${activeRuns.length} running script(s)` : 'Automation scripts'}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 4, height: '100%', padding: '0 8px',
+              background: 'none', border: 'none', cursor: 'pointer',
+              color: activeRuns.length > 0 ? colors.accentText : colors.textMuted
+            }}
+          >
+            {activeRuns.length > 0 ? <Square size={10} /> : <Zap size={12} />}
+            {activeRuns.length > 0 && (
+              <span style={{ fontSize: 10, fontFamily: 'monospace' }}>{activeRuns.length}</span>
+            )}
+          </button>
           <button
             onClick={() => setSettingsOpen(true)}
             style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, height: '100%', background: 'none', border: 'none', color: colors.textMuted, cursor: 'pointer' }}

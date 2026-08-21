@@ -1,0 +1,420 @@
+import {
+  addListener,
+  getCellId,
+  getCharacter,
+  getConnectionManager,
+  getGuiEmitter,
+  getInteractiveElements,
+  getMapChangeCells,
+  getMapInfo,
+  isConnected,
+  isInFight,
+  isMoving,
+  parseDirection,
+  requestMoveToCell,
+  sendMessage,
+  type Direction,
+  type EventEmitterLike
+} from './game-bridge'
+import {
+  ScriptAbortError,
+  type MoveOptions,
+  type ScriptApi,
+  type ScriptRuntimeContext,
+  type WaitForMessageOptions,
+  type WaitUntilOptions
+} from './types'
+
+const DEFAULT_MOVE_TIMEOUT = 20000
+const DEFAULT_WAIT_TIMEOUT = 15000
+const DEFAULT_POLL_INTERVAL = 200
+const DEFAULT_TRAVEL_STEPS = 60
+const BROADCAST_PREFIX = 'dofemu-script:'
+
+function format(args: unknown[]): string {
+  return args
+    .map((arg) => {
+      if (typeof arg === 'string') return arg
+      if (arg instanceof Error) return arg.message
+      try {
+        return JSON.stringify(arg)
+      } catch {
+        return String(arg)
+      }
+    })
+    .join(' ')
+}
+
+export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
+  const { gameWindow, settings, signal } = ctx
+
+  const throwIfAborted = () => {
+    if (signal.aborted) throw new ScriptAbortError()
+  }
+
+  const wait = (ms: number): Promise<void> => {
+    throwIfAborted()
+    const delay = Math.max(0, Math.floor(ms))
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort)
+        resolve()
+      }, delay)
+      const onAbort = () => {
+        clearTimeout(timer)
+        reject(new ScriptAbortError())
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
+  }
+
+  const random = (min: number, max: number) => {
+    const low = Math.min(min, max)
+    const high = Math.max(min, max)
+    return Math.floor(low + Math.random() * (high - low + 1))
+  }
+
+  /** Small human-looking pause inserted after each game action. */
+  const actionDelay = async () => {
+    if (!settings.humanDelays) return
+    const min = Math.max(0, settings.minActionDelayMs)
+    const max = Math.max(min, settings.maxActionDelayMs)
+    if (max <= 0) return
+    await wait(random(min, max))
+  }
+
+  const guardFight = () => {
+    if (settings.stopOnFight && isInFight(gameWindow)) {
+      throw new ScriptAbortError('Stopped: character entered a fight')
+    }
+  }
+
+  const waitUntil = async (
+    predicate: () => boolean | Promise<boolean>,
+    options: WaitUntilOptions = {}
+  ): Promise<void> => {
+    const timeout = options.timeout ?? DEFAULT_WAIT_TIMEOUT
+    const interval = options.interval ?? DEFAULT_POLL_INTERVAL
+    const deadline = Date.now() + timeout
+
+    for (;;) {
+      throwIfAborted()
+      if (await predicate()) return
+      if (Date.now() >= deadline) {
+        throw new Error(options.message ?? `Timed out after ${timeout}ms waiting for a condition`)
+      }
+      await wait(interval)
+    }
+  }
+
+  const emitterFor = (source: 'connection' | 'gui'): EventEmitterLike | null =>
+    source === 'gui' ? getGuiEmitter(gameWindow) : getConnectionManager(gameWindow)
+
+  const on = <T,>(
+    name: string,
+    handler: (message: T) => void,
+    source: 'connection' | 'gui' = 'connection'
+  ): (() => void) => {
+    const dispose = addListener(emitterFor(source), name, (...args) => {
+      handler((args[0] ?? {}) as T)
+    })
+    ctx.registerCleanup(dispose)
+    return dispose
+  }
+
+  const waitForMessage = <T,>(name: string, options: WaitForMessageOptions<T> = {}): Promise<T> => {
+    throwIfAborted()
+    const timeout = options.timeout ?? DEFAULT_WAIT_TIMEOUT
+
+    return new Promise<T>((resolve, reject) => {
+      const finish = (fn: () => void) => {
+        clearTimeout(timer)
+        signal.removeEventListener('abort', onAbort)
+        dispose()
+        fn()
+      }
+
+      const dispose = addListener(emitterFor(options.source ?? 'connection'), name, (...args) => {
+        const message = (args[0] ?? {}) as T
+        if (options.filter && !options.filter(message)) return
+        finish(() => resolve(message))
+      })
+
+      const timer = setTimeout(
+        () => finish(() => reject(new Error(`Timed out after ${timeout}ms waiting for ${name}`))),
+        timeout
+      )
+
+      const onAbort = () => finish(() => reject(new ScriptAbortError()))
+      signal.addEventListener('abort', onAbort, { once: true })
+      ctx.registerCleanup(dispose)
+    })
+  }
+
+  const currentMapId = () => getMapInfo(gameWindow).id
+
+  const waitForMapId = (mapId: number, timeout: number) =>
+    waitUntil(() => currentMapId() === mapId, {
+      timeout,
+      message: `Timed out after ${timeout}ms waiting to arrive on map ${mapId}`
+    })
+
+  const moveToCell = async (cellId: number, options: MoveOptions = {}): Promise<number> => {
+    throwIfAborted()
+    guardFight()
+
+    const timeout = options.timeout ?? DEFAULT_MOVE_TIMEOUT
+    if (getCellId(gameWindow) === cellId) return cellId
+
+    if (!requestMoveToCell(gameWindow, cellId)) {
+      throw new Error(
+        'No movement entry point found on this game build — use api.send() with a raw movement message instead'
+      )
+    }
+
+    await waitUntil(() => getCellId(gameWindow) === cellId, {
+      timeout,
+      message: `Timed out after ${timeout}ms walking to cell ${cellId}`
+    })
+
+    await actionDelay()
+    return cellId
+  }
+
+  const changeMap = async (mapId: number, options: MoveOptions = {}): Promise<number> => {
+    throwIfAborted()
+    guardFight()
+
+    const timeout = options.timeout ?? DEFAULT_MOVE_TIMEOUT
+    if (currentMapId() === mapId) return mapId
+
+    sendMessage(gameWindow, 'ChangeMapMessage', { mapId })
+    await waitForMapId(mapId, timeout)
+    await actionDelay()
+    return mapId
+  }
+
+  const move = async (direction: Direction | string, options: MoveOptions = {}): Promise<number> => {
+    throwIfAborted()
+    guardFight()
+
+    const dir = parseDirection(String(direction))
+    const map = getMapInfo(gameWindow)
+    const targetMapId = map.neighbours[dir]
+
+    if (targetMapId === null) {
+      throw new Error(`Map ${map.id ?? '?'} has no ${dir} neighbour`)
+    }
+
+    const exitCells = getMapChangeCells(gameWindow, dir)
+    const from = getCellId(gameWindow)
+
+    if (exitCells.length > 0) {
+      const cell =
+        from === null
+          ? exitCells[0]
+          : exitCells.reduce((best, candidate) =>
+              Math.abs(candidate - from) < Math.abs(best - from) ? candidate : best
+            )
+      await moveToCell(cell, options)
+    }
+
+    return changeMap(targetMapId, options)
+  }
+
+  const movePath = async (
+    path: string | Array<Direction | string>,
+    options: MoveOptions = {}
+  ): Promise<number> => {
+    const steps = Array.isArray(path) ? path : path.split(/[\s,]+/).filter(Boolean)
+    let mapId = currentMapId() ?? -1
+    for (const step of steps) {
+      mapId = await move(step, options)
+    }
+    return mapId
+  }
+
+  const travelTo = async (
+    x: number,
+    y: number,
+    options: MoveOptions & { maxSteps?: number } = {}
+  ): Promise<number> => {
+    const maxSteps = options.maxSteps ?? DEFAULT_TRAVEL_STEPS
+
+    for (let step = 0; step < maxSteps; step++) {
+      throwIfAborted()
+      const map = getMapInfo(gameWindow)
+
+      if (map.x === null || map.y === null) {
+        throw new Error('Current map has no coordinates — use api.move() or api.changeMap() instead')
+      }
+      if (map.x === x && map.y === y) return map.id ?? -1
+
+      const dx = x - map.x
+      const dy = y - map.y
+      const horizontal: Direction = dx > 0 ? 'right' : 'left'
+      const vertical: Direction = dy > 0 ? 'bottom' : 'top'
+      const order =
+        Math.abs(dx) >= Math.abs(dy)
+          ? [dx !== 0 ? horizontal : vertical, dy !== 0 ? vertical : horizontal]
+          : [dy !== 0 ? vertical : horizontal, dx !== 0 ? horizontal : vertical]
+
+      let moved = false
+      for (const direction of order) {
+        if (map.neighbours[direction] === null) continue
+        await move(direction, options)
+        moved = true
+        break
+      }
+
+      if (!moved) {
+        throw new Error(`Stuck at [${map.x}, ${map.y}] — no usable neighbour towards [${x}, ${y}]`)
+      }
+    }
+
+    throw new Error(`Could not reach [${x}, ${y}] within ${maxSteps} map changes`)
+  }
+
+  const interact = (elementId: number, skillUid = 0) => {
+    throwIfAborted()
+    sendMessage(gameWindow, 'InteractiveUseRequestMessage', {
+      elemId: elementId,
+      skillInstanceUid: skillUid
+    })
+  }
+
+  const gather = async (options: MoveOptions = {}): Promise<boolean> => {
+    throwIfAborted()
+    guardFight()
+
+    const element = getInteractiveElements(gameWindow).find((candidate) => {
+      const skills = candidate.enabledSkills
+      return Array.isArray(skills) && skills.length > 0
+    })
+
+    if (!element) return false
+
+    const elementId = Number(element.elementId ?? element.id)
+    const skills = element.enabledSkills as Array<Record<string, unknown>>
+    const skillUid = Number(skills[0]?.skillInstanceUid ?? skills[0]?.skillId ?? 0)
+    if (!Number.isFinite(elementId)) return false
+
+    interact(elementId, Number.isFinite(skillUid) ? skillUid : 0)
+
+    try {
+      await waitForMessage('InteractiveUseEndedMessage', {
+        timeout: options.timeout ?? DEFAULT_MOVE_TIMEOUT
+      })
+    } catch (err) {
+      if (err instanceof ScriptAbortError) throw err
+      return false
+    }
+
+    await actionDelay()
+    return true
+  }
+
+  const broadcastChannels = new Map<string, BroadcastChannel>()
+  const channelFor = (channel: string): BroadcastChannel => {
+    const existing = broadcastChannels.get(channel)
+    if (existing) return existing
+    const created = new BroadcastChannel(BROADCAST_PREFIX + channel)
+    broadcastChannels.set(channel, created)
+    ctx.registerCleanup(() => {
+      broadcastChannels.delete(channel)
+      try {
+        created.close()
+      } catch {}
+    })
+    return created
+  }
+
+  return {
+    get tabId() {
+      return ctx.tabId
+    },
+    get scriptId() {
+      return ctx.script.id
+    },
+    get runId() {
+      return ctx.runId
+    },
+    get iteration() {
+      return ctx.getIteration()
+    },
+
+    log: (...args) => ctx.hooks.onLog('info', format(args)),
+    warn: (...args) => ctx.hooks.onLog('warn', format(args)),
+    error: (...args) => ctx.hooks.onLog('error', format(args)),
+    stop: (reason?: string) => {
+      throw new ScriptAbortError(reason ? `Stopped: ${reason}` : 'Stopped by script')
+    },
+
+    wait,
+    waitRandom: (minMs, maxMs) => wait(random(minMs, maxMs)),
+    waitUntil,
+    waitForMessage,
+
+    character: () => getCharacter(gameWindow),
+    map: () => getMapInfo(gameWindow),
+    mapId: currentMapId,
+    cellId: () => getCellId(gameWindow),
+    isInFight: () => isInFight(gameWindow),
+    isConnected: () => isConnected(gameWindow),
+    isMoving: () => isMoving(gameWindow),
+
+    moveToCell,
+    move,
+    movePath,
+    changeMap,
+    travelTo,
+
+    interactives: () => getInteractiveElements(gameWindow),
+    interact,
+    gather,
+
+    send: (name, data) => {
+      throwIfAborted()
+      sendMessage(gameWindow, name, data ?? {})
+    },
+    on,
+    chat: (text, channel = 0) => {
+      throwIfAborted()
+      sendMessage(gameWindow, 'ChatClientMultiMessage', { content: text, channel })
+    },
+    invite: (name) => {
+      throwIfAborted()
+      sendMessage(gameWindow, 'PartyInvitationRequestMessage', { name })
+    },
+    acceptInvite: (partyId) => {
+      throwIfAborted()
+      sendMessage(gameWindow, 'PartyAcceptInvitationMessage', { partyId })
+    },
+
+    broadcast: (channel, data) => {
+      throwIfAborted()
+      channelFor(channel).postMessage(data)
+    },
+    onBroadcast: (channel, handler) => {
+      const target = channelFor(channel)
+      const listener = (event: MessageEvent) => handler(event.data)
+      target.addEventListener('message', listener)
+      const dispose = () => target.removeEventListener('message', listener)
+      ctx.registerCleanup(dispose)
+      return dispose
+    },
+
+    random,
+    pick: <T,>(items: T[]): T => {
+      if (!items.length) throw new Error('api.pick() needs a non-empty array')
+      return items[random(0, items.length - 1)]
+    },
+
+    raw: {
+      window: gameWindow,
+      gui: gameWindow.gui,
+      isoEngine: gameWindow.isoEngine,
+      connectionManager: gameWindow.dofus?.connectionManager
+    }
+  }
+}

@@ -5,6 +5,7 @@ import type {
   ProxySettings,
   GameSettings,
   HotkeyAction,
+  ScriptSettings,
   DEFAULT_HOTKEYS
 } from '@dofemu/shared'
 
@@ -16,6 +17,7 @@ interface SettingsState {
   hotkeys: HotkeyMap
   proxy: ProxySettings
   game: GameSettings
+  scripts: ScriptSettings
   version: string
   isLoading: boolean
   isHydrated: boolean
@@ -27,6 +29,8 @@ interface SettingsState {
   resetHotkeys: () => void
   setProxySettings: (settings: Partial<ProxySettings>) => void
   setGameSettings: (settings: Partial<GameSettings>) => void
+  setScriptSettings: (settings: Partial<ScriptSettings>) => void
+  toggleScripts: () => void
   setResolution: (width: number, height: number) => void
   toggleAudioMute: () => void
   toggleSoundOnFocus: () => void
@@ -48,7 +52,9 @@ const defaultHotkeys: HotkeyMap = {
   'next-tab': 'Ctrl+Tab',
   'prev-tab': 'Ctrl+Shift+Tab',
   'zoom-in': 'Ctrl+=',
-  'zoom-out': 'Ctrl+-'
+  'zoom-out': 'Ctrl+-',
+  'run-script': 'Ctrl+Shift+R',
+  'stop-scripts': 'Ctrl+Shift+X'
 }
 
 const defaultState = {
@@ -72,6 +78,14 @@ const defaultState = {
     autoInviteEnabled: true,
     notificationsEnabled: true
   },
+  scripts: {
+    enabled: true,
+    humanDelays: true,
+    minActionDelayMs: 250,
+    maxActionDelayMs: 900,
+    stopOnFight: true,
+    maxRuntimeMinutes: 120
+  },
   version: '0.1.0'
 }
 
@@ -83,6 +97,7 @@ function persist(state: SettingsState) {
       hotkeys: state.hotkeys,
       proxy: state.proxy,
       game: state.game,
+      scripts: state.scripts,
       version: state.version
     })
     window.dofemu.setSettings(payload)
@@ -114,6 +129,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => {
           hotkeys: { ...defaultHotkeys, ...parsed.hotkeys },
           proxy: { ...defaultState.proxy, ...parsed.proxy },
           game: { ...defaultState.game, ...parsed.game },
+          scripts: { ...defaultState.scripts, ...parsed.scripts },
           version: parsed.version ?? defaultState.version,
           isHydrated: true
         })
@@ -137,6 +153,12 @@ export const useSettingsStore = create<SettingsState>()((set, get) => {
 
     setGameSettings: (settings) =>
       mutate((s) => ({ game: { ...s.game, ...settings } })),
+
+    setScriptSettings: (settings) =>
+      mutate((s) => ({ scripts: { ...s.scripts, ...settings } })),
+
+    toggleScripts: () =>
+      mutate((s) => ({ scripts: { ...s.scripts, enabled: !s.scripts.enabled } })),
 
     setResolution: (width, height) =>
       mutate((s) => ({
