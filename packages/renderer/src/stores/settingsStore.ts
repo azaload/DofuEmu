@@ -94,7 +94,8 @@ const defaultState = {
     autoReady: true,
     turnStartDelayMs: 700,
     castDelayMs: 900,
-    endTurnAfterCombo: true
+    endTurnAfterCombo: true,
+    closeEndScreens: true
   },
   scripts: {
     enabled: true,

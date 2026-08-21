@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Play, Square, Copy, Trash2, Plus, Download, Upload, Eraser } from 'lucide-react'
+import { Play, Square, Copy, Trash2, Plus, Download, Upload, Eraser, MapPin } from 'lucide-react'
 import { Row, Section, Select, TextInput, Toggle, ghostBtn, hoverColor } from '@/components/form'
 import { logLevelColor, useScriptStore } from '@/stores/scriptStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { SCRIPT_TEMPLATES, scriptFromTemplate } from '@/scripts/templates'
 import { resolveTargetTabs, startScript, stopScript } from '@/scripts/runner'
+import { getMapInfo } from '@/scripts/game-bridge'
+import { useGameTabStore } from '@/stores/gameTabStore'
 import { API_REFERENCE } from '@/scripts/reference'
 import { colors } from '@/theme'
 import type { AutomationScript, ScriptRun, ScriptTarget } from '@dofemu/shared'
@@ -30,6 +32,63 @@ const actionBtn = (accent = false): React.CSSProperties => ({
   color: accent ? colors.white : colors.textMuted,
   fontSize: 11, padding: '6px 12px'
 })
+
+/** Live position of the active tab, to build map circuits without guessing. */
+function CurrentMapBadge() {
+  const [info, setInfo] = useState<{ id: number | null; x: number | null; y: number | null } | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    const read = () => {
+      const activeTabId = useGameTabStore.getState().activeTabId
+      const gameWindow = activeTabId
+        ? window.$gameWindows?.find((candidate) => candidate.$game_id === activeTabId)
+        : undefined
+      if (!gameWindow) {
+        setInfo(null)
+        return
+      }
+      const map = getMapInfo(gameWindow)
+      setInfo({ id: map.id, x: map.x, y: map.y })
+    }
+
+    read()
+    const timer = setInterval(read, 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    if (!copied) return
+    const timer = setTimeout(() => setCopied(false), 2000)
+    return () => clearTimeout(timer)
+  }, [copied])
+
+  const hasPosition = info && info.x !== null && info.y !== null
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: colors.textFaint }}>
+      <MapPin size={11} />
+      <span style={{ fontFamily: 'monospace' }}>
+        {hasPosition ? `[${info.x}, ${info.y}] · map #${info.id}` : 'no map on the active tab'}
+      </span>
+      {hasPosition && (
+        <button
+          onClick={() => {
+            void navigator.clipboard
+              .writeText(`{ x: ${info.x}, y: ${info.y} }`)
+              .then(() => setCopied(true))
+              .catch(() => setCopied(false))
+          }}
+          style={{ ...ghostBtn, fontSize: 10 }}
+          onMouseEnter={(e) => hoverColor(e, colors.hoverLight)}
+          onMouseLeave={(e) => hoverColor(e, colors.textFaint)}
+        >
+          {copied ? 'copied' : 'copy'}
+        </button>
+      )}
+    </div>
+  )
+}
 
 function formatTime(timestamp: number) {
   return new Date(timestamp).toLocaleTimeString()
@@ -362,7 +421,10 @@ export function ScriptsScreen() {
         />
       </div>
 
-      {notice && <div style={{ fontSize: 11, color: colors.accentText }}>{notice}</div>}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <CurrentMapBadge />
+        {notice && <div style={{ fontSize: 11, color: colors.accentText }}>{notice}</div>}
+      </div>
 
       {showReference && <ApiReference />}
 

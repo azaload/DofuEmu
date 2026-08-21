@@ -232,6 +232,12 @@ export function CombatScreen() {
         <Row label="Ready up automatically" desc="Send ready when a fight starts">
           <Toggle checked={combat.autoReady} onChange={(v) => setCombatSettings({ autoReady: v })} />
         </Row>
+        <Row label="Close end screens" desc="Dismiss the fight results and level-up windows">
+          <Toggle
+            checked={combat.closeEndScreens}
+            onChange={(v) => setCombatSettings({ closeEndScreens: v })}
+          />
+        </Row>
         <Row label="End turn after the combo">
           <Toggle
             checked={combat.endTurnAfterCombo}

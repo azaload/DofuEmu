@@ -240,6 +240,59 @@ export function requestMoveToCell(gameWindow: DofusWindow, cellId: number): bool
   return false
 }
 
+export interface MonsterGroup {
+  id: number
+  cellId: number | null
+  /** Sum of the levels of every monster in the group. */
+  level: number | null
+  /** Level of the leader alone. */
+  leaderLevel: number | null
+  size: number
+}
+
+function toMonsterGroup(raw: unknown): MonsterGroup | null {
+  const dict = asDict(raw)
+  const data = asDict(dict?.data) ?? dict
+  const staticInfos = asDict(data?.staticInfos)
+  const leader = asDict(staticInfos?.mainCreatureLightInfos)
+
+  // Only monster groups carry mainCreatureLightInfos.
+  if (!leader) return null
+
+  const id = asNumber(dict?.id) ?? asNumber(data?.contextualId)
+  if (id === null) return null
+
+  const underlings = Array.isArray(staticInfos?.underlings) ? staticInfos.underlings : []
+  const leaderLevel = asNumber(leader.level)
+  const levels = [leaderLevel, ...underlings.map((underling) => asNumber(asDict(underling)?.level))]
+  const known = levels.filter((level): level is number => level !== null)
+
+  return {
+    id,
+    cellId: asNumber(asDict(data?.disposition)?.cellId) ?? asNumber(dict?.cellId),
+    level: known.length > 0 ? known.reduce((total, level) => total + level, 0) : null,
+    leaderLevel,
+    size: 1 + underlings.length
+  }
+}
+
+/** Monster groups standing on the current map. */
+export function getMonsterGroups(gameWindow: DofusWindow): MonsterGroup[] {
+  const actorManager =
+    asDict(asDict(gameWindow.isoEngine)?.actorManager) ?? asDict(gameWindow.actorManager)
+  const actors = actorManager?.actors
+  if (!actors || typeof actors !== 'object') return []
+
+  const list = Array.isArray(actors) ? actors : Object.values(actors)
+  return list
+    .map(toMonsterGroup)
+    .filter((group): group is MonsterGroup => group !== null)
+}
+
+export function attackMonsterGroup(gameWindow: DofusWindow, groupId: number): void {
+  sendMessage(gameWindow, 'GameRolePlayAttackMonsterRequestMessage', { monsterGroupId: groupId })
+}
+
 export function getInteractiveElements(gameWindow: DofusWindow): Array<Dict> {
   const mapRenderer = getMapRenderer(gameWindow)
   const elements = mapRenderer?.interactiveElements

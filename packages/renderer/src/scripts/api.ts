@@ -1,5 +1,6 @@
 import {
   addListener,
+  attackMonsterGroup,
   getCellId,
   getCharacter,
   getConnectionManager,
@@ -7,6 +8,7 @@ import {
   getInteractiveElements,
   getMapChangeCells,
   getMapInfo,
+  getMonsterGroups,
   isConnected,
   isInFight,
   isMoving,
@@ -14,8 +16,10 @@ import {
   requestMoveToCell,
   sendMessage,
   type Direction,
-  type EventEmitterLike
+  type EventEmitterLike,
+  type MonsterGroup
 } from './game-bridge'
+import { closeUiPopups } from './ui-bridge'
 import {
   castSpell,
   cellDistance,
@@ -34,8 +38,10 @@ import {
 } from './fight-bridge'
 import {
   ScriptAbortError,
+  type AttackOptions,
   type CastOptions,
   type FightApi,
+  type MonsterFilter,
   type MoveOptions,
   type ScriptApi,
   type ScriptRuntimeContext,
@@ -49,6 +55,7 @@ const DEFAULT_WAIT_TIMEOUT = 15000
 const DEFAULT_POLL_INTERVAL = 200
 const DEFAULT_TRAVEL_STEPS = 60
 const DEFAULT_CAST_TIMEOUT = 4000
+const DEFAULT_ATTACK_TIMEOUT = 30000
 const DEFAULT_TURN_TIMEOUT = 300000
 const TURN_POLL_INTERVAL = 400
 const BROADCAST_PREFIX = 'dofemu-script:'
@@ -471,6 +478,59 @@ export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
       })
   }
 
+  const monsters = (filter: MonsterFilter = {}): MonsterGroup[] => {
+    const groups = getMonsterGroups(gameWindow).filter((group) => {
+      if (filter.minLevel !== undefined && (group.level ?? 0) < filter.minLevel) return false
+      if (filter.maxLevel !== undefined && (group.level ?? 0) > filter.maxLevel) return false
+      if (filter.minSize !== undefined && group.size < filter.minSize) return false
+      if (filter.maxSize !== undefined && group.size > filter.maxSize) return false
+      return true
+    })
+
+    if (filter.nearestFirst === false) return groups
+
+    const from = getCellId(gameWindow)
+    if (from === null) return groups
+
+    return [...groups].sort((a, b) => {
+      const da = a.cellId === null ? Number.MAX_SAFE_INTEGER : cellDistance(from, a.cellId)
+      const db = b.cellId === null ? Number.MAX_SAFE_INTEGER : cellDistance(from, b.cellId)
+      return da - db
+    })
+  }
+
+  const attack = async (
+    group: MonsterGroup | number,
+    options: AttackOptions = {}
+  ): Promise<boolean> => {
+    throwIfAborted()
+
+    const groupId = typeof group === 'number' ? group : group.id
+    const cell = typeof group === 'number' ? null : group.cellId
+
+    if (options.approach !== false && cell !== null) {
+      try {
+        await moveToCell(cell)
+      } catch (err) {
+        if (err instanceof ScriptAbortError) throw err
+        // The group cell can be unreachable; the server may still accept the attack.
+      }
+    }
+
+    const timeout = options.timeout ?? DEFAULT_ATTACK_TIMEOUT
+    const started = waitForMessage('GameFightStartingMessage', { timeout })
+
+    attackMonsterGroup(gameWindow, groupId)
+
+    try {
+      await started
+      return true
+    } catch (err) {
+      if (err instanceof ScriptAbortError) throw err
+      return false
+    }
+  }
+
   const broadcastChannels = new Map<string, BroadcastChannel>()
   const channelFor = (channel: string): BroadcastChannel => {
     const existing = broadcastChannels.get(channel)
@@ -527,6 +587,11 @@ export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
     travelTo,
 
     fight,
+
+    closePopups: (patterns) => closeUiPopups(gameWindow, patterns),
+
+    monsters,
+    attack,
 
     interactives: () => getInteractiveElements(gameWindow),
     interact,

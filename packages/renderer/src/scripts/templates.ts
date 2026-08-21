@@ -89,6 +89,70 @@ for (const direction of circuit) {
 `
   },
   {
+    id: 'hunt-circuit',
+    name: 'Hunt: fight a map circuit',
+    description:
+      'Walks a chosen list of maps, attacks the monster groups that match the filters, and waits out each fight.',
+    target: 'active-tab',
+    loop: true,
+    loopDelayMs: 5000,
+    source: `// The maps to farm, in order. Walk to a map in game and read its
+// coordinates at the top of the Scripts tab, then add them here.
+const MAPS = [
+  { x: 3, y: -5 },
+  { x: 4, y: -5 }
+]
+
+// Which groups to attack. level is the sum of the levels of the whole group.
+const FILTER = { minLevel: 1, maxLevel: 200, maxSize: 8 }
+
+// Fights are played by the Combat AI (Settings -> Combat). Turn it on, or
+// replace waitForFightEnd below with your own api.fight logic.
+const FIGHT_TIMEOUT = 1800000
+
+for (const spot of MAPS) {
+  if (!api.isConnected()) api.stop('disconnected')
+
+  if (api.isInFight()) {
+    await api.fight.waitForFightEnd({ timeout: FIGHT_TIMEOUT, interval: 2000 })
+    await api.waitRandom(1000, 2000)
+  }
+
+  api.log('Heading to', \`[\${spot.x}, \${spot.y}]\`)
+  await api.travelTo(spot.x, spot.y)
+
+  let fights = 0
+  let groups = api.monsters(FILTER)
+
+  while (groups.length > 0) {
+    const group = groups[0]
+    api.log(\`Attacking a group of \${group.size} (level \${group.level}) on map \${api.mapId()}\`)
+
+    if (!(await api.attack(group))) {
+      api.warn('The attack did not start a fight, moving on')
+      break
+    }
+
+    fights += 1
+    await api.fight.waitForFightEnd({ timeout: FIGHT_TIMEOUT, interval: 2000 })
+
+    // The results screen — and sometimes a level-up window — stay up until
+    // dismissed, and block the next move.
+    await api.waitRandom(1200, 2000)
+    api.closePopups()
+    await api.waitRandom(1200, 2000)
+    api.closePopups()
+    api.log('Fight over')
+
+    groups = api.monsters(FILTER)
+  }
+
+  api.log(\`Map \${api.mapId()} done — \${fights} fight(s)\`)
+  await api.waitRandom(1000, 2500)
+}
+`
+  },
+  {
     id: 'follow-leader',
     name: 'Follow the leader',
     description:

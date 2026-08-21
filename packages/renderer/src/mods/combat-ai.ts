@@ -1,4 +1,5 @@
 import type { CombatSettings } from '@dofemu/shared'
+import { closeUiPopups } from '@/scripts/ui-bridge'
 import {
   castSpell,
   finishTurn,
@@ -13,6 +14,10 @@ import type { DofusWindow } from '@/types/dofus-window'
  * Plays a fight turn on its own: cast the configured spell combo on a target,
  * then end the turn. It reads the settings on every turn, so edits in the UI
  * apply to the next turn without restarting anything.
+ *
+ * When a fight ends it also closes the results screen and the level-up window,
+ * which would otherwise block whatever runs next. The level-up window can
+ * arrive a moment after the results, so the sweep is repeated a few times.
  */
 
 interface EventSourceLike {
@@ -29,6 +34,9 @@ export interface CombatAiCallbacks {
 interface TurnMessage {
   id?: number
 }
+
+/** The level-up window can land after the results screen, so sweep a few times. */
+const DISMISS_DELAYS_MS = [800, 2000, 4500]
 
 function addListener(
   source: EventSourceLike | undefined,
@@ -124,6 +132,23 @@ export function initCombatAi(
       })
   }
 
+  const onFightEnd = () => {
+    if (disposed || !callbacks.getSettings().closeEndScreens) return
+
+    for (const delay of DISMISS_DELAYS_MS) {
+      const timer = setTimeout(() => {
+        if (disposed || !callbacks.getSettings().closeEndScreens) return
+        try {
+          const closed = closeUiPopups(gameWindow)
+          if (closed.length > 0) log(`Closed ${closed.join(', ')}`)
+        } catch (err) {
+          log(`Could not close the end screens: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }, delay)
+      cleanups.push(() => clearTimeout(timer))
+    }
+  }
+
   const onFightStart = () => {
     const settings = callbacks.getSettings()
     if (disposed || !settings.enabled || !settings.autoReady) return
@@ -136,6 +161,7 @@ export function initCombatAi(
   for (const source of [gui, connectionManager]) {
     addListener(source, 'GameFightTurnStartMessage', onTurnStart, cleanups)
     addListener(source, 'GameFightStartingMessage', onFightStart, cleanups)
+    addListener(source, 'GameFightEndMessage', onFightEnd, cleanups)
   }
 
   return () => {

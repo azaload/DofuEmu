@@ -1,6 +1,6 @@
 import type { AutomationScript, ScriptLogLevel, ScriptSettings } from '@dofemu/shared'
 import type { DofusWindow } from '@/types/dofus-window'
-import type { CharacterInfo, Direction, MapInfo } from './game-bridge'
+import type { CharacterInfo, Direction, MapInfo, MonsterGroup } from './game-bridge'
 import type { Fighter, SpellInfo } from './fight-bridge'
 
 export interface WaitUntilOptions {
@@ -23,6 +23,22 @@ export type TargetStrategy = 'nearest' | 'weakest' | 'strongest' | 'first'
 
 export interface CastOptions {
   timeout?: number
+}
+
+export interface MonsterFilter {
+  minLevel?: number
+  maxLevel?: number
+  minSize?: number
+  maxSize?: number
+  /** Sort candidates by grid distance from the character. Defaults to true. */
+  nearestFirst?: boolean
+}
+
+export interface AttackOptions {
+  /** How long to wait for the fight to start. */
+  timeout?: number
+  /** Walk onto the group cell before attacking. Defaults to true. */
+  approach?: boolean
 }
 
 /** Fight helpers, reachable from a script as `api.fight`. */
@@ -80,6 +96,11 @@ export interface ScriptApi {
   travelTo: (x: number, y: number, options?: MoveOptions & { maxSteps?: number }) => Promise<number>
 
   fight: FightApi
+
+  closePopups: (patterns?: string[]) => string[]
+
+  monsters: (filter?: MonsterFilter) => MonsterGroup[]
+  attack: (group: MonsterGroup | number, options?: AttackOptions) => Promise<boolean>
 
   interactives: () => Array<Record<string, unknown>>
   interact: (elementId: number, skillUid?: number) => void

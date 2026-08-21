@@ -16,6 +16,16 @@ Configure it in **Settings → Combat**. `Ctrl+Shift+F` toggles it on and off.
 Settings are read at the start of every turn, so editing the combo mid-fight applies from
 the next turn — nothing to restart.
 
+## End-of-fight screens
+
+When a fight ends the game shows its results screen, and sometimes a level-up window on
+top of it. Both stay up until dismissed and block the next move, so **Close end screens**
+(on by default) closes them for you. The sweep runs three times over the five seconds
+following the end of the fight, because the level-up window often lands after the results.
+
+Only those screens are targeted — an inventory or a chat window you opened stays open.
+In a script the same thing is `api.closePopups()`, which returns what it closed.
+
 ## The combo
 
 Spells are identified by their in-game spell id. Two ways to fill the list:
@@ -46,6 +56,14 @@ This is deliberately the basic version:
   skipped, and the AI moves on to the next spell.
 - No movement: the character stays where it is.
 - No positioning, no spell conditions, no target switching rules beyond the strategy above.
+- The AI does not look for fights: pair it with the hunt script below to farm.
+
+## Chaining fights automatically
+
+The Combat AI only plays the turns of a fight it is already in — it does not look for
+fights. To farm, pair it with the **Hunt: fight a map circuit** script
+([scripting.md](scripting.md#farming-a-map-circuit)): the script walks your map list and
+starts the fights, the Combat AI plays them.
 
 ## Going further with scripts
 

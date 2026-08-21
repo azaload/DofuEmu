@@ -58,6 +58,7 @@ export interface CombatSettings {
   turnStartDelayMs: number
   castDelayMs: number
   endTurnAfterCombo: boolean
+  closeEndScreens: boolean
 }
 
 export const COMBAT_TARGET_LABELS: Record<CombatTargetStrategy, string> = {

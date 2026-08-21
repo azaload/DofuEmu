@@ -40,6 +40,14 @@ export const API_REFERENCE: ApiReferenceGroup[] = [
     ]
   },
   {
+    title: 'Monsters',
+    entries: [
+      { signature: 'api.monsters(filter)', description: 'Monster groups on the map, nearest first (minLevel, maxLevel, minSize, maxSize).' },
+      { signature: 'await api.attack(group)', description: 'Walk to a group and start the fight; false when no fight started.' },
+      { signature: 'api.closePopups()', description: 'Close the fight results and level-up screens; returns what was closed.' }
+    ]
+  },
+  {
     title: 'Interaction',
     entries: [
       { signature: 'await api.gather()', description: 'Harvest the first available resource on the map.' },

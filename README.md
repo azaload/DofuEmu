@@ -19,6 +19,7 @@ Unofficial desktop client for Dofus Touch.
 - Auto-invite — automatic party invitations
 - Automation scripts — movement paths, resource circuits and custom JS per tab ([docs](docs/scripting.md))
 - Combat AI — casts a configured spell combo each turn, then passes ([docs](docs/combat.md))
+- Map-circuit hunting — chains fights over a chosen list of maps ([docs](docs/scripting.md))
 - Drag-to-reorder tabs
 - Character icon capture in tabs
 - Configurable hotkeys

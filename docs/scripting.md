@@ -95,6 +95,14 @@ Movement helpers resolve once the game confirms arrival and reject on timeout
 The no-code version of a fixed combo lives in **Settings → Combat** — see
 [combat.md](combat.md).
 
+### Monsters
+
+| Call | Description |
+|------|-------------|
+| `api.monsters(filter)` | Monster groups on the current map, nearest first. Filter with `minLevel`, `maxLevel`, `minSize`, `maxSize` (`level` is the summed level of the whole group), or pass `nearestFirst: false` to keep the game's order. |
+| `await api.attack(group)` | Walk onto the group's cell and start the fight. Resolves `false` when no fight started within the timeout; `{ approach: false }` skips the walk. |
+| `api.closePopups()` | Close the fight results and level-up screens, which block the next move. Returns what was closed. |
+
 ### Interaction
 
 | Call | Description |
@@ -134,8 +142,31 @@ The **From template…** menu creates a ready-made script:
 - **Resource circuit** — harvests everything on a map, then moves to the next one.
 - **Follow the leader** — the leader broadcasts its map changes, followers reproduce them.
 - **Anti-AFK** — small random moves at random intervals.
+- **Hunt: fight a map circuit** — walks a list of maps and fights the groups that match your filters.
 - **Combat: spell combo** — casts a combo each turn and passes the turn.
 - **Fight watcher** — logs fight starts and notifies the other tabs.
+
+## Farming a map circuit
+
+The **Hunt: fight a map circuit** template chains fights over maps you pick:
+
+```js
+const MAPS = [{ x: 3, y: -5 }, { x: 4, y: -5 }]
+const FILTER = { minLevel: 1, maxLevel: 200, maxSize: 8 }
+```
+
+For each map it travels there, attacks every matching group one after another, waits for
+each fight to end, then moves on. With **Loop** on, the circuit restarts from the top.
+
+To fill `MAPS`, walk your character to a map: its coordinates are displayed at the top of
+the Scripts tab, with a **copy** button that puts `{ x: …, y: … }` on the clipboard.
+
+The turns themselves are played by the [Combat AI](combat.md) — enable it, or replace the
+`waitForFightEnd` call with your own `api.fight` logic.
+
+After each fight the template calls `api.closePopups()` twice: the results screen appears
+right away, the level-up window sometimes a moment later, and both block the next move.
+The Combat AI does the same on its own when **Close end screens** is on.
 
 ## Import and export
 

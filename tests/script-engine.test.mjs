@@ -67,6 +67,7 @@ function createFakeGameWindow() {
   const listeners = new Map()
   const sent = []
 
+  const closedWindows = []
   const cells = {}
   cells[EXIT_CELL_RIGHT] = { mapChangeData: 1 }
 
@@ -101,6 +102,13 @@ function createFakeGameWindow() {
       connectionManager,
       sendMessage: (name, data) => {
         sent.push({ name, data })
+        if (name === 'GameRolePlayAttackMonsterRequestMessage') {
+          setTimeout(() => {
+            gameWindow.gui.fightManager.isFightStarted = true
+            gameWindow.gui.playerData.isFighting = true
+            state.emit('GameFightStartingMessage', { monsterGroupId: data.monsterGroupId })
+          }, 5)
+        }
         if (name === 'GameActionFightCastRequestMessage') {
           setTimeout(() => state.emit('GameActionFightSpellCastMessage', { sourceId: 7, spellId: data.spellId }), 5)
         }
@@ -131,11 +139,50 @@ function createFakeGameWindow() {
         }
       },
       fightManager: { isFightStarted: false, fighters },
+      windowsManager: {
+        openedWindows: {
+          fightEnd: { id: 'fightEnd', openState: true },
+          levelUp: { id: 'levelUp', openState: true },
+          inventory: { id: 'inventory', openState: true }
+        },
+        close: (id) => {
+          closedWindows.push(id)
+          delete gameWindow.gui.windowsManager.openedWindows[id]
+        }
+      },
       on: connectionManager.on
     },
     isoEngine: {
       mapRenderer: { mapId: MAP_A, map: buildMap(MAP_A), interactiveElements: {} },
-      actorManager: { userActor: { cellId: 100 } },
+      actorManager: {
+        userActor: { cellId: 100 },
+        actors: {
+          // A player: no staticInfos, must be ignored.
+          '900': { id: 900, data: { disposition: { cellId: 120 } } },
+          '-1': {
+            id: -1,
+            data: {
+              contextualId: -1,
+              disposition: { cellId: 300 },
+              staticInfos: {
+                mainCreatureLightInfos: { level: 30 },
+                underlings: [{ level: 25 }, { level: 20 }]
+              }
+            }
+          },
+          '-2': {
+            id: -2,
+            data: {
+              contextualId: -2,
+              disposition: { cellId: 114 },
+              staticInfos: {
+                mainCreatureLightInfos: { level: 60 },
+                underlings: [{ level: 55 }, { level: 50 }, { level: 45 }]
+              }
+            }
+          }
+        }
+      },
       moveTo: (cellId) => {
         setTimeout(() => {
           state.cellId = cellId
@@ -158,6 +205,12 @@ function createFakeGameWindow() {
     }
   }
 
+  state.closedWindows = closedWindows
+  state.endFight = () => {
+    gameWindow.gui.fightManager.isFightStarted = false
+    gameWindow.gui.playerData.isFighting = false
+    state.emit('GameFightEndMessage', {})
+  }
   state.fighters = fighters
   state.startFight = () => {
     gameWindow.gui.fightManager.isFightStarted = true
@@ -383,6 +436,77 @@ async function testTargetStrategies(ScriptRunner) {
   console.log('ok - fight targeting')
 }
 
+async function testMonsterHunt(ScriptRunner) {
+  const { result, logs, state } = await run(
+    ScriptRunner,
+    `
+      const all = api.monsters()
+      api.log('groups', all.length, 'first', all[0].id, 'level', all[0].level, 'size', all[0].size)
+
+      const small = api.monsters({ maxLevel: 100 })
+      api.log('small', small.map((g) => g.id).join(','))
+
+      const started = await api.attack(all[0])
+      api.log('fight started', started)
+    `
+  )
+
+  assert.strictEqual(result.status, 'done', `hunt should finish, got ${result.error ?? ''}`)
+  assert.ok(logs.some((line) => line.includes('groups 2 ')), 'only monster groups are listed')
+  assert.ok(
+    logs.some((line) => line.includes('first -2 level 210 size 4')),
+    'the nearest group comes first, with summed levels and group size'
+  )
+  assert.ok(logs.some((line) => line.includes('small -1')), 'the level filter excludes big groups')
+
+  const walked = state.cellId
+  assert.strictEqual(walked, 114, 'the character walks onto the group cell before attacking')
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameRolePlayAttackMonsterRequestMessage'),
+    'the attack request is sent'
+  )
+  assert.ok(logs.some((line) => line.includes('fight started true')), 'the fight start is awaited')
+  console.log('ok - monster hunt')
+}
+
+async function testClosePopups(ScriptRunner) {
+  const { result, logs, state } = await run(
+    ScriptRunner,
+    `api.log('closed', api.closePopups().join(','))`
+  )
+
+  assert.strictEqual(result.status, 'done')
+  assert.ok(
+    logs.some((line) => line.includes('closed fightEnd,levelUp')),
+    'the fight results and level-up screens are closed'
+  )
+  assert.ok(
+    !state.closedWindows.includes('inventory'),
+    'unrelated windows are left alone'
+  )
+  console.log('ok - close end screens')
+}
+
+async function testTemplatesCompile() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/templates.ts'))
+  const { SCRIPT_TEMPLATES } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'templates.js')).href}?t=${Date.now()}`
+  )
+
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+  assert.ok(SCRIPT_TEMPLATES.length > 0, 'templates are exported')
+
+  for (const template of SCRIPT_TEMPLATES) {
+    try {
+      new AsyncFunction('api', `"use strict";\n${template.source}\n`)
+    } catch (err) {
+      assert.fail(`Template "${template.name}" does not compile: ${err.message}`)
+    }
+  }
+
+  console.log(`ok - ${SCRIPT_TEMPLATES.length} templates compile`)
+}
+
 async function testCombatAi() {
   await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
   const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
@@ -398,7 +522,8 @@ async function testCombatAi() {
     autoReady: true,
     turnStartDelayMs: 0,
     castDelayMs: 0,
-    endTurnAfterCombo: true
+    endTurnAfterCombo: true,
+    closeEndScreens: true
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -435,6 +560,16 @@ async function testCombatAi() {
   await new Promise((resolve) => setTimeout(resolve, 80))
   assert.strictEqual(state.sent.length, before, 'a disabled AI does nothing')
 
+  // End of fight: the results and level-up screens must be dismissed.
+  combatSettings.enabled = true
+  state.endFight()
+  await new Promise((resolve) => setTimeout(resolve, 1200))
+
+  assert.ok(state.closedWindows.includes('fightEnd'), 'the results screen is closed')
+  assert.ok(state.closedWindows.includes('levelUp'), 'the level-up window is closed')
+  assert.ok(!state.closedWindows.includes('inventory'), 'other windows stay open')
+  assert.ok(logs.some((line) => line.includes('Closed')), 'the dismissal is logged')
+
   dispose()
   console.log('ok - combat AI turn')
 }
@@ -453,6 +588,9 @@ async function main() {
   await testFightCombo(ScriptRunner)
   await testTargetStrategies(ScriptRunner)
   await testCombatAi()
+  await testMonsterHunt(ScriptRunner)
+  await testClosePopups(ScriptRunner)
+  await testTemplatesCompile()
 
   console.log('\nAll script engine tests passed.')
 }
