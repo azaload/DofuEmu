@@ -5,6 +5,7 @@ import crypto from 'crypto'
 import { Server } from 'http'
 import { AddressInfo } from 'net'
 import { join } from 'path'
+import { resolveStaticPath } from './static-file'
 import fs from 'fs'
 import ElectronStore from 'electron-store'
 import { IPCEvents, GameContext, NativeNotificationPayload, AppUpdateStatus } from '@dofemu/shared'
@@ -40,9 +41,9 @@ const MIME_TYPES: Record<string, string> = {
 function createStaticHandler(basePath: string, urlPrefix: string) {
   return async (c: Context) => {
     const reqPath = c.req.path.slice(urlPrefix.length)
-    const filePath = join(basePath, decodeURIComponent(reqPath))
+    const filePath = resolveStaticPath(basePath, reqPath)
 
-    if (!filePath.startsWith(basePath)) {
+    if (!filePath) {
       return c.text('Forbidden', 403)
     }
 
