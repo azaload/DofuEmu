@@ -52,6 +52,13 @@ pnpm run build
 pnpm run dist
 ```
 
+`dist` clears `release/` first. On Windows that folder is often held by
+something else — DofEmu still running, OneDrive syncing a project kept on the
+Desktop, or an antivirus scanning the generated uninstaller — which shows up as
+`EPERM: operation not permitted, unlink ...__uninstaller-nsis-dofemu.exe`. The
+clean step retries and then names the likely cause; keeping the project outside
+synced folders (`C:\dev\DofuEmu`) avoids it entirely.
+
 ## Combat AI
 
 **Settings → Combat** plays fight turns on its own: a fixed spell combo cast on a chosen

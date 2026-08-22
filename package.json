@@ -9,13 +9,14 @@
   "scripts": {
     "dev": "node scripts/watch.mjs",
     "build": "node scripts/build.mjs",
-    "dist": "npm run build && electron-builder",
-    "release": "npm run build && electron-builder --publish always",
+    "dist": "npm run clean && npm run build && electron-builder",
+    "release": "npm run clean && npm run build && electron-builder --publish always",
     "realse": "pnpm run release",
     "typecheck": "tsc --noEmit",
     "test:scripts": "node tests/script-engine.test.mjs",
     "test:main": "node tests/static-file.test.mjs",
-    "test": "npm run test:scripts && npm run test:main"
+    "test": "npm run test:scripts && npm run test:main",
+    "clean": "node scripts/clean-release.mjs"
   },
   "build": {
     "appId": "com.dofemu.app",
