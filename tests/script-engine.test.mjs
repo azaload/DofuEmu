@@ -222,7 +222,10 @@ function createFakeGameWindow() {
           }
         }
       },
-      moveTo: (cellId) => {
+      // Named like a build that does NOT expose moveTo, so the API has to
+      // discover the working entry point.
+      goToCell: (cellId) => {
+        if (state.disableMovement) return
         state.moves.push(cellId)
         // state.walkLimit caps how far the engine actually walks, the way the
         // real one stops short when the path is blocked.
@@ -1037,6 +1040,41 @@ async function testTurnSynchronisation() {
   console.log('ok - turn synchronisation')
 }
 
+async function testMovementDiscovery(ScriptRunner) {
+  const { result, logs, state } = await run(
+    ScriptRunner,
+    `
+      api.log('cell before', api.cellId())
+      await api.moveToCell(114)
+      api.log('cell after', api.cellId())
+    `
+  )
+
+  assert.strictEqual(result.status, 'done', `the walk should succeed, got ${result.error ?? ''}`)
+  assert.deepStrictEqual(state.moves, [114], 'the working entry point is used')
+  assert.ok(logs.some((line) => line.includes('cell after 114')), 'the character arrives')
+  console.log('ok - movement entry point discovery')
+}
+
+async function testMovementReportsNoEntryPoint(ScriptRunner) {
+  const { result } = await run(
+    ScriptRunner,
+    `await api.moveToCell(114)`,
+    {},
+    (state) => {
+      state.disableMovement = true
+    }
+  )
+
+  assert.strictEqual(result.status, 'error', 'a build without movement fails loudly')
+  assert.match(
+    result.error ?? '',
+    /api\.inspect/,
+    'the error points at the diagnostic'
+  )
+  console.log('ok - movement reports a missing entry point')
+}
+
 async function testConnectionCheck() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/game-bridge.ts'))
   const { isConnected } = await import(
@@ -1198,6 +1236,8 @@ async function main() {
   await testSelfCastAndLineUp()
   await testRangeAndShortWalk()
   await testTurnSynchronisation()
+  await testMovementDiscovery(ScriptRunner)
+  await testMovementReportsNoEntryPoint(ScriptRunner)
   await testConnectionCheck()
   await testTemplatesCompile()
 

@@ -13,16 +13,36 @@ import { attackMonsterGroup } from './game-bridge'
 type Dict = Record<string, unknown>
 
 /** Engine entry points seen for "the player tapped this actor". */
-const TAP_METHODS = [
+export const TAP_METHODS = [
   'attackMonsterGroup',
   'attackMonster',
   'startFightWithMonsterGroup',
   'onMonsterGroupSelected',
   'selectActor',
+  'selectTarget',
   'tapActor',
   'onActorTap',
-  '_onActorTap'
+  '_onActorTap',
+  'onActorSelected',
+  'showActorMenu',
+  'openContextualMenu'
 ]
+
+export interface AttackOwner {
+  label: string
+  value: unknown
+}
+
+/** Objects that may carry one of those entry points. */
+export function attackOwners(gameWindow: DofusWindow): AttackOwner[] {
+  const isoEngine = asDict(gameWindow.isoEngine)
+  return [
+    { label: 'isoEngine', value: isoEngine },
+    { label: 'actorManager', value: asDict(isoEngine?.actorManager) ?? asDict(gameWindow.actorManager) },
+    { label: 'gui', value: asDict(gameWindow.gui) },
+    { label: 'mapScene', value: asDict(isoEngine?.mapScene) }
+  ]
+}
 
 const ATTACK_LABEL = /^(attaquer|attack|angreifen|atacar|attacca)$/i
 const CLICKABLE = 'button, .button, [role="button"], .btn, .greenButton, .confirmButton, span, div'
@@ -56,16 +76,25 @@ export function findAttackButton(gameWindow: DofusWindow): HTMLElement | null {
   return null
 }
 
-function callWithGroup(owner: unknown, method: string, groupId: number): boolean {
+export function callWithGroup(owner: unknown, method: string, groupId: number): boolean {
   const dict = asDict(owner)
-  const fn = dict?.[method]
+  if (!dict) return false
+  const fn = dict[method]
   if (typeof fn !== 'function') return false
-  try {
-    ;(fn as (...args: unknown[]) => void).call(dict, groupId)
-    return true
-  } catch {
-    return false
+
+  // Builds pass the actor id, the actor itself, or an event-like object.
+  const actors = asDict(asDict(dict.actorManager)?.actors)
+  const actor = asDict(actors?.[String(groupId)])
+  for (const args of [[groupId], [actor ?? groupId], [{ id: groupId }], [groupId, true]]) {
+    try {
+      ;(fn as (...args: unknown[]) => void).apply(dict, args)
+      return true
+    } catch {
+      // Wrong shape for this build; try the next one.
+    }
   }
+
+  return false
 }
 
 export interface AttackAttempt {
@@ -122,7 +151,10 @@ export function requestAttack(gameWindow: DofusWindow, groupId: number): AttackA
  * The client is minified and differs between builds, so this is how an
  * unknown shape gets reported instead of guessed at.
  */
-export function describeGameApi(gameWindow: DofusWindow, pattern = 'attack|monster|tap|fight'): string[] {
+export function describeGameApi(
+  gameWindow: DofusWindow,
+  pattern = 'attack|monster|tap|fight|move|walk|path|cell|click|press'
+): string[] {
   const regex = new RegExp(pattern, 'i')
   const lines: string[] = []
 
@@ -145,7 +177,19 @@ export function describeGameApi(gameWindow: DofusWindow, pattern = 'attack|monst
 
   describe('isoEngine', gameWindow.isoEngine)
   describe('isoEngine.actorManager', asDict(gameWindow.isoEngine)?.actorManager)
+  describe('isoEngine.mapScene', asDict(gameWindow.isoEngine)?.mapScene)
   describe('gui', gameWindow.gui)
+
+  // A monster group actor, whose own members reveal how the client drives it.
+  const actors = asDict(asDict(asDict(gameWindow.isoEngine)?.actorManager)?.actors)
+  const monster = actors
+    ? Object.entries(actors).find(([, actor]) => asDict(asDict(actor)?.data)?.staticInfos)
+    : undefined
+  if (monster) {
+    describe(`monster actor ${monster[0]}`, monster[1])
+  } else {
+    lines.push('monster actor: none on this map')
+  }
 
   try {
     const buttons = [...gameWindow.document.querySelectorAll(CLICKABLE)]

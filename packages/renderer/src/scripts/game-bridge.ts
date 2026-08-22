@@ -317,28 +317,62 @@ export function getMapChangeCells(gameWindow: DofusWindow, direction: Direction)
   return result
 }
 
+/** Engine entry points seen for "walk the character to this cell". */
+export const MOVE_METHODS = [
+  'moveTo',
+  'moveToCell',
+  'movePlayerOnMap',
+  '_movePlayerOnMap',
+  'goToCell',
+  'walkTo',
+  'requestMoveTo',
+  'sendMoveTo',
+  '_moveTo'
+] as const
+
+/** Argument shapes those methods are called with, tried in order. */
+function moveArguments(cellId: number): unknown[][] {
+  return [[cellId], [cellId, true], [{ cell: cellId }], [{ cellId }], [cellId, 0]]
+}
+
 /**
- * Asks the iso engine to walk the character to `cellId`.
- * Returns false when no known movement entry point exists on this game build.
+ * Calls one movement entry point. Returns false when the method does not exist
+ * or every argument shape threw — the caller then tries the next name.
  */
-export function requestMoveToCell(gameWindow: DofusWindow, cellId: number): boolean {
-  const isoEngine = asDict(gameWindow.isoEngine)
-  if (!isoEngine) return false
+export function callMoveMethod(gameWindow: DofusWindow, method: string, cellId: number): boolean {
+  const owners = [asDict(gameWindow.isoEngine), asDict(asDict(gameWindow.isoEngine)?.actorManager)]
 
-  const candidates: Array<[string, unknown[]]> = [
-    ['moveTo', [cellId]],
-    ['movePlayerOnMap', [cellId, true]],
-    ['_movePlayerOnMap', [cellId, true]]
-  ]
+  for (const owner of owners) {
+    const fn = owner?.[method]
+    if (typeof fn !== 'function') continue
 
-  for (const [method, args] of candidates) {
-    const fn = isoEngine[method]
-    if (typeof fn === 'function') {
-      ;(fn as (...a: unknown[]) => void).apply(isoEngine, args)
-      return true
+    for (const args of moveArguments(cellId)) {
+      try {
+        ;(fn as (...a: unknown[]) => void).apply(owner, args)
+        return true
+      } catch {
+        // Wrong shape for this build; try the next one.
+      }
     }
   }
 
+  return false
+}
+
+/** Movement entry points this build actually exposes. */
+export function availableMoveMethods(gameWindow: DofusWindow): string[] {
+  const owners = [asDict(gameWindow.isoEngine), asDict(asDict(gameWindow.isoEngine)?.actorManager)]
+  return MOVE_METHODS.filter((method) => owners.some((owner) => typeof owner?.[method] === 'function'))
+}
+
+/**
+ * Asks the iso engine to walk the character to `cellId`, trying every known
+ * entry point. Returns false when this build exposes none of them.
+ */
+export function requestMoveToCell(gameWindow: DofusWindow, cellId: number): boolean {
+  for (const method of MOVE_METHODS) {
+    if (callMoveMethod(gameWindow, method, cellId)) return true
+  }
   return false
 }
 

@@ -1,6 +1,7 @@
 import {
   addListener,
-  attackMonsterGroup,
+  availableMoveMethods,
+  callMoveMethod,
   getCellId,
   getCharacter,
   getConnectionManager,
@@ -14,13 +15,20 @@ import {
   isInFight,
   isMoving,
   parseDirection,
-  requestMoveToCell,
+  MOVE_METHODS,
   sendMessage,
   type Direction,
   type EventEmitterLike,
   type MonsterGroup
 } from './game-bridge'
-import { describeGameApi, requestAttack } from './attack'
+import {
+  attackOwners,
+  callWithGroup,
+  describeGameApi,
+  findAttackButton,
+  requestAttack,
+  TAP_METHODS
+} from './attack'
 import { findCellNextTo } from './cells'
 import { closeUiPopups } from './ui-bridge'
 import {
@@ -53,7 +61,9 @@ import {
   type WaitUntilOptions
 } from './types'
 
-const DEFAULT_MOVE_TIMEOUT = 20000
+const DEFAULT_MOVE_TIMEOUT = 12000
+/** How long a walk has to visibly start before another entry point is tried. */
+const MOVE_START_TIMEOUT = 900
 const DEFAULT_WAIT_TIMEOUT = 15000
 const DEFAULT_POLL_INTERVAL = 200
 const DEFAULT_TRAVEL_STEPS = 60
@@ -201,6 +211,42 @@ export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
       message: `Timed out after ${timeout}ms waiting to arrive on map ${mapId}`
     })
 
+  /**
+   * Entry point that actually moved the character on this build, remembered
+   * for the rest of the session: the client is minified and names differ, so
+   * the working one is found by effect rather than assumed.
+   */
+  let workingMoveMethod: string | null = null
+
+  const cellChanged = async (from: number | null, within: number): Promise<boolean> => {
+    const deadline = Date.now() + within
+    while (Date.now() < deadline) {
+      throwIfAborted()
+      if (getCellId(gameWindow) !== from) return true
+      await wait(80)
+    }
+    return false
+  }
+
+  const startWalk = async (cellId: number): Promise<string | null> => {
+    const from = getCellId(gameWindow)
+
+    // Once one is known to work, stop probing.
+    const order = workingMoveMethod
+      ? [workingMoveMethod, ...MOVE_METHODS.filter((method) => method !== workingMoveMethod)]
+      : [...MOVE_METHODS]
+
+    for (const method of order) {
+      if (!callMoveMethod(gameWindow, method, cellId)) continue
+      if (await cellChanged(from, MOVE_START_TIMEOUT)) {
+        workingMoveMethod = method
+        return method
+      }
+    }
+
+    return null
+  }
+
   const moveToCell = async (cellId: number, options: MoveOptions = {}): Promise<number> => {
     throwIfAborted()
     guardFight()
@@ -208,15 +254,20 @@ export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
     const timeout = options.timeout ?? DEFAULT_MOVE_TIMEOUT
     if (getCellId(gameWindow) === cellId) return cellId
 
-    if (!requestMoveToCell(gameWindow, cellId)) {
+    const method = await startWalk(cellId)
+
+    if (!method) {
+      const known = availableMoveMethods(gameWindow)
       throw new Error(
-        'No movement entry point found on this game build — use api.send() with a raw movement message instead'
+        known.length > 0
+          ? `The character did not move (tried ${known.join(', ')}) — the path may be blocked, or this build needs another entry point; run api.inspect('move|walk|path|cell') to list them`
+          : "No movement entry point on this build — run api.inspect('move|walk|path|cell') to list what it exposes"
       )
     }
 
     await waitUntil(() => getCellId(gameWindow) === cellId, {
       timeout,
-      message: `Timed out after ${timeout}ms walking to cell ${cellId}`
+      message: `Timed out after ${timeout}ms walking to cell ${cellId} with ${method}()`
     })
 
     await actionDelay()
@@ -554,24 +605,46 @@ export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
     )
 
     // The game's own flow is: select the group, then press the button it shows.
-    const attempts = requestAttack(gameWindow, groupId)
-    report(
-      `Attack: ${attempts
-        .map((attempt) => attempt.strategy + (attempt.detail ? ` (${attempt.detail})` : ''))
-        .join(', ')}`
-    )
+    // Entry points differ between builds, so each is tried and judged on what
+    // it produces — a button appearing, or the fight starting.
+    let done = false
 
-    // The button can take a moment to appear after the group is selected.
-    const buttonDeadline = Date.now() + 1500
-    while (Date.now() < buttonDeadline) {
-      const later = requestAttack(gameWindow, groupId).filter(
-        (attempt) => attempt.strategy === 'attack button'
-      )
-      if (later.length > 0) {
+    const pressButton = (): boolean => {
+      const button = findAttackButton(gameWindow)
+      if (!button) return false
+      try {
+        button.click()
         report('Attack: pressed the attack button')
-        break
+        return true
+      } catch (err) {
+        report(`Attack: the button refused the click (${err instanceof Error ? err.message : String(err)})`)
+        return false
       }
-      await wait(200)
+    }
+
+    if (pressButton()) done = true
+
+    if (!done) {
+      for (const owner of attackOwners(gameWindow)) {
+        for (const method of TAP_METHODS) {
+          if (!callWithGroup(owner.value, method, groupId)) continue
+          report(`Attack: tried ${owner.label}.${method}()`)
+
+          // Give the client a moment to put its button up.
+          for (let attempt = 0; attempt < 4 && !done; attempt++) {
+            await wait(150)
+            if (pressButton()) done = true
+            else if (isInFight(gameWindow)) done = true
+          }
+          if (done) break
+        }
+        if (done) break
+      }
+    }
+
+    if (!done) {
+      const attempts = requestAttack(gameWindow, groupId)
+      report(`Attack: falling back to ${attempts.map((attempt) => attempt.strategy).join(', ')}`)
     }
 
     try {
