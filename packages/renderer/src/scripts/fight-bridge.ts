@@ -191,43 +191,56 @@ export function getSpells(gameWindow: DofusWindow): SpellInfo[] {
 }
 
 /** Ranks the living enemies and returns the one a strategy would attack. */
-export function pickTarget(
+/** Living enemies, best first for the chosen strategy. */
+export function orderTargets(
   gameWindow: DofusWindow,
   strategy: CombatTargetStrategy = 'nearest'
-): Fighter | null {
+): Fighter[] {
   const enemies = getEnemies(gameWindow)
-  if (enemies.length === 0) return null
-  if (strategy === 'first') return enemies[0]
+  if (enemies.length <= 1 || strategy === 'first') return enemies
 
   if (strategy === 'weakest' || strategy === 'strongest') {
-    const withLife = enemies.filter((enemy) => enemy.life !== null)
-    const pool = withLife.length > 0 ? withLife : enemies
-    return pool.reduce((best, enemy) => {
-      const life = enemy.life ?? 0
-      const bestLife = best.life ?? 0
-      return strategy === 'weakest' ? (life < bestLife ? enemy : best) : life > bestLife ? enemy : best
+    return [...enemies].sort((a, b) => {
+      const left = a.life ?? 0
+      const right = b.life ?? 0
+      return strategy === 'weakest' ? left - right : right - left
     })
   }
 
   const me = getMyFighter(gameWindow)
-  if (!me || me.cellId === null) return enemies[0]
-  const positioned = enemies.filter((enemy) => enemy.cellId !== null)
-  if (positioned.length === 0) return enemies[0]
+  if (!me || me.cellId === null) return enemies
 
   const from = me.cellId
-  return positioned.reduce((best, enemy) =>
-    cellDistance(from, enemy.cellId as number) < cellDistance(from, best.cellId as number) ? enemy : best
+  return [...enemies].sort((a, b) => {
+    const left = a.cellId === null ? Number.MAX_SAFE_INTEGER : cellDistance(from, a.cellId)
+    const right = b.cellId === null ? Number.MAX_SAFE_INTEGER : cellDistance(from, b.cellId)
+    return left - right
+  })
+}
+
+/** Ranks the living enemies and returns the one a strategy would attack. */
+export function pickTarget(
+  gameWindow: DofusWindow,
+  strategy: CombatTargetStrategy = 'nearest'
+): Fighter | null {
+  return orderTargets(gameWindow, strategy)[0] ?? null
+}
+
+/** Enemies our character can reach with a spell of `range` from where it stands. */
+export function targetsInRange(
+  gameWindow: DofusWindow,
+  range: number,
+  strategy: CombatTargetStrategy = 'nearest'
+): Fighter[] {
+  const me = getMyFighter(gameWindow)
+  if (!me || me.cellId === null) return []
+  const from = me.cellId
+
+  return orderTargets(gameWindow, strategy).filter(
+    (enemy) => enemy.cellId !== null && cellDistance(from, enemy.cellId) <= range
   )
 }
 
-/**
- * Sends the character along `path` with the game's own movement message.
- *
- * Walking a fighter through an engine helper only moves the sprite: the server
- * never sees a request and rolls the character back where it stood. The path
- * is encoded the way the client does it — each cell carrying the direction
- * taken when leaving it.
- */
 export function sendFightMove(gameWindow: DofusWindow, path: number[]): boolean {
   if (path.length < 2) return false
 

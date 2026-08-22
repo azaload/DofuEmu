@@ -12,8 +12,15 @@ import { attackMonsterGroup } from './game-bridge'
 
 type Dict = Record<string, unknown>
 
-/** Engine entry points seen for "the player tapped this actor". */
+/**
+ * Engine entry points seen for "the player tapped this actor".
+ *
+ * `attackActor` is the one Dofus Touch answers to — it is what tapping a
+ * monster group calls — so it is tried first; the rest cover other builds.
+ */
 export const TAP_METHODS = [
+  'attackActor',
+  '_tapRoleplay',
   'attackMonsterGroup',
   'attackMonster',
   'startFightWithMonsterGroup',

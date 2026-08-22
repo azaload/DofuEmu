@@ -122,6 +122,21 @@ positioning mode and however many movement points are left. The log says so:
 Turn it off only if you want the AI to attempt escapes; it will then place itself as it
 would out of melee, and report what the tackle really cost.
 
+## Spreading the casts
+
+**Spread the casts** (on by default) plays a turn across the group rather than dumping it
+on one enemy: each spell of the combo is cast **once per enemy within its range**, in the
+order the target strategy gives.
+
+- Two enemies in range, combo `A, B` → `A` on the first, `A` on the second, then `B` on
+  each.
+- One enemy in range → the combo runs as written: `A` then `B` on it.
+
+Turn it off to send the whole combo at a single target.
+
+Only enemies actually within the spell's range are considered, so a cast is no longer
+thrown at someone out of reach.
+
 ## Target strategies
 
 | Strategy | Picks |

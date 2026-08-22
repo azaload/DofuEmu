@@ -706,7 +706,8 @@ async function testTurnCombos() {
     preferLineUp: false,
     positioning: 'close-in',
     positioning: 'close-in',
-    tackleAware: true
+    tackleAware: true,
+    spreadCasts: false
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -780,7 +781,8 @@ async function testApproachWithMp() {
     defaultSpellRange: 1,
     preferLineUp: false,
     positioning: 'close-in',
-    tackleAware: true
+    tackleAware: true,
+    spreadCasts: false
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -857,7 +859,8 @@ async function testSelfCastAndLineUp() {
     defaultSpellRange: 1,
     preferLineUp: true,
     positioning: 'close-in',
-    tackleAware: true
+    tackleAware: true,
+    spreadCasts: false
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -963,7 +966,8 @@ async function testRangeAndShortWalk() {
     defaultSpellRange: 1,
     preferLineUp: false,
     positioning: 'close-in',
-    tackleAware: true
+    tackleAware: true,
+    spreadCasts: false
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1048,7 +1052,8 @@ async function testKitingAndSingleMove() {
     defaultSpellRange: 1,
     preferLineUp: false,
     positioning: 'keep-distance',
-    tackleAware: true
+    tackleAware: true,
+    spreadCasts: false
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1109,6 +1114,82 @@ async function testKitingAndSingleMove() {
   console.log('ok - kiting and one move per turn')
 }
 
+async function testSpreadCasts() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const combatSettings = {
+    enabled: true,
+    combo: [
+      { id: 100, name: 'First', range: 12 },
+      { id: 101, name: 'Second', range: 12 }
+    ],
+    turnCombos: [],
+    targetStrategy: 'nearest',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: false,
+    defaultSpellRange: 12,
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    spreadCasts: true
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: () => {}
+  })
+
+  const casts = () =>
+    state.sent
+      .filter((message) => message.name === 'GameActionFightCastRequestMessage')
+      .map((message) => `${message.data.spellId}@${message.data.cellId}`)
+
+  // Two enemies in range: the same spell goes once on each.
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 294
+  state.fighters[2].data.disposition.cellId = 350
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  assert.deepStrictEqual(
+    casts(),
+    ['100@294', '100@350', '101@294', '101@350'],
+    'each spell is cast once per enemy in range'
+  )
+
+  // A single enemy in range: the combo plays out on it, spell after spell.
+  state.sent.length = 0
+  state.fighters[2].data.alive = false
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  assert.deepStrictEqual(
+    casts(),
+    ['100@294', '101@294'],
+    'with one enemy left the combo runs as written'
+  )
+
+  state.fighters[2].data.alive = true
+  dispose()
+  console.log('ok - casts spread over the enemies in range')
+}
+
 async function testTackleAwareness() {
   await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
   const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
@@ -1137,7 +1218,8 @@ async function testTackleAwareness() {
     defaultSpellRange: 1,
     preferLineUp: false,
     positioning: 'keep-distance',
-    tackleAware: true
+    tackleAware: true,
+    spreadCasts: false
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1247,7 +1329,8 @@ async function testFightMovementGoesThroughTheServer() {
     defaultSpellRange: 1,
     preferLineUp: false,
     positioning: 'close-in',
-    tackleAware: true
+    tackleAware: true,
+    spreadCasts: false
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1329,7 +1412,8 @@ async function testHumanDelays() {
     defaultSpellRange: 1,
     preferLineUp: false,
     positioning: 'keep-distance',
-    tackleAware: true
+    tackleAware: true,
+    spreadCasts: false
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1401,7 +1485,8 @@ async function testTurnAlwaysPassed() {
     defaultSpellRange: 1,
     preferLineUp: true,
     positioning: 'keep-distance',
-    tackleAware: true
+    tackleAware: true,
+    spreadCasts: false
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1472,7 +1557,8 @@ async function testTurnSynchronisation() {
     preferLineUp: false,
     positioning: 'close-in',
     positioning: 'close-in',
-    tackleAware: true
+    tackleAware: true,
+    spreadCasts: false
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1667,7 +1753,8 @@ async function testCombatAi() {
     turnCombos: [],
     targetStrategy: 'weakest',
     approachEnemies: false,
-    defaultSpellRange: 1,
+    // Long enough that both enemies are reachable, so the strategy decides.
+    defaultSpellRange: 12,
     preferLineUp: false,
     positioning: 'close-in',
     autoReady: true,
@@ -1753,6 +1840,7 @@ async function main() {
   await testSelfCastAndLineUp()
   await testRangeAndShortWalk()
   await testKitingAndSingleMove()
+  await testSpreadCasts()
   await testTackleAwareness()
   await testFightMovementGoesThroughTheServer()
   await testHumanDelays()

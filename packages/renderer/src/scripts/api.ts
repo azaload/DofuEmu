@@ -30,7 +30,7 @@ import {
   TAP_METHODS,
   visibleLabels
 } from './attack'
-import { findCellNextTo } from './cells'
+import { findCellNextTo, reachableCells } from './cells'
 import { closeUiPopups } from './ui-bridge'
 import {
   castSpell,
@@ -68,6 +68,8 @@ const MOVE_START_TIMEOUT = 900
 const DEFAULT_WAIT_TIMEOUT = 15000
 const DEFAULT_POLL_INTERVAL = 200
 const DEFAULT_TRAVEL_STEPS = 60
+/** Cells a character may walk through on one map, outside fights. */
+const ROAM_STEPS = 60
 const DEFAULT_CAST_TIMEOUT = 4000
 const DEFAULT_ATTACK_TIMEOUT = 20000
 const ATTACK_APPROACH_TIMEOUT = 12000
@@ -303,14 +305,44 @@ export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
     const exitCells = getMapChangeCells(gameWindow, dir)
     const from = getCellId(gameWindow)
 
-    if (exitCells.length > 0) {
-      const cell =
-        from === null
-          ? exitCells[0]
-          : exitCells.reduce((best, candidate) =>
-              Math.abs(candidate - from) < Math.abs(best - from) ? candidate : best
-            )
-      await moveToCell(cell, options)
+    if (exitCells.length > 0 && from !== null) {
+      // Pick an exit a path can actually reach: on maps cluttered with
+      // buildings the closest one in a straight line is often behind a wall.
+      const reachable = reachableCells(gameWindow, from, ROAM_STEPS)
+      const options_ = exitCells
+        .map((cellId) => reachable.get(cellId))
+        .filter((entry): entry is NonNullable<typeof entry> => !!entry)
+        .sort((a, b) => a.cost - b.cost)
+
+      if (options_.length === 0) {
+        ctx.hooks.onLog(
+          'warn',
+          `No walkable path to a ${dir} exit on map ${map.id ?? '?'} — trying the closest one anyway`
+        )
+        const fallback = exitCells.reduce((best, candidate) =>
+          Math.abs(candidate - from) < Math.abs(best - from) ? candidate : best
+        )
+        await moveToCell(fallback, options).catch(() => undefined)
+      } else {
+        let walked = false
+        for (const candidate of options_.slice(0, 3)) {
+          try {
+            await moveToCell(candidate.cellId, options)
+            walked = true
+            break
+          } catch (err) {
+            if (err instanceof ScriptAbortError) throw err
+            ctx.hooks.onLog('warn', `Exit cell ${candidate.cellId} could not be reached, trying another`)
+          }
+        }
+        if (!walked) {
+          throw new Error(
+            `Could not reach any ${dir} exit on map ${map.id ?? '?'} — the way is blocked`
+          )
+        }
+      }
+    } else if (exitCells.length > 0) {
+      await moveToCell(exitCells[0], options)
     }
 
     return changeMap(targetMapId, options)

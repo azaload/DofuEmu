@@ -109,7 +109,8 @@ const defaultState = {
     defaultSpellRange: 1,
     preferLineUp: true,
     positioning: 'keep-distance' as const,
-    tackleAware: true
+    tackleAware: true,
+    spreadCasts: true
   },
   scripts: {
     enabled: true,

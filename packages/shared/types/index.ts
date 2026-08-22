@@ -87,6 +87,11 @@ export interface CombatSettings {
    * so only escape when it clears melee, and keep points in reserve.
    */
   tackleAware: boolean
+  /**
+   * Cast each spell once per enemy in range rather than emptying the combo on
+   * a single one. With one enemy in range this plays the combo as written.
+   */
+  spreadCasts: boolean
 }
 
 export type CombatPositioning = 'keep-distance' | 'close-in'

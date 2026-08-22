@@ -14,6 +14,7 @@ import {
   getSpellRange,
   isFightStarted,
   pickTarget,
+  targetsInRange,
   setFightReady
 } from '@/scripts/fight-bridge'
 import { requestMoveToCell } from '@/scripts/game-bridge'
@@ -405,31 +406,49 @@ export function initCombatAi(
         continue
       }
 
-      const target = pickTarget(gameWindow, settings.targetStrategy)
-      if (!target || target.cellId === null) {
-        log('No reachable target, stopping the combo')
+      const { range } = rangeFor(settings, spell)
+
+      // One cast each when several enemies are within reach, so a turn spreads
+      // over the group instead of emptying itself on one target. With a single
+      // enemy in reach this plays the combo as written.
+      const reachable = targetsInRange(gameWindow, range, settings.targetStrategy)
+      const targets =
+        settings.spreadCasts && reachable.length > 1
+          ? reachable
+          : [reachable[0] ?? pickTarget(gameWindow, settings.targetStrategy)].filter(
+              (fighter): fighter is NonNullable<typeof fighter> => !!fighter
+            )
+
+      if (targets.length === 0) {
+        log('No target left, stopping the combo')
         break
       }
 
-      try {
-        castSpell(gameWindow, spell.id, target.cellId)
-        const me = getMyFighter(gameWindow)
-        const distance =
-          me?.cellId !== null && me?.cellId !== undefined && target.cellId !== null
-            ? cellDistance(me.cellId, target.cellId)
-            : null
-        log(
-          `Cast ${spell.name || spell.id} on ${target.name ?? target.id}` +
-            (distance !== null ? ` from ${distance} cell(s)` : '')
-        )
-      } catch (err) {
-        log(`Cast failed: ${err instanceof Error ? err.message : String(err)}`)
-        break
-      }
+      for (const target of targets) {
+        if (!stillOurTurn() || !isFightStarted(gameWindow)) return
+        if (target.cellId === null) continue
 
-      await humanSleep(settings.castDelayMs)
-      // Let the spell animation play out before the next action.
-      await waitForIdle()
+        try {
+          castSpell(gameWindow, spell.id, target.cellId)
+          const me = getMyFighter(gameWindow)
+          const distance =
+            me?.cellId !== null && me?.cellId !== undefined
+              ? cellDistance(me.cellId, target.cellId)
+              : null
+          log(
+            `Cast ${spell.name || spell.id} on ${target.name ?? target.id}` +
+              (distance !== null ? ` from ${distance} cell(s)` : '') +
+              (targets.length > 1 ? ` (${targets.length} enemies in range)` : '')
+          )
+        } catch (err) {
+          log(`Cast failed: ${err instanceof Error ? err.message : String(err)}`)
+          break
+        }
+
+        await humanSleep(settings.castDelayMs)
+        // Let the spell animation play out before the next action.
+        await waitForIdle()
+      }
     }
 
     if (!stillOurTurn()) return

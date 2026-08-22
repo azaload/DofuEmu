@@ -405,6 +405,15 @@ export function CombatScreen() {
             </div>
           </Row>
         )}
+        <Row
+          label="Spread the casts"
+          desc="One cast per enemy in range, instead of emptying the combo on one"
+        >
+          <Toggle
+            checked={combat.spreadCasts}
+            onChange={(v) => setCombatSettings({ spreadCasts: v })}
+          />
+        </Row>
         <Row label="Close end screens" desc="Dismiss the fight results and level-up windows">
           <Toggle
             checked={combat.closeEndScreens}
