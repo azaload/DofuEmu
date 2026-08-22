@@ -1951,6 +1951,77 @@ async function testAntiIdle() {
   console.log('ok - stays connected while idle')
 }
 
+async function testChallengeRules() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-state.ts'))
+  const { deriveChallengeRules } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-state.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/turn-plan.ts'))
+  const { validatePlan } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'turn-plan.js')).href}?t=${Date.now()}`
+  )
+
+  // The wording is what says what a challenge forbids, in either language.
+  const still = deriveChallengeRules([
+    { id: 1, name: 'Statique', description: 'Ne pas se déplacer durant le combat', targetId: null }
+  ])
+  assert.strictEqual(still.noMove, true, 'a static challenge forbids moving')
+
+  const focus = deriveChallengeRules([
+    { id: 2, name: 'Focus', description: 'Attaquer un seul ennemi', targetId: 21 }
+  ])
+  assert.strictEqual(focus.singleTarget, true, 'a focus challenge allows one target')
+  assert.strictEqual(focus.focusTargetId, 21, 'and names it when the fight does')
+
+  const english = deriveChallengeRules([
+    { id: 3, name: 'Untouchable', description: 'Do not move and stay away from melee', targetId: null }
+  ])
+  assert.strictEqual(english.noMove, true, 'English wording works too')
+  assert.strictEqual(english.avoidMelee, true, 'melee is spotted')
+
+  assert.strictEqual(
+    deriveChallengeRules([{ id: 4, name: 'Riche', description: 'Gagner plus de kamas', targetId: null }]).noMove,
+    false,
+    'an unrelated challenge constrains nothing'
+  )
+
+  // And the plan is held to them, whatever the model asked for.
+  const state = {
+    turn: 1,
+    me: { id: 7, name: 'me', cellId: 280, life: 100, maxLife: 100, ap: 6, mp: 3, tackledBy: [], canMove: true },
+    spells: [{ id: 161, name: 'Bolt', range: 6, minRange: 0, targets: [20, 21], self: false, push: false }],
+    enemies: [
+      { id: 20, name: 'A', cellId: 294, x: 0, y: 0, life: 100, maxLife: 100, distance: 1, lineOfSight: true, aligned: true },
+      { id: 21, name: 'B', cellId: 300, x: 0, y: 0, life: 100, maxLife: 100, distance: 2, lineOfSight: true, aligned: true }
+    ],
+    allies: [],
+    cells: [{ cellId: 266, cost: 1, enemyDistance: 2, sees: [20], alignedWith: [] }],
+    challenges: [{ id: 2, name: 'Focus', description: 'Attaquer un seul ennemi', targetId: 21 }],
+    challengeRules: { noMove: true, singleTarget: true, avoidMelee: false, focusTargetId: 21 }
+  }
+
+  const { actions, rejected } = validatePlan(
+    {
+      actions: [
+        { type: 'move', cellId: 266 },
+        { type: 'cast', spellId: 161, targetId: 20 },
+        { type: 'cast', spellId: 161, targetId: 21 }
+      ]
+    },
+    state
+  )
+
+  assert.deepStrictEqual(
+    actions,
+    [{ type: 'cast', spellId: 161, targetId: 21 }],
+    'only the cast the challenges allow survives'
+  )
+  assert.ok(rejected.some((line) => line.includes('forbids moving')), 'the move is refused')
+  assert.ok(rejected.some((line) => line.includes('names another target')), 'the wrong target is refused')
+
+  console.log('ok - challenges constrain the turn')
+}
+
 async function testTurnPlanValidation() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/turn-plan.ts'))
   const { validatePlan, parsePlan } = await import(
@@ -1959,10 +2030,10 @@ async function testTurnPlanValidation() {
 
   const state = {
     turn: 1,
-    me: { id: 7, name: 'Tester', cellId: 280, life: 500, maxLife: 500, ap: 6, mp: 3 },
+    me: { id: 7, name: 'Tester', cellId: 280, life: 500, maxLife: 500, ap: 6, mp: 3, tackledBy: [], canMove: true },
     spells: [
-      { id: 161, name: 'Bolt', range: 6, minRange: 0, targets: [20], self: false },
-      { id: 100, name: 'Buff', range: 0, minRange: 0, targets: [], self: true }
+      { id: 161, name: 'Bolt', range: 6, minRange: 0, targets: [20], self: false, push: false },
+      { id: 100, name: 'Buff', range: 0, minRange: 0, targets: [], self: true, push: false }
     ],
     enemies: [
       { id: 20, name: 'Close', cellId: 294, x: 0, y: 0, life: 100, maxLife: 200, distance: 1, lineOfSight: true, aligned: true },
@@ -1973,7 +2044,8 @@ async function testTurnPlanValidation() {
       { cellId: 266, cost: 1, enemyDistance: 2, sees: [20], alignedWith: [20] },
       { cellId: 252, cost: 2, enemyDistance: 3, sees: [20], alignedWith: [] }
     ],
-    challenges: []
+    challenges: [],
+    challengeRules: { noMove: false, singleTarget: false, avoidMelee: false, focusTargetId: null }
   }
 
   const { actions, rejected } = validatePlan(
@@ -2197,6 +2269,7 @@ async function main() {
   await testModelBrain()
   await testPushBreaksMelee()
   await testAntiIdle()
+  await testChallengeRules()
   await testTurnPlanValidation()
   await testConnectionCheck()
   await testTemplatesCompile()

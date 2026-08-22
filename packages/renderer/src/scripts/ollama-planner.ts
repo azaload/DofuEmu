@@ -36,10 +36,27 @@ export interface PlannerResult {
 
 function challengeHint(state: FightState, preferChallenges: boolean): string {
   if (!preferChallenges || state.challenges.length === 0) return ''
-  const named = state.challenges
-    .map((challenge) => challenge.name ?? `#${challenge.id}`)
-    .join(', ')
-  return `\nThe fight runs these challenges: ${named}. Play the turn so they hold, even at the cost of damage.`
+
+  const described = state.challenges
+    .map((challenge) => {
+      const name = challenge.name ?? `#${challenge.id}`
+      const description = challenge.description ? ` — ${challenge.description}` : ''
+      const target = challenge.targetId !== null ? ` (concerns fighter ${challenge.targetId})` : ''
+      return `- ${name}${description}${target}`
+    })
+    .join('\n')
+
+  const rules = state.challengeRules
+  const derived = [
+    rules.noMove ? 'do not move at all' : null,
+    rules.singleTarget ? 'hit a single enemy this turn' : null,
+    rules.focusTargetId !== null ? `only fighter ${rules.focusTargetId} may be hit` : null,
+    rules.avoidMelee ? 'do not end the turn next to an enemy' : null
+  ].filter(Boolean)
+
+  return `\nThe fight runs these challenges:\n${described}\nPlay the turn so they hold, even at the cost of damage.${
+    derived.length > 0 ? `\nThat means: ${derived.join('; ')}.` : ''
+  }`
 }
 
 export function buildPrompt(state: FightState, preferChallenges: boolean): string {

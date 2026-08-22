@@ -58,8 +58,44 @@ export interface StateCell {
 export interface FightChallenge {
   id: number
   name: string | null
+  /** What the game says the challenge asks for, when it is on screen. */
+  description: string | null
   /** Fighter the challenge points at, when it names one. */
   targetId: number | null
+}
+
+/**
+ * What a challenge forbids, read from its wording.
+ *
+ * Only rules that can be enforced without guessing are derived; everything
+ * else is left to the model, which gets the full text.
+ */
+export interface ChallengeRules {
+  /** Moving at all breaks a challenge. */
+  noMove: boolean
+  /** Only one enemy may be hit this turn. */
+  singleTarget: boolean
+  /** Ending the turn next to an enemy breaks a challenge. */
+  avoidMelee: boolean
+  /** The fighter a challenge points at, when one does. */
+  focusTargetId: number | null
+}
+
+const NO_MOVE = /(ne pas (se )?d[ée]placer|sans (se )?d[ée]placer|statique|immobile|do not move|no move|stand still)/i
+const SINGLE_TARGET = /(un seul (ennemi|adversaire|monstre)|une seule cible|single target|only one (enemy|target)|focus)/i
+const NO_MELEE = /(corps [àa] corps|au contact|melee|adjacent)/i
+
+export function deriveChallengeRules(challenges: FightChallenge[]): ChallengeRules {
+  const text = challenges
+    .map((challenge) => `${challenge.name ?? ''} ${challenge.description ?? ''}`)
+    .join(' ')
+
+  return {
+    noMove: NO_MOVE.test(text),
+    singleTarget: SINGLE_TARGET.test(text),
+    avoidMelee: NO_MELEE.test(text),
+    focusTargetId: challenges.find((challenge) => challenge.targetId !== null)?.targetId ?? null
+  }
 }
 
 export interface FightState {
@@ -83,6 +119,8 @@ export interface FightState {
   /** Best cells to stand on, cheapest first, capped for the prompt. */
   cells: StateCell[]
   challenges: FightChallenge[]
+  /** Constraints read from the challenges, already applied to what is offered. */
+  challengeRules: ChallengeRules
 }
 
 const MAX_CELLS = 12
@@ -114,7 +152,14 @@ function rangeOf(spell: SpellInfo, configured: CombatSpell | undefined, fallback
 
 export function buildFightState(
   gameWindow: DofusWindow,
-  options: { turn: number; combo: CombatSpell[]; fallbackRange: number; tackleAware?: boolean }
+  options: {
+    turn: number
+    combo: CombatSpell[]
+    fallbackRange: number
+    tackleAware?: boolean
+    /** Challenges captured from the fight messages, when the caller has them. */
+    challenges?: FightChallenge[]
+  }
 ): FightState {
   const me = getMyFighter(gameWindow)
   const from = me?.cellId ?? null
@@ -189,6 +234,8 @@ export function buildFightState(
 
   const tackledBy = from === null ? [] : tacklingEnemies(enemies, from).map((enemy) => enemy.id)
   const held = options.tackleAware !== false && tackledBy.length > 0
+  const challenges = options.challenges ?? readChallenges(gameWindow)
+  const rules = deriveChallengeRules(challenges)
 
   return {
     turn: options.turn,
@@ -201,13 +248,14 @@ export function buildFightState(
       ap: me?.ap ?? null,
       mp: me?.mp ?? null,
       tackledBy,
-      canMove: !held && (me?.mp ?? 0) > 0
+      canMove: !held && !rules.noMove && (me?.mp ?? 0) > 0
     },
     spells,
     enemies: enemies.map((enemy) => describe(gameWindow, from, enemy)),
     allies: allies.map((ally) => describe(gameWindow, from, ally)),
-    cells,
-    challenges: readChallenges(gameWindow)
+    cells: rules.noMove ? [] : cells,
+    challenges,
+    challengeRules: rules
   }
 }
 
@@ -238,6 +286,12 @@ export function readChallenges(gameWindow: DofusWindow): FightChallenge[] {
         return {
           id,
           name: typeof dict.name === 'string' ? dict.name : null,
+          description:
+            typeof dict.description === 'string'
+              ? dict.description
+              : typeof dict.desc === 'string'
+                ? dict.desc
+                : null,
           targetId: typeof dict.targetId === 'number' ? dict.targetId : null
         }
       })
@@ -247,4 +301,36 @@ export function readChallenges(gameWindow: DofusWindow): FightChallenge[] {
   }
 
   return []
+}
+
+/**
+ * Challenge names and wording as the game shows them.
+ *
+ * The protocol carries ids only, so the text comes from the panel on screen —
+ * that is what tells a model what a challenge actually asks for.
+ */
+export function readChallengeTexts(gameWindow: DofusWindow): Array<{ name: string; description: string | null }> {
+  const found: Array<{ name: string; description: string | null }> = []
+
+  try {
+    for (const element of gameWindow.document.querySelectorAll('.challenge, .challengeSlot, .challengeIcon, [class*="hallenge"]')) {
+      const host = element as HTMLElement
+      if (host.offsetParent === null) continue
+
+      const name = (host.querySelector('.title, .name, .challengeName') as HTMLElement | null)?.innerText
+      const description = (host.querySelector('.description, .desc, .challengeDescription') as HTMLElement | null)?.innerText
+      const whole = host.innerText ?? host.textContent ?? ''
+
+      const label = (name ?? whole).trim().slice(0, 60)
+      if (label.length === 0) continue
+      if (found.some((entry) => entry.name === label)) continue
+
+      found.push({
+        name: label,
+        description: (description ?? (name ? whole : null))?.trim().slice(0, 200) ?? null
+      })
+    }
+  } catch {}
+
+  return found
 }

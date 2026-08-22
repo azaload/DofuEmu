@@ -1,6 +1,11 @@
 import type { CombatSettings, CombatSpell } from '@dofemu/shared'
 import { closeUiPopups } from '@/scripts/ui-bridge'
-import { buildFightState } from '@/scripts/fight-state'
+import {
+  buildFightState,
+  deriveChallengeRules,
+  readChallengeTexts,
+  type FightChallenge
+} from '@/scripts/fight-state'
 import { planTurnWithOllama } from '@/scripts/ollama-planner'
 import {
   areCellsAligned,
@@ -111,6 +116,8 @@ export function initCombatAi(
   let turnPlayable = false
   /** Animation sequences in flight; acting during one wedges the client. */
   let sequenceDepth = 0
+  /** Challenges of the current fight, from its messages and its panel. */
+  let challenges: FightChallenge[] = []
 
   const log = (message: string) => callbacks.onLog?.(`[${tabId.slice(0, 6)}] ${message}`)
 
@@ -367,8 +374,17 @@ export function initCombatAi(
       turn,
       combo,
       fallbackRange: settings.defaultSpellRange,
-      tackleAware: settings.tackleAware
+      tackleAware: settings.tackleAware,
+      challenges: withChallengeTexts()
     })
+
+    if (state.challenges.length > 0) {
+      log(
+        `Challenges: ${state.challenges
+          .map((challenge) => challenge.name ?? `#${challenge.id}`)
+          .join(', ')}`
+      )
+    }
 
     let result
     try {
@@ -531,10 +547,13 @@ export function initCombatAi(
       return
     }
 
+    const rules = deriveChallengeRules(withChallengeTexts())
+    if (rules.noMove) log('A challenge forbids moving: casting from here')
+
     await breakMeleeWithPush(settings, combo)
     if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
-    await positionForTurn(settings, combo)
+    if (!rules.noMove) await positionForTurn(settings, combo)
     if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
     for (const spell of combo) {
@@ -565,10 +584,18 @@ export function initCombatAi(
       // over the group instead of emptying itself on one target. With a single
       // enemy in reach this plays the combo as written.
       const reachable = targetsInRange(gameWindow, range, settings.targetStrategy)
+
+      // A challenge naming one enemy, or asking for a single target, overrides
+      // spreading the casts.
+      const focused = rules.focusTargetId
+        ? reachable.filter((enemy) => enemy.id === rules.focusTargetId)
+        : reachable
+      const allowed = rules.singleTarget || rules.focusTargetId ? focused.slice(0, 1) : focused
+
       const targets =
-        settings.spreadCasts && reachable.length > 1
-          ? reachable
-          : [reachable[0] ?? pickTarget(gameWindow, settings.targetStrategy)].filter(
+        settings.spreadCasts && !rules.singleTarget && !rules.focusTargetId && allowed.length > 1
+          ? allowed
+          : [allowed[0] ?? pickTarget(gameWindow, settings.targetStrategy)].filter(
               (fighter): fighter is NonNullable<typeof fighter> => !!fighter
             )
 
@@ -657,6 +684,45 @@ export function initCombatAi(
     turnPlayable = true
   }
 
+  /**
+   * Challenges arrive as ids on the wire; the wording lives in the panel. Both
+   * are kept, since the text is what says what a challenge forbids.
+   */
+  const onChallengeInfo = (...args: unknown[]) => {
+    const message = args[0] as { challengeId?: number; targetId?: number }
+    if (typeof message?.challengeId !== 'number') return
+    if (challenges.some((challenge) => challenge.id === message.challengeId)) return
+
+    challenges = [
+      ...challenges,
+      {
+        id: message.challengeId,
+        name: null,
+        description: null,
+        targetId: typeof message.targetId === 'number' ? message.targetId : null
+      }
+    ]
+  }
+
+  /** Fills the captured challenges with the wording currently on screen. */
+  const withChallengeTexts = (): FightChallenge[] => {
+    const texts = readChallengeTexts(gameWindow)
+    if (texts.length === 0) return challenges
+    if (challenges.length === 0) {
+      return texts.map((text, index) => ({
+        id: -1 - index,
+        name: text.name,
+        description: text.description,
+        targetId: null
+      }))
+    }
+    return challenges.map((challenge, index) => ({
+      ...challenge,
+      name: challenge.name ?? texts[index]?.name ?? null,
+      description: challenge.description ?? texts[index]?.description ?? null
+    }))
+  }
+
   const onSequenceStart = () => {
     sequenceDepth += 1
   }
@@ -693,6 +759,7 @@ export function initCombatAi(
     turnPlayable = false
     sequenceDepth = 0
     turnToken += 1
+    challenges = []
     const settings = callbacks.getSettings()
     if (disposed || !settings.enabled || !settings.autoReady) return
 
@@ -711,6 +778,7 @@ export function initCombatAi(
     addListener(source, 'GameFightTurnStartMessage', onTurnStart, cleanups)
     addListener(source, 'GameFightTurnEndMessage', onTurnEnd, cleanups)
     addListener(source, 'GameFightTurnStartPlayingMessage', onTurnPlaying, cleanups)
+    addListener(source, 'ChallengeInfoMessage', onChallengeInfo, cleanups)
     addListener(source, 'SequenceStartMessage', onSequenceStart, cleanups)
     addListener(source, 'SequenceEndMessage', onSequenceEnd, cleanups)
     addListener(source, 'GameFightStartingMessage', onFightStart, cleanups)
