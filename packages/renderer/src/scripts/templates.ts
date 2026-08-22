@@ -111,7 +111,10 @@ const FILTER = { minLevel: 1, maxLevel: 200, maxSize: 8 }
 const FIGHT_TIMEOUT = 1800000
 
 for (const spot of MAPS) {
-  if (!api.isConnected()) api.stop('disconnected')
+  if (!api.isConnected()) {
+    api.warn('Not in game yet, waiting for the character to be ready')
+    await api.waitUntil(() => api.isConnected(), { timeout: 300000, interval: 3000 })
+  }
 
   if (api.isInFight()) {
     await api.fight.waitForFightEnd({ timeout: FIGHT_TIMEOUT, interval: 2000 })

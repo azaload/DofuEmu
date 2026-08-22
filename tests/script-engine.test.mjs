@@ -630,6 +630,52 @@ async function testApproachWithMp() {
   console.log('ok - approach with MP')
 }
 
+async function testConnectionCheck() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/game-bridge.ts'))
+  const { isConnected } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'game-bridge.js')).href}?t=${Date.now()}`
+  )
+
+  const inGame = {
+    gui: { playerData: { characterBaseInformations: { name: 'Romikie' } } },
+    isoEngine: { mapRenderer: { mapId: 1000, map: {} } }
+  }
+
+  assert.strictEqual(isConnected(inGame), true, 'being in game is enough, with no indicator')
+
+  assert.strictEqual(
+    isConnected({ ...inGame, gui: { ...inGame.gui, isConnected: () => false } }),
+    true,
+    'a character on a map wins over a build-specific false'
+  )
+
+  assert.strictEqual(
+    isConnected({ gui: { isConnected: () => false }, isoEngine: {} }),
+    false,
+    'no character and an explicit false is disconnected'
+  )
+
+  assert.strictEqual(
+    isConnected({ gui: {}, isoEngine: {} }),
+    true,
+    'a window with no indicator at all is treated as usable'
+  )
+
+  assert.strictEqual(
+    isConnected({ gui: {}, isoEngine: {}, dofus: { connectionManager: { connected: true } } }),
+    true,
+    'the connection manager flag is honoured'
+  )
+
+  assert.strictEqual(
+    isConnected({ gui: { isConnected: true }, isoEngine: {} }),
+    true,
+    'isConnected as a boolean property is honoured'
+  )
+
+  console.log('ok - connection check')
+}
+
 async function testTemplatesCompile() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/templates.ts'))
   const { SCRIPT_TEMPLATES } = await import(
@@ -738,6 +784,7 @@ async function main() {
   await testClosePopups(ScriptRunner)
   await testTurnCombos()
   await testApproachWithMp()
+  await testConnectionCheck()
   await testTemplatesCompile()
 
   console.log('\nAll script engine tests passed.')

@@ -145,12 +145,45 @@ export function isInFight(gameWindow: DofusWindow): boolean {
   return false
 }
 
-export function isConnected(gameWindow: DofusWindow): boolean {
-  try {
-    return gameWindow.gui?.isConnected?.() === true
-  } catch {
-    return false
+function readFlag(owner: Dict | null, key: string): boolean | null {
+  const value = owner?.[key]
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'function') {
+    try {
+      const result = (value as () => unknown).call(owner)
+      return typeof result === 'boolean' ? result : null
+    } catch {
+      return null
+    }
   }
+  return null
+}
+
+/**
+ * Whether the character is in game.
+ *
+ * `gui.isConnected` is not exposed the same way on every build — it can be a
+ * method, a boolean, or missing entirely — so knowing who we are and where we
+ * stand is taken as the answer first. A missing indicator used to read as
+ * "disconnected", which stopped scripts on their first line.
+ */
+export function isConnected(gameWindow: DofusWindow): boolean {
+  const gui = asDict(gameWindow.gui)
+
+  if (getCharacter(gameWindow).name !== null && getMapInfo(gameWindow).id !== null) return true
+
+  const indicators = [
+    readFlag(gui, 'isConnected'),
+    readFlag(asDict(gui?.playerData), 'isConnected'),
+    readFlag(asDict(gameWindow.dofus?.connectionManager), 'connected'),
+    readFlag(asDict(gameWindow.dofus?.connectionManager), 'isConnected')
+  ]
+
+  if (indicators.some((flag) => flag === true)) return true
+  if (indicators.some((flag) => flag === false)) return false
+
+  // No indicator at all: the game window exists, so treat it as usable.
+  return true
 }
 
 function getMapRenderer(gameWindow: DofusWindow): Dict | null {
