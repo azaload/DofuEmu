@@ -236,10 +236,9 @@ export interface PositionOptions {
   /** Keep as far from enemies as the range allows, or walk right up to them. */
   positioning?: CombatPositioning
   /**
-   * Leaving a cell held by a monster is tackled: it costs more than the
-   * distance walked, and can cost action points too. With this on, an escape
-   * is only planned when it clears melee entirely, and one point is held back
-   * to pay for it.
+   * Never move while a monster is in contact. Leaving a held cell is tackled:
+   * it costs more than the distance walked, can cost action points, and often
+   * fails outright — so the turn is spent casting instead.
    */
   tackleAware?: boolean
 }
@@ -301,12 +300,12 @@ export function findPositionCell(
   const to = target.cellId
 
   const enemies = getEnemies(gameWindow)
-  const tackleAware = options.tackleAware !== false
-  const tackled = tacklingEnemies(enemies, from).length > 0
-  // Escaping a tackle eats into the movement points, so plan without the last
-  // one rather than counting on a move that dies halfway. With a single point
-  // there is nothing left to walk with once the tackle is paid.
-  const budget = tackleAware && tackled ? movementPoints - 1 : movementPoints
+  // A monster in contact holds the character: leaving is tackled, costs more
+  // than the distance walked and often fails outright, so no move is planned
+  // at all and the turn goes to casting.
+  if (options.tackleAware !== false && tacklingEnemies(enemies, from).length > 0) return null
+
+  const budget = movementPoints
 
   const occupied = new Set(
     getFighters(gameWindow)
@@ -335,14 +334,6 @@ export function findPositionCell(
     if (cellId === from || occupied.has(cellId)) continue
     if (cellDistance(from, cellId) > budget) continue
     if (!isCellWalkable(gameWindow, cellId)) continue
-
-    // A move that leaves us in contact pays the tackle for nothing.
-    if (tackleAware && tackled && keepDistance) {
-      const candidate = score(cellId)
-      if (candidate.distanceToClosestEnemy <= 1) continue
-      candidates.push(candidate)
-      continue
-    }
 
     candidates.push(score(cellId))
   }

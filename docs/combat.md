@@ -78,8 +78,8 @@ still walking is what made a character cross three cells one step at a time.
 Two modes:
 
 - **Keep your distance** (default) — stand as far from every enemy as the spells still
-  allow. A monster in contact is a reason to step back, not to trade blows: the AI moves
-  out of melee and casts from range.
+  allow, so the character fights at range instead of drifting into melee. Once a monster
+  *is* in contact, see **Tackle** below: the AI stays and casts.
 - **Close in on the target** — walk up to the target instead, for melee builds.
 
 The range used for the decision is the **shortest** range in the combo, so every spell can
@@ -91,29 +91,17 @@ a column with the enemy, for line-only spells.
 
 ### Tackle
 
-Leaving a cell a monster stands next to is tackled: it costs more movement points than the
-distance walked, and can cost action points as well — enough to lose the combo. **Account
-for tackle** (on by default) takes that into account:
+A monster standing next to the character holds it. Leaving that cell is tackled: it costs
+more movement points than the distance walked, can cost action points, and often fails
+outright — the character ends up still in contact, with nothing left to cast.
 
-- An escape is only planned when it **clears melee entirely**. Paying the tackle to end up
-  still in contact wastes the turn, so the AI stays and casts instead.
-- One movement point is **held back** to pay for the escape, so a plan does not die
-  halfway. With a single point left there is nothing to walk with once the tackle is paid,
-  and the AI does not try.
-- What the escape really cost is measured afterwards and written to the log —
-  `Tackled on the way out: 3 MP for 1 cell(s), and 2 AP lost` — along with
-  `Still in contact after the move` when the monster kept its hold.
+**Never move in contact** (on by default) makes the rule absolute: as soon as one enemy is
+in contact, **no move is planned at all** and the whole turn goes to casting, whatever the
+positioning mode and however many movement points are left. The log says so:
+`Held by 2 monster(s) in contact: not moving, casting from here`.
 
-The tackle roll itself depends on lock and dodge stats the client does not always expose,
-so it is never predicted: the AI plans conservatively and reports what happened.
-
-When nothing brings the target in range, both modes close as much distance as the movement
-points allow rather than standing still. Cells occupied by other fighters are skipped, and a
-walk the engine cuts short — a blocked path, a monster in the way — is reported in the
-activity log with where the character actually stopped.
-
-Distances are grid distances: obstacles and the real path length are not simulated, so the
-move is a best effort.
+Turn it off only if you want the AI to attempt escapes; it will then place itself as it
+would out of melee, and report what the tackle really cost.
 
 ## Target strategies
 

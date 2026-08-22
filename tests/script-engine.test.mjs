@@ -986,15 +986,16 @@ async function testKitingAndSingleMove() {
     onLog: (message) => logs.push(message)
   })
 
-  // A melee monster right next to us, with a spell that reaches 5 cells:
-  // the AI should back off and still be able to cast.
+  // An enemy three cells away, with a spell that reaches five: the kiting AI
+  // should back off — while staying able to cast — rather than stand still.
   const myCell = 280
-  const meleeCell = 294
+  const enemyCell = 322
   state.fighters[0].data.disposition.cellId = myCell
   gameWindow.isoEngine.actorManager.userActor.cellId = myCell
-  state.fighters[1].data.disposition.cellId = meleeCell
-  state.fighters[2].data.disposition.cellId = meleeCell
-  assert.strictEqual(cellDistance(myCell, meleeCell), 1, 'the monster starts in contact')
+  state.fighters[1].data.disposition.cellId = enemyCell
+  state.fighters[2].data.disposition.cellId = enemyCell
+  const startDistance = cellDistance(myCell, enemyCell)
+  assert.ok(startDistance > 1 && startDistance < 5, 'the enemy starts in range but not in contact')
 
   state.startTurn(7)
   await new Promise((resolve) => setTimeout(resolve, 500))
@@ -1002,13 +1003,10 @@ async function testKitingAndSingleMove() {
   assert.strictEqual(state.moves.length, 1, 'exactly one move is requested for the turn')
   const landing = state.moves[0]
   assert.ok(
-    cellDistance(landing, meleeCell) > 1,
-    `the AI backs away from the melee monster (landed ${cellDistance(landing, meleeCell)} cells away)`
+    cellDistance(landing, enemyCell) > startDistance,
+    'the AI backs away from the enemy'
   )
-  assert.ok(
-    cellDistance(landing, meleeCell) <= 5,
-    'it stays within casting range'
-  )
+  assert.ok(cellDistance(landing, enemyCell) <= 5, 'it stays within casting range')
   assert.ok(logs.some((line) => line.includes('keeping')), 'the intent is logged')
   assert.ok(
     state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
@@ -1089,9 +1087,9 @@ async function testTackleAwareness() {
   state.startTurn(7)
   await new Promise((resolve) => setTimeout(resolve, 500))
 
-  assert.strictEqual(state.moves.length, 0, 'no pointless escape with a single MP')
+  assert.strictEqual(state.moves.length, 0, 'no move at all while held in contact')
   assert.ok(
-    logs.some((line) => line.includes('no escape clears melee')),
+    logs.some((line) => line.includes('not moving, casting from here')),
     'the reason is logged'
   )
   assert.ok(
@@ -1099,7 +1097,7 @@ async function testTackleAwareness() {
     'the spell is cast from where we stand'
   )
 
-  // 2. With 4 MP the escape is planned on 3, one point held back for the tackle.
+  // 2. Even with plenty of MP, a monster in contact means no move at all.
   state.mpPerTurn = 4
   state.moves.length = 0
   state.sent.length = 0
@@ -1112,14 +1110,31 @@ async function testTackleAwareness() {
   state.startTurn(7)
   await new Promise((resolve) => setTimeout(resolve, 600))
 
-  assert.strictEqual(state.moves.length, 1, 'one escape move')
-  const landing = state.moves[0]
-  assert.ok(cellDistance(myCell, landing) <= 3, 'a point is kept in reserve for the tackle')
-  assert.ok(cellDistance(landing, meleeCell) > 1, 'the escape clears melee')
+  assert.strictEqual(state.moves.length, 0, 'never break away from a monster in contact')
   assert.ok(
-    logs.some((line) => line.includes('breaking away from')),
-    'breaking away is announced'
+    logs.some((line) => line.includes('not moving, casting from here')),
+    'staying put is announced'
   )
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
+    'the turn is spent casting'
+  )
+
+  // 3. Out of contact, the AI positions itself as usual.
+  state.moves.length = 0
+  state.sent.length = 0
+  state.fighters[1].data.disposition.cellId = 400
+  state.fighters[2].data.disposition.cellId = 400
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 600))
+
+  assert.strictEqual(state.moves.length, 1, 'with no one in contact it still moves')
 
   dispose()
   console.log('ok - tackle awareness')

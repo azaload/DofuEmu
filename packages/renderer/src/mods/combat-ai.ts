@@ -253,10 +253,8 @@ export function initCombatAi(
     })
 
     if (!move) {
-      if (tacklers.length > 0 && settings.positioning === 'keep-distance') {
-        log(
-          `Held by ${tacklers.length} monster(s) in contact: no escape clears melee with ${movementPoints} MP, casting from here`
-        )
+      if (tacklers.length > 0 && settings.tackleAware) {
+        log(`Held by ${tacklers.length} monster(s) in contact: not moving, casting from here`)
       } else if (distance > range) {
         log(`Target ${distance} cell(s) away, range ${range} (${source}), nowhere better within ${movementPoints} MP`)
       }

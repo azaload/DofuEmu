@@ -377,8 +377,8 @@ export function CombatScreen() {
         )}
         {combat.approachEnemies && (
           <Row
-            label="Account for tackle"
-            desc="Only break away when it clears melee, and keep a point to pay for it"
+            label="Never move in contact"
+            desc="A monster next to you holds it: the turn goes to casting, not to a tackle"
           >
             <Toggle
               checked={combat.tackleAware}
