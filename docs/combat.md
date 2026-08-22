@@ -8,14 +8,20 @@ Configure it in **Settings → Combat**. `Ctrl+Shift+F` toggles it on and off.
 ## How a turn is played
 
 1. A fight starts — if **Ready up automatically** is on, the AI sends the ready signal.
-2. Your character's turn begins. The AI picks the combo for that turn number (see below)
-   and waits **turn start delay** milliseconds.
+2. Your character's turn begins. The AI waits for the server to declare the turn playable
+   and for any animation still running, picks the combo for that turn number (see below),
+   then waits **turn start delay** milliseconds.
 3. For each spell of the combo, in order: pick a target with the configured strategy,
    walk closer if it is out of range, cast, then wait **cast delay** milliseconds.
 4. Once the combo is done, the turn is passed (unless **End turn after the combo** is off).
 
 Settings are read at the start of every turn, so editing the combo mid-fight applies from
 the next turn — nothing to restart.
+
+Every action waits for the client to be idle: the AI never casts or passes the turn while
+an animation sequence is playing, and never sends anything belonging to a turn that has
+already moved on. Acting too early is what freezes a fight — the client keeps waiting for
+a handshake that never comes.
 
 ## End-of-fight screens
 

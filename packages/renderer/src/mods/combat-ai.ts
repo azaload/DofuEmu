@@ -54,6 +54,12 @@ const DISMISS_DELAYS_MS = [800, 2000, 4500]
 const MOVE_TIMEOUT_MS = 6000
 const MOVE_POLL_MS = 200
 
+/** How long to wait for the server to declare our turn playable. */
+const TURN_PLAYABLE_TIMEOUT_MS = 6000
+/** How long to wait for the running animation sequence to finish. */
+const SEQUENCE_TIMEOUT_MS = 8000
+const IDLE_POLL_MS = 100
+
 function addListener(
   source: EventSourceLike | undefined,
   event: string,
@@ -78,16 +84,44 @@ export function initCombatAi(
   const gui = gameWindow.gui as unknown as EventSourceLike | undefined
 
   let disposed = false
-  let playing = false
   /** Fighter whose turn start we last saw, to ignore duplicate emissions. */
   let lastTurnOwner: number | null = null
   /** Our own turn number in the current fight, starting at 1. */
   let myTurn = 0
+  /**
+   * Bumped on every turn boundary. Actions captured a token and stop when it
+   * changes, so nothing from a finished turn is sent late.
+   */
+  let turnToken = 0
+  /** Server said our turn can be played. */
+  let turnPlayable = false
+  /** Animation sequences in flight; acting during one wedges the client. */
+  let sequenceDepth = 0
 
   const log = (message: string) => callbacks.onLog?.(`[${tabId.slice(0, 6)}] ${message}`)
 
   const sleep = (ms: number) =>
     new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, ms)))
+
+  /** Waits for `check` to hold, giving up after `timeout` so we never hang. */
+  const waitFor = async (check: () => boolean, timeout: number): Promise<boolean> => {
+    const deadline = Date.now() + timeout
+    while (!check()) {
+      if (disposed || Date.now() >= deadline) return false
+      await sleep(IDLE_POLL_MS)
+    }
+    return true
+  }
+
+  /** Waits for the running animation sequence to finish. */
+  const waitForIdle = async () => {
+    if (sequenceDepth <= 0) return
+    const idle = await waitFor(() => sequenceDepth <= 0, SEQUENCE_TIMEOUT_MS)
+    if (!idle) {
+      log('The animation sequence did not end in time, continuing')
+      sequenceDepth = 0
+    }
+  }
 
   const isMyTurn = (id: number | undefined) => {
     const myId = getMyFighterId(gameWindow)
@@ -155,11 +189,26 @@ export function initCombatAi(
     }
 
     await waitForMove(move.cellId)
+    await waitForIdle()
   }
 
-  const playTurn = async (turn: number) => {
+  const playTurn = async (turn: number, token: number) => {
     const settings = callbacks.getSettings()
     const { combo, label } = comboForTurn(settings, turn)
+    const stillOurTurn = () => !disposed && turnToken === token
+
+    // Acting before the server declares the turn playable is ignored at best,
+    // and wedges the fight at worst.
+    if (!turnPlayable) {
+      const ready = await waitFor(() => turnPlayable || !stillOurTurn(), TURN_PLAYABLE_TIMEOUT_MS)
+      if (!ready && stillOurTurn()) {
+        log('The turn was never announced as playable, acting anyway')
+      }
+    }
+    if (!stillOurTurn()) return
+
+    await waitForIdle()
+    if (!stillOurTurn()) return
 
     if (combo.length === 0) {
       log(`Turn ${turn}: ${label} is empty, passing`)
@@ -171,7 +220,7 @@ export function initCombatAi(
     await sleep(settings.turnStartDelayMs)
 
     for (const spell of combo) {
-      if (disposed || !isFightStarted(gameWindow)) return
+      if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
       // Spells flagged "on me" need no target and no approach.
       if (spell.self) {
@@ -188,6 +237,7 @@ export function initCombatAi(
           break
         }
         await sleep(settings.castDelayMs)
+        await waitForIdle()
         continue
       }
 
@@ -198,7 +248,7 @@ export function initCombatAi(
       }
 
       await approach(settings, spell, target.cellId)
-      if (disposed || !isFightStarted(gameWindow)) return
+      if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
       // The target may have been re-evaluated while moving.
       target = pickTarget(gameWindow, settings.targetStrategy) ?? target
@@ -213,10 +263,15 @@ export function initCombatAi(
       }
 
       await sleep(settings.castDelayMs)
+      // Let the spell animation play out before the next action.
+      await waitForIdle()
     }
 
-    if (disposed) return
+    if (!stillOurTurn()) return
     if (settings.endTurnAfterCombo) {
+      // Ending the turn mid-sequence leaves the client waiting forever.
+      await waitForIdle()
+      if (!stillOurTurn()) return
       finishTurn(gameWindow)
       log('Turn ended')
     }
@@ -231,26 +286,48 @@ export function initCombatAi(
     const duplicate = fighterId === lastTurnOwner
     lastTurnOwner = fighterId
 
-    if (disposed || playing || duplicate) return
+    if (duplicate) return
+
+    // A new turn: anything still running belongs to the previous one.
+    turnToken += 1
+    turnPlayable = false
+
+    if (disposed) return
     if (!callbacks.getSettings().enabled) return
     if (!isMyTurn(fighterId)) return
 
+    // A run left over from the previous turn stops on its own: it is bound to
+    // the token bumped above. Never skip a turn because of it.
     myTurn += 1
-    playing = true
-    playTurn(myTurn)
-      .catch((err) => log(`Turn failed: ${err instanceof Error ? err.message : String(err)}`))
-      .finally(() => {
-        playing = false
-      })
+    playTurn(myTurn, turnToken).catch((err) =>
+      log(`Turn failed: ${err instanceof Error ? err.message : String(err)}`)
+    )
   }
 
   const onTurnEnd = () => {
     lastTurnOwner = null
+    turnPlayable = false
+    turnToken += 1
+  }
+
+  const onTurnPlaying = () => {
+    turnPlayable = true
+  }
+
+  const onSequenceStart = () => {
+    sequenceDepth += 1
+  }
+
+  const onSequenceEnd = () => {
+    sequenceDepth = Math.max(0, sequenceDepth - 1)
   }
 
   const onFightEnd = () => {
     myTurn = 0
     lastTurnOwner = null
+    turnPlayable = false
+    sequenceDepth = 0
+    turnToken += 1
     if (disposed || !callbacks.getSettings().closeEndScreens) return
 
     for (const delay of DISMISS_DELAYS_MS) {
@@ -270,6 +347,9 @@ export function initCombatAi(
   const onFightStart = () => {
     myTurn = 0
     lastTurnOwner = null
+    turnPlayable = false
+    sequenceDepth = 0
+    turnToken += 1
     const settings = callbacks.getSettings()
     if (disposed || !settings.enabled || !settings.autoReady) return
     try {
@@ -281,6 +361,9 @@ export function initCombatAi(
   for (const source of [gui, connectionManager]) {
     addListener(source, 'GameFightTurnStartMessage', onTurnStart, cleanups)
     addListener(source, 'GameFightTurnEndMessage', onTurnEnd, cleanups)
+    addListener(source, 'GameFightTurnStartPlayingMessage', onTurnPlaying, cleanups)
+    addListener(source, 'SequenceStartMessage', onSequenceStart, cleanups)
+    addListener(source, 'SequenceEndMessage', onSequenceEnd, cleanups)
     addListener(source, 'GameFightStartingMessage', onFightStart, cleanups)
     addListener(source, 'GameFightEndMessage', onFightEnd, cleanups)
   }

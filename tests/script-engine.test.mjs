@@ -225,7 +225,15 @@ function createFakeGameWindow() {
     gameWindow.gui.fightManager.isFightStarted = true
     gameWindow.gui.playerData.isFighting = true
   }
-  state.startTurn = (fighterId) => state.emit('GameFightTurnStartMessage', { id: fighterId })
+  state.startTurn = (fighterId) => {
+    state.emit('GameFightTurnStartMessage', { id: fighterId })
+    state.emit('GameFightTurnStartPlayingMessage', { id: fighterId })
+  }
+  /** Turn start without the "you may play" message, to test the wait. */
+  state.startTurnPending = (fighterId) =>
+    state.emit('GameFightTurnStartMessage', { id: fighterId })
+  state.setPlayable = (fighterId) =>
+    state.emit('GameFightTurnStartPlayingMessage', { id: fighterId })
 
   return { gameWindow, state }
 }
@@ -732,6 +740,106 @@ async function testSelfCastAndLineUp() {
   console.log('ok - self cast and line-up approach')
 }
 
+async function testTurnSynchronisation() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Attack' }],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: false,
+    defaultSpellRange: 1,
+    preferLineUp: false
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  const names = () => state.sent.map((message) => message.name)
+
+  // 1. Nothing is sent until the server says the turn can be played.
+  state.startTurnPending(7)
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  assert.deepStrictEqual(names(), [], 'no input before the turn is playable')
+
+  state.setPlayable(7)
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  assert.ok(names().includes('GameActionFightCastRequestMessage'), 'the spell is cast once playable')
+  assert.ok(names().includes('GameFightTurnFinishMessage'), 'the turn is then passed')
+
+  // 2. The turn is not ended while an animation sequence is running.
+  state.sent.length = 0
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.emit('SequenceStartMessage', {})
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 300))
+
+  assert.ok(
+    !names().includes('GameFightTurnFinishMessage'),
+    'the turn stays open while a sequence is in flight'
+  )
+
+  state.emit('SequenceEndMessage', {})
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  assert.ok(names().includes('GameFightTurnFinishMessage'), 'it is passed once the sequence ends')
+
+  // 3. Nothing from a finished turn is sent late.
+  state.sent.length = 0
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.emit('SequenceStartMessage', {})
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('SequenceEndMessage', {})
+  await new Promise((resolve) => setTimeout(resolve, 300))
+
+  assert.ok(
+    !names().includes('GameFightTurnFinishMessage'),
+    'no stale end-of-turn once the turn moved on'
+  )
+
+  // 4. A turn still waiting on the previous sequence must not swallow the next
+  // one: this is what froze fights from turn 2 on.
+  state.sent.length = 0
+  state.emit('SequenceStartMessage', {})
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.deepStrictEqual(names(), [], 'the stuck turn sends nothing')
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  state.emit('SequenceEndMessage', {})
+  await new Promise((resolve) => setTimeout(resolve, 400))
+
+  assert.ok(names().includes('GameActionFightCastRequestMessage'), 'the next turn is played')
+  assert.strictEqual(
+    names().filter((name) => name === 'GameFightTurnFinishMessage').length,
+    1,
+    'exactly one end-of-turn is sent'
+  )
+
+  dispose()
+  console.log('ok - turn synchronisation')
+}
+
 async function testConnectionCheck() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/game-bridge.ts'))
   const { isConnected } = await import(
@@ -888,6 +996,7 @@ async function main() {
   await testTurnCombos()
   await testApproachWithMp()
   await testSelfCastAndLineUp()
+  await testTurnSynchronisation()
   await testConnectionCheck()
   await testTemplatesCompile()
 
