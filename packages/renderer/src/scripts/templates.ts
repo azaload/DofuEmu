@@ -89,6 +89,149 @@ for (const direction of circuit) {
 `
   },
   {
+    id: 'attack-1-simple',
+    name: 'Attack 1 — nearest group',
+    description: 'The simplest test: attack the closest group on this map, and report what happened.',
+    target: 'active-tab',
+    loop: false,
+    loopDelayMs: 0,
+    source: `// Start here. Stand on a map with monsters and press Run.
+const groups = api.monsters()
+api.log(\`\${groups.length} group(s) on map \${api.mapId()}, my cell \${api.cellId()}\`)
+
+if (groups.length === 0) api.stop('no monster group on this map')
+
+const group = groups[0] // nearest first
+api.log(\`Target: group \${group.id} on cell \${group.cellId}, size \${group.size}, level \${group.level}\`)
+
+const started = await api.attack(group)
+api.log(started ? 'FIGHT STARTED' : 'no fight started')
+
+if (!started) {
+  api.warn('Nothing worked — dumping what the client exposes:')
+  api.inspect()
+}
+`
+  },
+  {
+    id: 'attack-2-protocol',
+    name: 'Attack 2 — network message only',
+    description: 'Walks next to the group, then sends the attack message and nothing else.',
+    target: 'active-tab',
+    loop: false,
+    loopDelayMs: 0,
+    source: `const group = api.monsters()[0]
+if (!group) api.stop('no monster group on this map')
+
+// Stand next to the group first: the server refuses an attack from afar.
+if (group.cellId !== null) {
+  try {
+    await api.attack(group, { approach: true, timeout: 1 })
+  } catch (err) {
+    api.warn('approach failed:', err)
+  }
+}
+
+api.log('Sending GameRolePlayAttackMonsterRequestMessage for group', group.id)
+api.send('GameRolePlayAttackMonsterRequestMessage', { monsterGroupId: group.id })
+
+await api.wait(3000)
+api.log(api.isInFight() ? 'FIGHT STARTED' : 'no fight — the message alone is not enough')
+`
+  },
+  {
+    id: 'attack-3-walk-into',
+    name: 'Attack 3 — walk into the group',
+    description: 'Asks the engine to walk onto the group cell, the way tapping a monster does.',
+    target: 'active-tab',
+    loop: false,
+    loopDelayMs: 0,
+    source: `const group = api.monsters()[0]
+if (!group || group.cellId === null) api.stop('no monster group on this map')
+
+api.log('Walking onto the group cell', group.cellId)
+
+try {
+  // It never truly arrives — the cell is taken — but the client may take over
+  // and open its confirmation on the way.
+  await api.moveToCell(group.cellId, { timeout: 6000 })
+} catch (err) {
+  api.log('walk ended:', err)
+}
+
+for (let i = 0; i < 6; i++) {
+  await api.wait(500)
+  if (api.isInFight()) break
+}
+
+api.log(api.isInFight() ? 'FIGHT STARTED' : 'no fight after walking in')
+api.log('on screen:', api.closePopups().length === 0 ? '(no popup closed)' : 'popup closed')
+`
+  },
+  {
+    id: 'attack-4-probe',
+    name: 'Attack 4 — probe the engine',
+    description: 'Calls every engine member that looks like an attack, one by one, and says which one bites.',
+    target: 'active-tab',
+    loop: false,
+    loopDelayMs: 0,
+    source: `const group = api.monsters()[0]
+if (!group) api.stop('no monster group on this map')
+
+const iso = api.raw.isoEngine
+const gui = api.raw.gui
+const actors = (iso && iso.actorManager && iso.actorManager.actors) || {}
+const actor = actors[String(group.id)] || actors[group.id]
+
+api.log('actor found:', actor ? 'yes' : 'no')
+
+function methodsOf(owner, label) {
+  const found = []
+  let current = owner
+  for (let depth = 0; current && depth < 3; depth++) {
+    for (const key of Object.getOwnPropertyNames(current)) {
+      if (!/attack|monster|fight|tap|select|click/i.test(key)) continue
+      try {
+        if (typeof owner[key] === 'function') found.push({ owner, label, key })
+      } catch (err) {}
+    }
+    current = Object.getPrototypeOf(current)
+  }
+  return found
+}
+
+const candidates = [
+  ...methodsOf(iso, 'isoEngine'),
+  ...methodsOf(iso && iso.actorManager, 'actorManager'),
+  ...methodsOf(gui, 'gui')
+]
+
+api.log('candidates:', candidates.map((c) => c.label + '.' + c.key).join(', ') || 'none')
+
+for (const candidate of candidates) {
+  if (api.isInFight()) break
+
+  for (const argument of [group.id, actor, { id: group.id }]) {
+    if (api.isInFight()) break
+    try {
+      candidate.owner[candidate.key](argument)
+      api.log('called', candidate.label + '.' + candidate.key, 'with', typeof argument)
+      await api.wait(600)
+      if (api.isInFight()) {
+        api.log('FIGHT STARTED via', candidate.label + '.' + candidate.key)
+        break
+      }
+    } catch (err) {}
+  }
+}
+
+if (!api.isInFight()) {
+  api.warn('none of them started a fight')
+  api.inspect()
+}
+`
+  },
+  {
     id: 'hunt-circuit',
     name: 'Hunt: fight a map circuit',
     description:

@@ -144,10 +144,33 @@ The **From template…** menu creates a ready-made script:
 - **Resource circuit** — harvests everything on a map, then moves to the next one.
 - **Follow the leader** — the leader broadcasts its map changes, followers reproduce them.
 - **Anti-AFK** — small random moves at random intervals.
+- **Attack 1 — nearest group** — one fight, on the current map, with a full report. Start here.
+- **Attack 2 — network message only** — sends the attack message and nothing else.
+- **Attack 3 — walk into the group** — asks the engine to walk onto the group's cell.
+- **Attack 4 — probe the engine** — calls every attack-looking member and says which one bites.
 - **Hunt: fight a map circuit** — walks a list of maps and fights the groups that match your filters.
 - **Patrol a line and fight** — back and forth along one row of maps, fighting on each.
 - **Combat: spell combo** — casts a combo each turn and passes the turn.
 - **Fight watcher** — logs fight starts and notifies the other tabs.
+
+## When a fight will not start
+
+How a fight begins differs between builds, so `api.attack()` tries, in order: the button if
+it is already up, each engine entry point (watching for the button or the fight after every
+one), walking onto the group's cell, and finally the raw network message. Every step is
+written to the script log, and when nothing works it prints the labels visible on screen.
+
+The **Attack 1 to 4** templates isolate one strategy each. Run them one at a time on a map
+with monsters and keep the one whose log says `FIGHT STARTED`:
+
+1. **Attack 1** — the full chain above. If this works, nothing else is needed.
+2. **Attack 2** — the network message alone.
+3. **Attack 3** — walking into the group, the way tapping a monster does.
+4. **Attack 4** — calls every engine member matching `attack|monster|fight|tap|select` with
+   the group id, the actor and an event-like object, and names the one that starts a fight.
+
+`api.inspect()` on its own lists what the client exposes, including the visible button
+labels — useful when all four fail.
 
 ## Farming a map circuit
 

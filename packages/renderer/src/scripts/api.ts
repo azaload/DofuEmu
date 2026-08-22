@@ -648,6 +648,20 @@ export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
       if (tried.length > 0) report(`Attack: tried ${tried.join(', ')}`)
     }
 
+    // Walking onto the group is how a player starts a fight on some builds: the
+    // client takes over on the way and opens its confirmation.
+    if (!done && groupCell !== null && options.approach !== false) {
+      report(`Attack: walking onto the group cell ${groupCell}`)
+      for (const method of MOVE_METHODS) {
+        if (callMoveMethod(gameWindow, method, groupCell)) break
+      }
+      for (let attempt = 0; attempt < 8 && !done; attempt++) {
+        await wait(250)
+        if (pressButton()) done = true
+        else if (isInFight(gameWindow)) done = true
+      }
+    }
+
     if (!done) {
       const attempts = requestAttack(gameWindow, groupId)
       report(`Attack: falling back to ${attempts.map((attempt) => attempt.strategy).join(', ')}`)
