@@ -11,7 +11,7 @@ import { colors } from '@/theme'
 import type { HotkeyAction, Language } from '@dofemu/shared'
 
 function GeneralTab() {
-  const { language, window: win, proxy, game, setLanguage, setResolution, toggleAudioMute, toggleSoundOnFocus, setProxySettings, toggleAutoGroup, toggleAutoInvite, toggleNotifications } = useSettingsStore()
+  const { language, window: win, proxy, game, setLanguage, setResolution, toggleAudioMute, toggleSoundOnFocus, setProxySettings, toggleAutoGroup, toggleAutoInvite, toggleNotifications, setGameSettings } = useSettingsStore()
 
   return (
     <>
@@ -35,6 +35,20 @@ function GeneralTab() {
           <Row label="Auto-invite" desc="Automatically send and accept party invites"><Toggle checked={game.autoInviteEnabled} onChange={toggleAutoInvite} /></Row>
         )}
         <Row label="Notifications"><Toggle checked={game.notificationsEnabled} onChange={toggleNotifications} /></Row>
+        <Row label="Stay connected" desc="Sign of life while a script plays, and closes the inactivity warning">
+          <Toggle checked={game.antiIdleEnabled} onChange={(v) => setGameSettings({ antiIdleEnabled: v })} />
+        </Row>
+        {game.antiIdleEnabled && (
+          <Row label="Every (seconds)" desc="How often the sign of life is sent">
+            <div style={{ width: 90 }}>
+              <TextInput
+                type="number"
+                value={String(game.antiIdleIntervalSec)}
+                onChange={(v) => setGameSettings({ antiIdleIntervalSec: Math.max(10, parseInt(v, 10) || 45) })}
+              />
+            </div>
+          </Row>
+        )}
       </Section>
       <Section title="Proxy">
         <Row label="Enable proxy"><Toggle checked={proxy.enabled} onChange={(v) => setProxySettings({ enabled: v })} /></Row>

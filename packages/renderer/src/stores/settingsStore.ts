@@ -91,7 +91,9 @@ const defaultState = {
   game: {
     autoGroupEnabled: false,
     autoInviteEnabled: true,
-    notificationsEnabled: true
+    notificationsEnabled: true,
+    antiIdleEnabled: true,
+    antiIdleIntervalSec: 45
   },
   combat: {
     enabled: false,

@@ -153,6 +153,18 @@ The **From template…** menu creates a ready-made script:
 - **Combat: spell combo** — casts a combo each turn and passes the turn.
 - **Fight watcher** — logs fight starts and notifies the other tabs.
 
+## Staying connected
+
+The client measures inactivity from real mouse and keyboard input, which a script never
+produces. After a while it puts up *"Une inactivité prolongée entraîne une déconnexion
+automatique"*, and the server drops the session if nothing answers.
+
+**Settings → General → Stay connected** (on by default) handles both ends: a pointer move
+and a modifier key press are fed to the game window every 45 seconds — input the client
+counts as activity, and that does nothing in game, no click and no character input — and the
+warning is closed within five seconds whenever it slips through. Closing it is itself the
+sign of activity the game asks for.
+
 ## When a fight will not start
 
 How a fight begins differs between builds, so `api.attack()` tries, in order: the button if

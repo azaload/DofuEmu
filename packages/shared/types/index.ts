@@ -32,6 +32,12 @@ export interface GameSettings {
   autoGroupEnabled: boolean
   autoInviteEnabled: boolean
   notificationsEnabled: boolean
+  /**
+   * Feed the client a sign of life while a script plays, and close the
+   * inactivity warning it puts up before the server drops the connection.
+   */
+  antiIdleEnabled: boolean
+  antiIdleIntervalSec: number
 }
 
 export interface ScriptSettings {

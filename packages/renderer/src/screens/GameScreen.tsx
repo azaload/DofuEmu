@@ -11,6 +11,7 @@ import { useHotkeys } from '@/hooks/use-hotkeys'
 import { initAutoGroup, broadcastLeaderPosition, destroyAutoGroup, sendPartyInvite, autoAcceptPartyInvite } from '@/mods/auto-group'
 import { initNotificationFocus } from '@/mods/notification-focus'
 import { initCombatAi } from '@/mods/combat-ai'
+import { initAntiIdle } from '@/mods/anti-idle'
 import { useCombatStore } from '@/stores/combatStore'
 import { colors } from '@/theme'
 import { DofusWindow, HTMLIFrameElementWithDofus } from '@/types/dofus-window'
@@ -240,6 +241,11 @@ function GameIframe({ tab, gameSrc, isVisible }: { tab: GameTab; gameSrc: string
             window.top?.postMessage({ type: 'dofemu:char-icon', tabId: tab.id, dataUrl }, '*')
           })
         })
+
+        cleanupRef.current.push(initAntiIdle(gameWindow, tab.id, {
+          getSettings: () => useSettingsStore.getState().game,
+          onLog: (message) => useCombatStore.getState().appendLog(message)
+        }))
 
         cleanupRef.current.push(initCombatAi(gameWindow, tab.id, {
           getSettings: () => useSettingsStore.getState().combat,

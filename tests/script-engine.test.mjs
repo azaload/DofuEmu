@@ -1777,6 +1777,88 @@ async function testModelBrain() {
   console.log('ok - model brain with fallback')
 }
 
+async function testAntiIdle() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/anti-idle.ts'))
+  const { initAntiIdle, dismissInactivityDialog, signalActivity } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'anti-idle.js')).href}?t=${Date.now()}`
+  )
+
+  // A window showing the warning the game puts up when nothing moves.
+  const clicked = []
+  const dispatched = []
+  const makeElement = (text, tag = 'DIV') => ({
+    tagName: tag,
+    textContent: text,
+    innerText: text,
+    offsetParent: {},
+    getBoundingClientRect: () => ({ width: 60, height: 20 }),
+    contains: () => false,
+    click() {
+      clicked.push(text)
+    }
+  })
+
+  const warning = makeElement(
+    'Une inactivité prolongée entraîne une déconnexion automatique du serveur.'
+  )
+  const okButton = makeElement('Ok', 'BUTTON')
+
+  const gameWindow = {
+    document: {
+      body: {
+        dispatchEvent: (event) => dispatched.push(event.type)
+      },
+      querySelectorAll: (selector) =>
+        selector.includes('button') ? [warning, okButton] : [warning]
+    }
+  }
+
+  assert.strictEqual(dismissInactivityDialog(gameWindow), true, 'the warning is closed')
+  assert.deepStrictEqual(clicked, ['Ok'], 'by pressing its Ok button')
+
+  // No warning on screen, nothing to click.
+  const quiet = {
+    document: {
+      body: { dispatchEvent: () => {} },
+      querySelectorAll: () => [makeElement('Inventaire')]
+    }
+  }
+  assert.strictEqual(dismissInactivityDialog(quiet), false, 'nothing is clicked without the warning')
+
+  // The sign of life is input the client counts, and nothing it acts on.
+  // Node has no DOM event constructors; the renderer does.
+  class StubEvent {
+    constructor(type) {
+      this.type = type
+    }
+  }
+  globalThis.MouseEvent = StubEvent
+  globalThis.KeyboardEvent = StubEvent
+
+  signalActivity(gameWindow)
+  assert.ok(dispatched.includes('mousemove'), 'a pointer move is sent')
+  assert.ok(dispatched.includes('keydown'), 'a modifier key is pressed')
+  assert.ok(!dispatched.includes('click'), 'never a click, which would act in game')
+
+  // The watcher closes it on its own, and stops when disposed.
+  clicked.length = 0
+  const dispose = initAntiIdle(gameWindow, 'tab-1', {
+    getSettings: () => ({ antiIdleEnabled: true, antiIdleIntervalSec: 10 }),
+    onLog: () => {}
+  })
+  await new Promise((resolve) => setTimeout(resolve, 5300))
+  assert.ok(clicked.length >= 1, 'the watcher closes the warning by itself')
+
+  dispose()
+  const seen = clicked.length
+  await new Promise((resolve) => setTimeout(resolve, 5300))
+  assert.strictEqual(clicked.length, seen, 'and stops once disposed')
+
+  delete globalThis.MouseEvent
+  delete globalThis.KeyboardEvent
+  console.log('ok - stays connected while idle')
+}
+
 async function testTurnPlanValidation() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/turn-plan.ts'))
   const { validatePlan, parsePlan } = await import(
@@ -2021,6 +2103,7 @@ async function main() {
   await testMovementDiscovery(ScriptRunner)
   await testMovementReportsNoEntryPoint(ScriptRunner)
   await testModelBrain()
+  await testAntiIdle()
   await testTurnPlanValidation()
   await testConnectionCheck()
   await testTemplatesCompile()

@@ -20,6 +20,7 @@ Unofficial desktop client for Dofus Touch.
 - Automation scripts — movement paths, resource circuits and custom JS per tab ([docs](docs/scripting.md))
 - Combat AI — casts a configured spell combo each turn, then passes, or lets a local Ollama model plan the turn ([docs](docs/combat.md))
 - Map-circuit hunting — chains fights over a chosen list of maps ([docs](docs/scripting.md))
+- Stay connected — keeps the session alive while a script plays, and closes the inactivity warning
 - Drag-to-reorder tabs
 - Character icon capture in tabs
 - Configurable hotkeys
