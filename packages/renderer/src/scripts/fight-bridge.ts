@@ -1,6 +1,12 @@
 import type { CombatPositioning, CombatTargetStrategy } from '@dofemu/shared'
 import type { DofusWindow } from '@/types/dofus-window'
-import { areCellsAligned, cellDistance, isCellWalkable, CELL_COUNT } from './cells'
+import {
+  areCellsAligned,
+  cellDistance,
+  directionBetween,
+  isCellWalkable,
+  reachableCells
+} from './cells'
 import { sendMessage } from './game-bridge'
 
 export { areCellsAligned, cellCoordinates, cellDistance, isCellWalkable } from './cells'
@@ -214,6 +220,34 @@ export function pickTarget(
   )
 }
 
+/**
+ * Sends the character along `path` with the game's own movement message.
+ *
+ * Walking a fighter through an engine helper only moves the sprite: the server
+ * never sees a request and rolls the character back where it stood. The path
+ * is encoded the way the client does it — each cell carrying the direction
+ * taken when leaving it.
+ */
+export function sendFightMove(gameWindow: DofusWindow, path: number[]): boolean {
+  if (path.length < 2) return false
+
+  const keyMovements: number[] = []
+  for (let index = 0; index < path.length; index++) {
+    const from = path[index]
+    const next = path[index + 1]
+    const direction = next === undefined ? directionBetween(path[index - 1], from) : directionBetween(from, next)
+    if (direction === null) return false
+    keyMovements.push((direction << 12) | from)
+  }
+
+  const mapId = asNumber(asDict(asDict(gameWindow.isoEngine)?.mapRenderer)?.mapId)
+  sendMessage(gameWindow, 'GameMapMovementRequestMessage', {
+    keyMovements,
+    mapId: mapId ?? 0
+  })
+  return true
+}
+
 export function castSpell(gameWindow: DofusWindow, spellId: number, cellId: number): void {
   sendMessage(gameWindow, 'GameActionFightCastRequestMessage', { spellId, cellId })
 }
@@ -245,6 +279,8 @@ export interface PositionOptions {
 
 export interface PositionResult {
   cellId: number
+  /** Cells to walk through, ready for sendFightMove(). */
+  path: number[]
   /** The target is within range from there. */
   inRange: boolean
   aligned: boolean
@@ -313,29 +349,34 @@ export function findPositionCell(
       .map((fighter) => fighter.cellId as number)
   )
 
+  const occupiedByFighters = new Set(
+    getFighters(gameWindow)
+      .filter((fighter) => fighter.alive && fighter.cellId !== null && fighter.cellId !== from)
+      .map((fighter) => fighter.cellId as number)
+  )
+
+  // Real paths, not straight lines: the server refuses a move it cannot walk.
+  const reachable = reachableCells(gameWindow, from, budget, occupiedByFighters)
+
   const startDistance = cellDistance(from, to)
   const startInRange = startDistance <= range
   const startEnemyDistance = closestEnemyDistance(enemies, from)
   const startAligned = areCellsAligned(from, to)
 
-  const score = (cellId: number): PositionResult => ({
+  const score = (cellId: number, cost: number, path: number[]): PositionResult => ({
     cellId,
+    path,
     inRange: cellDistance(cellId, to) <= range,
     aligned: areCellsAligned(cellId, to),
-    cost: cellDistance(from, cellId),
+    cost,
     distanceToTarget: cellDistance(cellId, to),
     distanceToClosestEnemy: closestEnemyDistance(enemies, cellId)
   })
 
-  const current = score(from)
-  const candidates: PositionResult[] = [current]
-
-  for (let cellId = 0; cellId < CELL_COUNT; cellId++) {
-    if (cellId === from || occupied.has(cellId)) continue
-    if (cellDistance(from, cellId) > budget) continue
-    if (!isCellWalkable(gameWindow, cellId)) continue
-
-    candidates.push(score(cellId))
+  const candidates: PositionResult[] = []
+  for (const entry of reachable.values()) {
+    if (entry.cellId !== from && occupied.has(entry.cellId)) continue
+    candidates.push(score(entry.cellId, entry.cost, entry.path))
   }
 
   const anyInRange = candidates.some((candidate) => candidate.inRange)

@@ -136,6 +136,25 @@ function createFakeGameWindow() {
       connectionManager,
       sendMessage: (name, data) => {
         sent.push({ name, data })
+        if (name === 'GameMapMovementRequestMessage') {
+          // Decode the path the way the server would, and walk it.
+          const path = (data.keyMovements ?? []).map((key) => key & 0xfff)
+          const destination = path[path.length - 1]
+          if (destination !== undefined) state.moves.push(destination)
+          if (destination !== undefined && !state.serverRefusesMoves) {
+            const landing = state.walkLimit ? state.walkLimit(destination) : destination
+            setTimeout(() => {
+              const spent = cellGridDistance(fighters[0].data.disposition.cellId, landing)
+              state.cellId = landing
+              gameWindow.isoEngine.actorManager.userActor.cellId = landing
+              fighters[0].data.disposition.cellId = landing
+              fighters[0].data.stats.movementPoints = Math.max(
+                0,
+                fighters[0].data.stats.movementPoints - spent
+              )
+            }, 5)
+          }
+        }
         if (name === 'GameRolePlayAttackMonsterRequestMessage') {
           setTimeout(() => {
             gameWindow.gui.fightManager.isFightStarted = true
@@ -1193,6 +1212,101 @@ async function testTackleAwareness() {
   console.log('ok - tackle awareness')
 }
 
+async function testFightMovementGoesThroughTheServer() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellCoordinates, neighbourCells, cellFromCoordinates } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  // The grid maths the path is built on.
+  for (let cellId = 0; cellId < 560; cellId++) {
+    const point = cellCoordinates(cellId)
+    assert.strictEqual(cellFromCoordinates(point.x, point.y), cellId, 'coordinates round-trip')
+  }
+  assert.ok(neighbourCells(280).every((cell) => neighbourCells(cell).includes(280)), 'steps are symmetric')
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Punch', range: 1 }],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1,
+    preferLineUp: false,
+    positioning: 'close-in',
+    tackleAware: true
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[2].data.disposition.cellId = 336
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 700))
+
+  const moveMessages = state.sent.filter((m) => m.name === 'GameMapMovementRequestMessage')
+  assert.strictEqual(moveMessages.length, 1, 'the move is sent to the server')
+
+  const keys = moveMessages[0].data.keyMovements
+  assert.ok(Array.isArray(keys) && keys.length >= 2, 'the path carries at least a start and an end')
+  assert.strictEqual(keys[0] & 0xfff, 280, 'it starts where the character stands')
+  assert.ok(
+    keys.every((key) => [0, 2, 4, 6].includes(key >> 12)),
+    'every step is one of the four fight directions'
+  )
+  const walked = keys.map((key) => key & 0xfff)
+  for (let index = 1; index < walked.length; index++) {
+    assert.ok(
+      neighbourCells(walked[index - 1]).includes(walked[index]),
+      `step ${index} goes to a neighbouring cell`
+    )
+  }
+
+  // A refused move must be reported, not taken for granted.
+  state.sent.length = 0
+  state.serverRefusesMoves = true
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 1500))
+
+  assert.ok(
+    logs.some((line) => line.includes('server refused the move')),
+    'a rollback is called out'
+  )
+  assert.ok(
+    state.sent.some((m) => m.name === 'GameFightTurnFinishMessage'),
+    'the turn is still passed'
+  )
+
+  state.serverRefusesMoves = false
+  dispose()
+  console.log('ok - fight movement reaches the server')
+}
+
 async function testHumanDelays() {
   await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
   const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
@@ -1640,6 +1754,7 @@ async function main() {
   await testRangeAndShortWalk()
   await testKitingAndSingleMove()
   await testTackleAwareness()
+  await testFightMovementGoesThroughTheServer()
   await testHumanDelays()
   await testTurnAlwaysPassed()
   await testTurnSynchronisation()

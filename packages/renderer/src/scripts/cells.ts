@@ -84,3 +84,87 @@ export function findCellNextTo(
 
   return best?.cellId ?? null
 }
+
+/** Cell at grid coordinates, or null when they fall outside the map. */
+export function cellFromCoordinates(x: number, y: number): number | null {
+  const row = x + y
+  const col = Math.floor(row / 2) - y
+  if (row < 0 || row >= 40 || col < 0 || col >= MAP_WIDTH) return null
+  return row * MAP_WIDTH + col
+}
+
+/** Dofus direction indices, as the movement message encodes them. */
+const STEPS: Array<{ dx: number; dy: number; direction: number }> = [
+  { dx: 1, dy: 0, direction: 0 }, // east
+  { dx: 0, dy: 1, direction: 2 }, // south
+  { dx: -1, dy: 0, direction: 4 }, // west
+  { dx: 0, dy: -1, direction: 6 } // north
+]
+
+/** The four cells a fighter can step to — fights move orthogonally only. */
+export function neighbourCells(cellId: number): number[] {
+  const { x, y } = cellCoordinates(cellId)
+  return STEPS.map((step) => cellFromCoordinates(x + step.dx, y + step.dy)).filter(
+    (cell): cell is number => cell !== null
+  )
+}
+
+/** Direction index from one cell to an adjacent one, or null if not adjacent. */
+export function directionBetween(from: number, to: number): number | null {
+  const a = cellCoordinates(from)
+  const b = cellCoordinates(to)
+  const step = STEPS.find((candidate) => a.x + candidate.dx === b.x && a.y + candidate.dy === b.y)
+  return step?.direction ?? null
+}
+
+export interface ReachableCell {
+  cellId: number
+  /** Steps to get there — what the move really costs. */
+  cost: number
+  /** Cells walked through, starting at the origin and ending on this cell. */
+  path: number[]
+}
+
+/**
+ * Every cell reachable from `from` within `maxSteps`, with the path to it.
+ *
+ * A breadth-first walk over the cells the character can actually step on:
+ * planning on straight-line distance is what got moves rolled back by the
+ * server, since it happily picked cells no legal path could reach.
+ */
+export function reachableCells(
+  gameWindow: DofusWindow,
+  from: number,
+  maxSteps: number,
+  blocked: Set<number> = new Set()
+): Map<number, ReachableCell> {
+  const reached = new Map<number, ReachableCell>()
+  reached.set(from, { cellId: from, cost: 0, path: [from] })
+  if (maxSteps <= 0) return reached
+
+  let frontier: ReachableCell[] = [reached.get(from) as ReachableCell]
+
+  for (let step = 1; step <= maxSteps; step++) {
+    const next: ReachableCell[] = []
+
+    for (const current of frontier) {
+      for (const neighbour of neighbourCells(current.cellId)) {
+        if (reached.has(neighbour) || blocked.has(neighbour)) continue
+        if (!isCellWalkable(gameWindow, neighbour)) continue
+
+        const entry: ReachableCell = {
+          cellId: neighbour,
+          cost: step,
+          path: [...current.path, neighbour]
+        }
+        reached.set(neighbour, entry)
+        next.push(entry)
+      }
+    }
+
+    if (next.length === 0) break
+    frontier = next
+  }
+
+  return reached
+}

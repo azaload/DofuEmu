@@ -5,6 +5,7 @@ import {
   castSpell,
   cellDistance,
   findPositionCell,
+  sendFightMove,
   tacklingEnemies,
   finishTurn,
   getEnemies,
@@ -284,14 +285,29 @@ export function initCombatAi(
 
     const apBefore = me.ap ?? null
 
-    if (!requestMoveToCell(gameWindow, move.cellId)) {
-      log('No movement entry point on this build — run api.inspect() from a script')
+    // In a fight the move has to reach the server: an engine helper only walks
+    // the sprite, and the character is rolled back where it stood.
+    const sent = sendFightMove(gameWindow, move.path)
+    if (!sent && !requestMoveToCell(gameWindow, move.cellId)) {
+      log('No way to move on this build — run api.inspect() from a script')
       return
     }
 
     const outcome = await waitForMove(move.cellId)
     await waitForIdle()
     await humanSleep(0)
+
+    // The server has the last word: if it refused, the character is back where
+    // it started and the points were never spent.
+    const landedOn = currentCell()
+    if (landedOn === me.cellId) {
+      log(
+        sent
+          ? `The server refused the move to cell ${move.cellId} — back on ${landedOn}`
+          : `The move to cell ${move.cellId} was local only — back on ${landedOn}`
+      )
+      return
+    }
 
     if (outcome === 'no-move') {
       log('The character did not move — blocked, or the engine refused the path')
