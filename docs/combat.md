@@ -18,6 +18,11 @@ Configure it in **Settings → Combat**. `Ctrl+Shift+F` toggles it on and off.
 Settings are read at the start of every turn, so editing the combo mid-fight applies from
 the next turn — nothing to restart.
 
+Delays are deliberately short — a turn costs about a second plus your configured
+**turn start delay** and **cast delay**. If the AI feels slow, those two settings are the
+first place to look: they default to 250 ms and 350 ms, but a profile created before that
+default keeps its older, larger values.
+
 Every action waits for the client to be idle: the AI never casts or passes the turn while
 an animation sequence is playing, and never sends anything belonging to a turn that has
 already moved on. Acting too early is what freezes a fight — the client keeps waiting for

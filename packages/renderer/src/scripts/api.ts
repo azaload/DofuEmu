@@ -20,6 +20,7 @@ import {
   type EventEmitterLike,
   type MonsterGroup
 } from './game-bridge'
+import { describeGameApi, requestAttack } from './attack'
 import { findCellNextTo } from './cells'
 import { closeUiPopups } from './ui-bridge'
 import {
@@ -552,7 +553,26 @@ export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
         (distance !== null ? ` from ${distance} cell(s) away` : '')
     )
 
-    attackMonsterGroup(gameWindow, groupId)
+    // The game's own flow is: select the group, then press the button it shows.
+    const attempts = requestAttack(gameWindow, groupId)
+    report(
+      `Attack: ${attempts
+        .map((attempt) => attempt.strategy + (attempt.detail ? ` (${attempt.detail})` : ''))
+        .join(', ')}`
+    )
+
+    // The button can take a moment to appear after the group is selected.
+    const buttonDeadline = Date.now() + 1500
+    while (Date.now() < buttonDeadline) {
+      const later = requestAttack(gameWindow, groupId).filter(
+        (attempt) => attempt.strategy === 'attack button'
+      )
+      if (later.length > 0) {
+        report('Attack: pressed the attack button')
+        break
+      }
+      await wait(200)
+    }
 
     try {
       await started
@@ -622,6 +642,12 @@ export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
     fight,
 
     closePopups: (patterns) => closeUiPopups(gameWindow, patterns),
+
+    inspect: (pattern) => {
+      const lines = describeGameApi(gameWindow, pattern)
+      for (const line of lines) ctx.hooks.onLog('info', line)
+      return lines
+    },
 
     inspectMap: () => {
       const lines = describeMapSources(gameWindow)

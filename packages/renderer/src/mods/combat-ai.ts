@@ -51,20 +51,20 @@ interface TurnMessage {
 const DISMISS_DELAYS_MS = [800, 2000, 4500]
 
 /** How long to wait for a fight move to land before casting anyway. */
-const MOVE_TIMEOUT_MS = 6000
-const MOVE_POLL_MS = 150
+const MOVE_TIMEOUT_MS = 4000
+const MOVE_POLL_MS = 60
 /** How long to wait for a walk to start before calling it refused. */
-const MOVE_START_TIMEOUT_MS = 2000
+const MOVE_START_TIMEOUT_MS = 700
 /** A position held this long means the walk is over. */
-const MOVE_SETTLE_MS = 600
+const MOVE_SETTLE_MS = 250
 /** How many times to re-try closing in during one spell. */
-const MAX_APPROACH_STEPS = 3
+const MAX_APPROACH_STEPS = 2
 
 /** How long to wait for the server to declare our turn playable. */
-const TURN_PLAYABLE_TIMEOUT_MS = 6000
+const TURN_PLAYABLE_TIMEOUT_MS = 2500
 /** How long to wait for the running animation sequence to finish. */
-const SEQUENCE_TIMEOUT_MS = 8000
-const IDLE_POLL_MS = 100
+const SEQUENCE_TIMEOUT_MS = 2500
+const IDLE_POLL_MS = 50
 
 function addListener(
   source: EventSourceLike | undefined,
@@ -119,7 +119,11 @@ export function initCombatAi(
     return true
   }
 
-  /** Waits for the running animation sequence to finish. */
+  /**
+   * Waits for the running animation sequence to finish. A sequence that never
+   * ends resets the counter, so one missed message cannot slow every later
+   * action down.
+   */
   const waitForIdle = async () => {
     if (sequenceDepth <= 0) return
     const idle = await waitFor(() => sequenceDepth <= 0, SEQUENCE_TIMEOUT_MS)

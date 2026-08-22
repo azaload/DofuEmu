@@ -110,7 +110,28 @@ function createFakeGameWindow() {
     { id: 21, data: { teamId: 1, alive: true, disposition: { cellId: 350 }, stats: { lifePoints: 40, maxLifePoints: 200 }, name: 'Weak' } }
   ]
 
+  const attackButton = {
+    tagName: 'DIV',
+    className: 'greenButton attackButton',
+    textContent: 'Attaquer',
+    offsetParent: {},
+    clicked: 0,
+    click() {
+      this.clicked += 1
+      setTimeout(() => {
+        gameWindow.gui.fightManager.isFightStarted = true
+        gameWindow.gui.playerData.isFighting = true
+        state.emit('GameFightStartingMessage', {})
+      }, 5)
+    },
+    querySelectorAll: () => [],
+    getBoundingClientRect: () => ({ width: 80, height: 24 })
+  }
+
   const gameWindow = {
+    document: {
+      querySelectorAll: () => (state.attackButtonVisible ? [attackButton] : [])
+    },
     dofus: {
       connectionManager,
       sendMessage: (name, data) => {
@@ -235,6 +256,8 @@ function createFakeGameWindow() {
 
   state.closedWindows = closedWindows
   state.moves = moves
+  state.attackButton = attackButton
+  state.attackButtonVisible = true
   state.endFight = () => {
     gameWindow.gui.fightManager.isFightStarted = false
     gameWindow.gui.playerData.isFighting = false
@@ -297,8 +320,9 @@ function makeHooks() {
   }
 }
 
-async function run(ScriptRunner, source, extra = {}) {
+async function run(ScriptRunner, source, extra = {}, prepare) {
   const { gameWindow, state } = createFakeGameWindow()
+  prepare?.(state)
   const { logs, statuses, hooks } = makeHooks()
   const runner = new ScriptRunner({
     script: makeScript({ source, ...extra }),
@@ -500,12 +524,53 @@ async function testMonsterHunt(ScriptRunner) {
 
   // The group on cell 114 is already next to us: no walking needed.
   assert.strictEqual(state.moves.length, 0, 'no move when already next to the group')
-  assert.ok(
-    state.sent.some((message) => message.name === 'GameRolePlayAttackMonsterRequestMessage'),
-    'the attack request is sent'
-  )
+  assert.ok(state.attackButton.clicked > 0, 'the attack is requested through the game flow')
   assert.ok(logs.some((line) => line.includes('fight started true')), 'the fight start is awaited')
   console.log('ok - monster hunt')
+}
+
+async function testAttackUsesTheGameFlow(ScriptRunner) {
+  const { result, logs, state } = await run(
+    ScriptRunner,
+    `
+      const group = api.monsters().find((g) => g.id === -2)
+      api.log('started', await api.attack(group, { approach: false }))
+    `
+  )
+
+  assert.strictEqual(result.status, 'done', `the attack should finish, got ${result.error ?? ''}`)
+  assert.strictEqual(state.attackButton.clicked > 0, true, 'the attack button is pressed')
+  assert.ok(
+    logs.some((line) => line.includes('attack button')),
+    'the strategy used is written to the log'
+  )
+  assert.ok(
+    !state.sent.some((message) => message.name === 'GameRolePlayAttackMonsterRequestMessage'),
+    'the raw request is not sent when the button worked'
+  )
+  assert.ok(logs.some((line) => line.includes('started true')), 'the fight starts')
+  console.log('ok - attack uses the game flow')
+}
+
+async function testAttackFallsBackToProtocol(ScriptRunner) {
+  const { logs, state } = await run(
+    ScriptRunner,
+    `
+      const group = api.monsters().find((g) => g.id === -2)
+      api.log('started', await api.attack(group, { approach: false }))
+    `,
+    {},
+    (state) => {
+      state.attackButtonVisible = false
+    }
+  )
+
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameRolePlayAttackMonsterRequestMessage'),
+    'without a button, the network request is sent'
+  )
+  assert.ok(logs.some((line) => line.includes('started true')), 'the fight still starts')
+  console.log('ok - attack falls back to the protocol')
 }
 
 async function testAttackApproach(ScriptRunner) {
@@ -1124,6 +1189,8 @@ async function main() {
   await testTargetStrategies(ScriptRunner)
   await testCombatAi()
   await testMonsterHunt(ScriptRunner)
+  await testAttackUsesTheGameFlow(ScriptRunner)
+  await testAttackFallsBackToProtocol(ScriptRunner)
   await testAttackApproach(ScriptRunner)
   await testClosePopups(ScriptRunner)
   await testTurnCombos()
