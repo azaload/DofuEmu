@@ -106,7 +106,8 @@ const defaultState = {
     approachEnemies: true,
     defaultSpellRange: 1,
     preferLineUp: true,
-    positioning: 'keep-distance' as const
+    positioning: 'keep-distance' as const,
+    tackleAware: true
   },
   scripts: {
     enabled: true,

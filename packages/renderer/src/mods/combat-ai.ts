@@ -5,7 +5,9 @@ import {
   castSpell,
   cellDistance,
   findPositionCell,
+  tacklingEnemies,
   finishTurn,
+  getEnemies,
   getMyFighter,
   getMyFighterId,
   getSpellRange,
@@ -242,13 +244,20 @@ export function initCombatAi(
       return
     }
 
+    const tacklers = tacklingEnemies(getEnemies(gameWindow), me.cellId)
+
     const move = findPositionCell(gameWindow, target, range, movementPoints, {
       preferLineUp: settings.preferLineUp,
-      positioning: settings.positioning
+      positioning: settings.positioning,
+      tackleAware: settings.tackleAware
     })
 
     if (!move) {
-      if (distance > range) {
+      if (tacklers.length > 0 && settings.positioning === 'keep-distance') {
+        log(
+          `Held by ${tacklers.length} monster(s) in contact: no escape clears melee with ${movementPoints} MP, casting from here`
+        )
+      } else if (distance > range) {
         log(`Target ${distance} cell(s) away, range ${range} (${source}), nowhere better within ${movementPoints} MP`)
       }
       return
@@ -258,11 +267,14 @@ export function initCombatAi(
       settings.positioning === 'keep-distance'
         ? `keeping ${move.distanceToClosestEnemy} cell(s) from the closest enemy`
         : `closing to ${move.distanceToTarget} cell(s)`
+    const escaping = tacklers.length > 0 ? `, breaking away from ${tacklers.length} monster(s)` : ''
     log(
-      `Moving to cell ${move.cellId}: ${move.cost} of ${movementPoints} MP, ${intent}` +
+      `Moving to cell ${move.cellId}: ${move.cost} of ${movementPoints} MP, ${intent}${escaping}` +
         (move.aligned ? ', lined up' : '') +
         ` (range ${range} from ${source})`
     )
+
+    const apBefore = me.ap ?? null
 
     if (!requestMoveToCell(gameWindow, move.cellId)) {
       log('No movement entry point on this build — run api.inspect() from a script')
@@ -278,6 +290,24 @@ export function initCombatAi(
     }
     if (outcome === 'stopped-short') {
       log(`Stopped on cell ${currentCell()} instead of ${move.cellId} — the way is blocked`)
+    }
+
+    // What the tackle actually cost, which no formula here can predict.
+    const after = getMyFighter(gameWindow)
+    if (after?.cellId !== null && after?.cellId !== undefined) {
+      const walked = cellDistance(me.cellId, after.cellId)
+      const mpSpent = movementPoints - (after.mp ?? 0)
+      const apLost = apBefore !== null && after.ap !== null ? apBefore - after.ap : 0
+
+      if (tacklers.length > 0 && (mpSpent > walked || apLost > 0)) {
+        log(
+          `Tackled on the way out: ${mpSpent} MP for ${walked} cell(s)` +
+            (apLost > 0 ? `, and ${apLost} AP lost` : '')
+        )
+      }
+      if (tacklers.length > 0 && tacklingEnemies(getEnemies(gameWindow), after.cellId).length > 0) {
+        log('Still in contact after the move')
+      }
     }
   }
 

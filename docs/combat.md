@@ -89,6 +89,24 @@ the game's own value, then the **Fallback range** setting.
 **Line up with the target** (on by default) breaks ties in favour of cells sharing a row or
 a column with the enemy, for line-only spells.
 
+### Tackle
+
+Leaving a cell a monster stands next to is tackled: it costs more movement points than the
+distance walked, and can cost action points as well — enough to lose the combo. **Account
+for tackle** (on by default) takes that into account:
+
+- An escape is only planned when it **clears melee entirely**. Paying the tackle to end up
+  still in contact wastes the turn, so the AI stays and casts instead.
+- One movement point is **held back** to pay for the escape, so a plan does not die
+  halfway. With a single point left there is nothing to walk with once the tackle is paid,
+  and the AI does not try.
+- What the escape really cost is measured afterwards and written to the log —
+  `Tackled on the way out: 3 MP for 1 cell(s), and 2 AP lost` — along with
+  `Still in contact after the move` when the monster kept its hold.
+
+The tackle roll itself depends on lock and dodge stats the client does not always expose,
+so it is never predicted: the AI plans conservatively and reports what happened.
+
 When nothing brings the target in range, both modes close as much distance as the movement
 points allow rather than standing still. Cells occupied by other fighters are skipped, and a
 walk the engine cuts short — a blocked path, a monster in the way — is reported in the

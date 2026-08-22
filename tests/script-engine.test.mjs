@@ -643,7 +643,8 @@ async function testTurnCombos() {
     defaultSpellRange: 1,
     preferLineUp: false,
     positioning: 'close-in',
-    positioning: 'close-in'
+    positioning: 'close-in',
+    tackleAware: true
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -714,7 +715,8 @@ async function testApproachWithMp() {
     approachEnemies: true,
     defaultSpellRange: 1,
     preferLineUp: false,
-    positioning: 'close-in'
+    positioning: 'close-in',
+    tackleAware: true
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -788,7 +790,8 @@ async function testSelfCastAndLineUp() {
     approachEnemies: true,
     defaultSpellRange: 1,
     preferLineUp: true,
-    positioning: 'close-in'
+    positioning: 'close-in',
+    tackleAware: true
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -891,7 +894,8 @@ async function testRangeAndShortWalk() {
     approachEnemies: true,
     defaultSpellRange: 1,
     preferLineUp: false,
-    positioning: 'close-in'
+    positioning: 'close-in',
+    tackleAware: true
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -973,7 +977,8 @@ async function testKitingAndSingleMove() {
     approachEnemies: true,
     defaultSpellRange: 1,
     preferLineUp: false,
-    positioning: 'keep-distance'
+    positioning: 'keep-distance',
+    tackleAware: true
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1036,6 +1041,90 @@ async function testKitingAndSingleMove() {
   console.log('ok - kiting and one move per turn')
 }
 
+async function testTackleAwareness() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-bridge.ts'))
+  const { cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-bridge.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Bolt', range: 5 }],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1,
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  const myCell = 280
+  const meleeCell = 294
+
+  // 1. One MP against a monster in contact: no escape can clear melee, so the
+  // turn is spent casting instead of paying the tackle for nothing.
+  state.mpPerTurn = 1
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+  state.fighters[1].data.disposition.cellId = meleeCell
+  state.fighters[2].data.disposition.cellId = meleeCell
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  assert.strictEqual(state.moves.length, 0, 'no pointless escape with a single MP')
+  assert.ok(
+    logs.some((line) => line.includes('no escape clears melee')),
+    'the reason is logged'
+  )
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
+    'the spell is cast from where we stand'
+  )
+
+  // 2. With 4 MP the escape is planned on 3, one point held back for the tackle.
+  state.mpPerTurn = 4
+  state.moves.length = 0
+  state.sent.length = 0
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 600))
+
+  assert.strictEqual(state.moves.length, 1, 'one escape move')
+  const landing = state.moves[0]
+  assert.ok(cellDistance(myCell, landing) <= 3, 'a point is kept in reserve for the tackle')
+  assert.ok(cellDistance(landing, meleeCell) > 1, 'the escape clears melee')
+  assert.ok(
+    logs.some((line) => line.includes('breaking away from')),
+    'breaking away is announced'
+  )
+
+  dispose()
+  console.log('ok - tackle awareness')
+}
+
 async function testTurnSynchronisation() {
   await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
   const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
@@ -1058,7 +1147,8 @@ async function testTurnSynchronisation() {
     defaultSpellRange: 1,
     preferLineUp: false,
     positioning: 'close-in',
-    positioning: 'close-in'
+    positioning: 'close-in',
+    tackleAware: true
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1335,6 +1425,7 @@ async function main() {
   await testSelfCastAndLineUp()
   await testRangeAndShortWalk()
   await testKitingAndSingleMove()
+  await testTackleAwareness()
   await testTurnSynchronisation()
   await testMovementDiscovery(ScriptRunner)
   await testMovementReportsNoEntryPoint(ScriptRunner)

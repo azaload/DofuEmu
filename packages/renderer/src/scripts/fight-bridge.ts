@@ -235,6 +235,13 @@ export interface PositionOptions {
   preferLineUp?: boolean
   /** Keep as far from enemies as the range allows, or walk right up to them. */
   positioning?: CombatPositioning
+  /**
+   * Leaving a cell held by a monster is tackled: it costs more than the
+   * distance walked, and can cost action points too. With this on, an escape
+   * is only planned when it clears melee entirely, and one point is held back
+   * to pay for it.
+   */
+  tackleAware?: boolean
 }
 
 export interface PositionResult {
@@ -247,6 +254,11 @@ export interface PositionResult {
   distanceToTarget: number
   /** Distance to the closest living enemy from there. */
   distanceToClosestEnemy: number
+}
+
+/** Enemies in contact with `cellId` — the ones that tackle a departure. */
+export function tacklingEnemies(enemies: Fighter[], cellId: number): Fighter[] {
+  return enemies.filter((enemy) => enemy.cellId !== null && cellDistance(cellId, enemy.cellId) === 1)
 }
 
 /** Distance from `cellId` to the nearest living enemy. */
@@ -289,6 +301,13 @@ export function findPositionCell(
   const to = target.cellId
 
   const enemies = getEnemies(gameWindow)
+  const tackleAware = options.tackleAware !== false
+  const tackled = tacklingEnemies(enemies, from).length > 0
+  // Escaping a tackle eats into the movement points, so plan without the last
+  // one rather than counting on a move that dies halfway. With a single point
+  // there is nothing left to walk with once the tackle is paid.
+  const budget = tackleAware && tackled ? movementPoints - 1 : movementPoints
+
   const occupied = new Set(
     getFighters(gameWindow)
       .filter((fighter) => fighter.alive && fighter.cellId !== null)
@@ -314,8 +333,17 @@ export function findPositionCell(
 
   for (let cellId = 0; cellId < CELL_COUNT; cellId++) {
     if (cellId === from || occupied.has(cellId)) continue
-    if (cellDistance(from, cellId) > movementPoints) continue
+    if (cellDistance(from, cellId) > budget) continue
     if (!isCellWalkable(gameWindow, cellId)) continue
+
+    // A move that leaves us in contact pays the tackle for nothing.
+    if (tackleAware && tackled && keepDistance) {
+      const candidate = score(cellId)
+      if (candidate.distanceToClosestEnemy <= 1) continue
+      candidates.push(candidate)
+      continue
+    }
+
     candidates.push(score(cellId))
   }
 

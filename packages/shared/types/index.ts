@@ -78,6 +78,11 @@ export interface CombatSettings {
   preferLineUp: boolean
   /** How to place the character before casting. */
   positioning: CombatPositioning
+  /**
+   * Account for tackle: leaving a cell held by a monster costs extra MP and AP,
+   * so only escape when it clears melee, and keep points in reserve.
+   */
+  tackleAware: boolean
 }
 
 export type CombatPositioning = 'keep-distance' | 'close-in'

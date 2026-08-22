@@ -376,6 +376,17 @@ export function CombatScreen() {
           </Row>
         )}
         {combat.approachEnemies && (
+          <Row
+            label="Account for tackle"
+            desc="Only break away when it clears melee, and keep a point to pay for it"
+          >
+            <Toggle
+              checked={combat.tackleAware}
+              onChange={(v) => setCombatSettings({ tackleAware: v })}
+            />
+          </Row>
+        )}
+        {combat.approachEnemies && (
           <Row label="Line up with the target" desc="Prefer cells sharing a row or column with the enemy">
             <Toggle
               checked={combat.preferLineUp}
