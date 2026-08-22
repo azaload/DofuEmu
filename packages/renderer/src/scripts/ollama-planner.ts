@@ -12,8 +12,11 @@ import { parsePlan, validatePlan, type TurnAction, type TurnPlan } from './turn-
  */
 
 const SYSTEM_PROMPT = `You play one turn of a tactical fight, as a game engine would.
+Your goal is to end the fight as fast as possible: every turn must damage an
+enemy unless a spell that buffs or heals is clearly worth more.
 Answer with JSON only: {"actions":[...],"reason":"short"}.
 Actions are {"type":"move","cellId":N} and {"type":"cast","spellId":N,"targetId":N}.
+"targetId" is the small "n" of an enemy, as listed in "enemies" — 1, 2, 3 — not its id.
 Rules you must respect:
 - at most one move, and only to a cellId listed in "cells"
 - when "me.canMove" is false, plan no move at all: the character is held in
@@ -23,7 +26,8 @@ Rules you must respect:
 - only spellIds listed in "spells"
 - a spell may only target an id listed in that spell's "targets"
 - a spell with "self":true takes no targetId
-- prefer casting every action point over saving it
+- cast every spell you can: an unused action point is a wasted turn
+- never end a turn having only moved, when an enemy is in reach of any spell
 Order matters: the actions are played from first to last.`
 
 export interface PlannerResult {

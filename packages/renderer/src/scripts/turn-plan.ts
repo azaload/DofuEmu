@@ -77,26 +77,38 @@ export function validatePlan(plan: TurnPlan, state: FightState): ValidationResul
         continue
       }
 
-      if (spell.self || action.targetId === undefined) {
-        if (!spell.self) {
-          rejected.push(`cast ${action.spellId}: no target given`)
-          continue
-        }
+      if (spell.self) {
         actions.push({ type: 'cast', spellId: spell.id })
         continue
       }
 
-      const enemy = state.enemies.find((candidate) => candidate.id === action.targetId)
+      // The model names a target by its short number, sometimes by its id, and
+      // sometimes gets it wrong. A cast is too valuable to drop over that: when
+      // the name does not resolve, the first enemy the spell can reach is used.
+      const asked = action.targetId
+      const byNumber = state.enemies.find((enemy) => enemy.n === asked)
+      const byId = state.enemies.find((enemy) => enemy.id === asked)
+      let enemy = byNumber ?? byId ?? null
+
       if (!enemy) {
-        rejected.push(`cast ${action.spellId} on ${action.targetId}: unknown target`)
-        continue
+        const fallbackNumber = spell.targets[0]
+        const fallback = state.enemies.find((candidate) => candidate.n === fallbackNumber)
+        if (!fallback) {
+          rejected.push(`cast ${action.spellId}: no enemy in reach`)
+          continue
+        }
+        enemy = fallback
+        rejected.push(`cast ${action.spellId} on ${asked ?? '?'}: unknown target, aimed at ${enemy.name ?? enemy.n} instead`)
       }
 
-      // Reach is only known for where the character stands now. After a move
-      // the game refuses what it must; the point here is to drop the obvious.
-      if (!moved && !spell.targets.includes(enemy.id)) {
-        rejected.push(`cast ${action.spellId} on ${enemy.id}: out of reach or no line of sight`)
-        continue
+      if (!moved && !spell.targets.includes(enemy.n)) {
+        const reachable = state.enemies.find((candidate) => spell.targets.includes(candidate.n))
+        if (!reachable) {
+          rejected.push(`cast ${action.spellId} on ${enemy.n}: out of reach or no line of sight`)
+          continue
+        }
+        rejected.push(`cast ${action.spellId} on ${enemy.n}: out of reach, aimed at ${reachable.name ?? reachable.n} instead`)
+        enemy = reachable
       }
 
       if (rules?.focusTargetId && enemy.id !== rules.focusTargetId) {

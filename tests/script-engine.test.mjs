@@ -1753,6 +1753,29 @@ async function testModelBrain() {
     'the turn is still passed'
   )
 
+  // A plan that only walks must not end the turn without attacking.
+  state.sent.length = 0
+  logs.length = 0
+  state.modelAnswer = JSON.stringify({
+    actions: [{ type: 'move', cellId: 294 }],
+    reason: 'reposition'
+  })
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 900))
+
+  assert.ok(
+    logs.some((line) => line.includes('only moved')),
+    'the shortfall is called out'
+  )
+  assert.ok(
+    state.sent.some((m) => m.name === 'GameActionFightCastRequestMessage'),
+    'the combo is cast on top of the model plan'
+  )
+
   // With no model answering, the rules take the turn.
   state.sent.length = 0
   state.modelAnswer = null
@@ -1989,10 +2012,10 @@ async function testChallengeRules() {
   const state = {
     turn: 1,
     me: { id: 7, name: 'me', cellId: 280, life: 100, maxLife: 100, ap: 6, mp: 3, tackledBy: [], canMove: true },
-    spells: [{ id: 161, name: 'Bolt', range: 6, minRange: 0, targets: [20, 21], self: false, push: false }],
+    spells: [{ id: 161, name: 'Bolt', range: 6, minRange: 0, targets: [1, 2], self: false, push: false }],
     enemies: [
-      { id: 20, name: 'A', cellId: 294, x: 0, y: 0, life: 100, maxLife: 100, distance: 1, lineOfSight: true, aligned: true },
-      { id: 21, name: 'B', cellId: 300, x: 0, y: 0, life: 100, maxLife: 100, distance: 2, lineOfSight: true, aligned: true }
+      { n: 1, id: 20, name: 'A', cellId: 294, x: 0, y: 0, life: 100, maxLife: 100, distance: 1, lineOfSight: true, aligned: true },
+      { n: 2, id: 21, name: 'B', cellId: 300, x: 0, y: 0, life: 100, maxLife: 100, distance: 2, lineOfSight: true, aligned: true }
     ],
     allies: [],
     cells: [{ cellId: 266, cost: 1, enemyDistance: 2, sees: [20], alignedWith: [] }],
@@ -2032,12 +2055,12 @@ async function testTurnPlanValidation() {
     turn: 1,
     me: { id: 7, name: 'Tester', cellId: 280, life: 500, maxLife: 500, ap: 6, mp: 3, tackledBy: [], canMove: true },
     spells: [
-      { id: 161, name: 'Bolt', range: 6, minRange: 0, targets: [20], self: false, push: false },
+      { id: 161, name: 'Bolt', range: 6, minRange: 0, targets: [1], self: false, push: false },
       { id: 100, name: 'Buff', range: 0, minRange: 0, targets: [], self: true, push: false }
     ],
     enemies: [
-      { id: 20, name: 'Close', cellId: 294, x: 0, y: 0, life: 100, maxLife: 200, distance: 1, lineOfSight: true, aligned: true },
-      { id: 21, name: 'Far', cellId: 400, x: 0, y: 0, life: 50, maxLife: 200, distance: 12, lineOfSight: false, aligned: false }
+      { n: 1, id: 20, name: 'Close', cellId: 294, x: 0, y: 0, life: 100, maxLife: 200, distance: 1, lineOfSight: true, aligned: true },
+      { n: 2, id: 21, name: 'Far', cellId: 400, x: 0, y: 0, life: 50, maxLife: 200, distance: 12, lineOfSight: false, aligned: false }
     ],
     allies: [],
     cells: [
@@ -2056,7 +2079,7 @@ async function testTurnPlanValidation() {
         { type: 'cast', spellId: 161, targetId: 20 },
         { type: 'cast', spellId: 100 },
         { type: 'cast', spellId: 999, targetId: 20 },
-        { type: 'cast', spellId: 161, targetId: 99 },
+
         { type: 'dance' }
       ]
     },
@@ -2072,15 +2095,28 @@ async function testTurnPlanValidation() {
     ],
     'only the legal actions survive, in order'
   )
-  assert.strictEqual(rejected.length, 4, 'the others are reported')
+  assert.strictEqual(rejected.length, 3, 'the others are reported')
   assert.ok(rejected.some((line) => line.includes('only one move per turn')), 'a second move is refused')
   assert.ok(rejected.some((line) => line.includes('not in the combo')), 'an unknown spell is refused')
-  assert.ok(rejected.some((line) => line.includes('unknown target')), 'an unknown target is refused')
 
-  // A cast at an enemy out of reach is dropped when we have not moved.
-  const stillPut = validatePlan({ actions: [{ type: 'cast', spellId: 161, targetId: 21 }] }, state)
-  assert.strictEqual(stillPut.actions.length, 0, 'an unreachable target is dropped')
-  assert.ok(stillPut.rejected[0].includes('out of reach'), 'and says why')
+
+  // A cast aimed out of reach is re-aimed at an enemy the spell can hit: a
+  // wasted turn is worse than a different target.
+  const stillPut = validatePlan({ actions: [{ type: 'cast', spellId: 161, targetId: 2 }] }, state)
+  assert.deepStrictEqual(
+    stillPut.actions,
+    [{ type: 'cast', spellId: 161, targetId: 20 }],
+    'the cast is re-aimed rather than lost'
+  )
+  assert.ok(stillPut.rejected[0].includes('out of reach'), 'and says what happened')
+
+  // An invented target is repaired the same way — this is what a small model does.
+  const invented = validatePlan({ actions: [{ type: 'cast', spellId: 161, targetId: 0 }] }, state)
+  assert.deepStrictEqual(
+    invented.actions,
+    [{ type: 'cast', spellId: 161, targetId: 20 }],
+    'a target the model made up still produces an attack'
+  )
 
   // The parser copes with a model wrapping its JSON in prose.
   const parsed = parsePlan('Sure! {"actions":[{"type":"cast","spellId":161,"targetId":20}],"reason":"hit"} done')

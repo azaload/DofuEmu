@@ -111,12 +111,22 @@ a list of legal options. That is the whole design.
 
 ### What comes back
 
-A plan: an ordered list of `move` and `cast` actions. Every one is checked against the
-snapshot before anything reaches the game — a cell that is not reachable, a spell that is
+A plan: an ordered list of `move` and `cast` actions. Enemies are numbered 1, 2, 3 in the
+snapshot and the model aims with those numbers, which small models handle far better than
+raw fighter ids.
+
+Every action is checked against the snapshot before anything reaches the game — a cell that is not reachable, a spell that is
 not in the combo, a target out of reach or unknown — and what is dropped is written to the
-activity log. If the model does not answer within **Answer timeout**, answers nothing
-usable, or is not running at all, the built-in rules play the turn instead. A fight is
-never lost to a model that stalls.
+activity log. A cast is never dropped for a bad target: a model that invents one, or aims out of reach,
+has its cast **re-aimed** at an enemy the spell can actually hit. A turn spent attacking the
+wrong monster still ends the fight; a turn spent doing nothing does not.
+
+And a plan that only walks does not end the turn: the configured combo is cast on top of it.
+Whatever the model decides, a turn where an enemy is in reach ends with an attack.
+
+If the model does not answer within **Answer timeout**, answers nothing usable, or is not
+running at all, the built-in rules play the turn instead. A fight is never lost to a model
+that stalls.
 
 ### Challenges
 

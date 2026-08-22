@@ -114,6 +114,8 @@ export function initCombatAi(
   let turnToken = 0
   /** Server said our turn can be played. */
   let turnPlayable = false
+  /** Turns this build failed to announce; past two, the wait is dropped. */
+  let missedPlayableAnnouncements = 0
   /** Animation sequences in flight; acting during one wedges the client. */
   let sequenceDepth = 0
   /** Challenges of the current fight, from its messages and its panel. */
@@ -369,7 +371,7 @@ export function initCombatAi(
     combo: CombatSpell[],
     turn: number,
     stillOurTurn: () => boolean
-  ): Promise<boolean> => {
+  ): Promise<'played' | 'no-cast' | 'unavailable'> => {
     const state = buildFightState(gameWindow, {
       turn,
       combo,
@@ -391,27 +393,29 @@ export function initCombatAi(
       result = await planTurnWithOllama(state, settings)
     } catch (err) {
       log(`Model unreachable (${err instanceof Error ? err.message : String(err)}), playing the rules`)
-      return false
+      return 'unavailable'
     }
 
-    if (!stillOurTurn()) return true
+    if (!stillOurTurn()) return 'played'
 
     if (result.error) {
       log(`Model: ${result.error} (${result.elapsedMs}ms), playing the rules`)
-      return false
+      return 'unavailable'
     }
 
     for (const rejected of result.rejected) log(`Model action dropped — ${rejected}`)
 
     if (result.actions.length === 0) {
       log(`Model returned nothing usable (${result.elapsedMs}ms), playing the rules`)
-      return false
+      return 'unavailable'
     }
 
     log(`Model plan in ${result.elapsedMs}ms: ${result.reason ?? result.actions.length + ' action(s)'}`)
 
+    let casts = 0
+
     for (const action of result.actions) {
-      if (!stillOurTurn() || !isFightStarted(gameWindow)) return true
+      if (!stillOurTurn() || !isFightStarted(gameWindow)) return 'played'
 
       if (action.type === 'move') {
         const cell = state.cells.find((candidate) => candidate.cellId === action.cellId)
@@ -444,6 +448,7 @@ export function initCombatAi(
 
       try {
         castSpell(gameWindow, action.spellId, cellId)
+        casts += 1
         log(`Cast ${action.spellId} on ${target?.name ?? target?.id ?? 'myself'} (model)`)
       } catch (err) {
         log(`Cast failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -453,7 +458,8 @@ export function initCombatAi(
       await waitForIdle()
     }
 
-    return true
+    // A turn that only walks does not end a fight. The combo is played on top.
+    return casts > 0 ? 'played' : 'no-cast'
   }
 
   /**
@@ -499,63 +505,17 @@ export function initCombatAi(
     log(stillHeld ? 'Still in contact after the push' : 'Contact broken, free to move')
   }
 
-  const playTurn = async (turn: number, token: number) => {
-    const settings = callbacks.getSettings()
-    const { combo, label } = comboForTurn(settings, turn)
-    const stillOurTurn = () => !disposed && turnToken === token
-    let turnPassed = false
-
-    const passTurn = () => {
-      if (turnPassed || !stillOurTurn() || !isFightStarted(gameWindow)) return
-      turnPassed = true
-      finishTurn(gameWindow)
-      log('Turn ended')
-    }
-
-    try {
-      await playCombo()
-    } finally {
-      // Whatever happened above — an early return, an error, a message we did
-      // not expect — the turn is never left hanging.
-      if (settings.endTurnAfterCombo) passTurn()
-    }
-
-    async function playCombo() {
-
-    // Acting before the server declares the turn playable is ignored at best,
-    // and wedges the fight at worst.
-    if (!turnPlayable) {
-      const ready = await waitFor(() => turnPlayable || !stillOurTurn(), TURN_PLAYABLE_TIMEOUT_MS)
-      if (!ready && stillOurTurn()) {
-        log('The turn was never announced as playable, acting anyway')
-      }
-    }
-    if (!stillOurTurn()) return
-
-    await waitForIdle()
-    if (!stillOurTurn()) return
-
-    if (combo.length === 0) {
-      log(`Turn ${turn}: ${label} is empty, passing`)
-      return
-    }
-
-    log(`Turn ${turn}: playing the ${label}`)
-    await humanSleep(settings.turnStartDelayMs)
-
-    if (settings.brain === 'ollama' && (await playWithModel(settings, combo, turn, stillOurTurn))) {
-      return
-    }
-
-    const rules = deriveChallengeRules(withChallengeTexts())
-    if (rules.noMove) log('A challenge forbids moving: casting from here')
-
-    await breakMeleeWithPush(settings, combo)
-    if (!stillOurTurn() || !isFightStarted(gameWindow)) return
-
-    if (!rules.noMove) await positionForTurn(settings, combo)
-    if (!stillOurTurn() || !isFightStarted(gameWindow)) return
-
+  /**
+   * Plays the combo: each spell on the enemies it can reach, honouring the
+   * challenge constraints. Shared by the rules and by the model path, which
+   * falls back to it when its plan attacks no one.
+   */
+  const castCombo = async (
+    settings: CombatSettings,
+    combo: CombatSpell[],
+    rules: ReturnType<typeof deriveChallengeRules>,
+    stillOurTurn: () => boolean
+  ) => {
     for (const spell of combo) {
       if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
@@ -630,6 +590,77 @@ export function initCombatAi(
         await waitForIdle()
       }
     }
+  }
+
+  const playTurn = async (turn: number, token: number) => {
+    const settings = callbacks.getSettings()
+    const { combo, label } = comboForTurn(settings, turn)
+    const stillOurTurn = () => !disposed && turnToken === token
+    let turnPassed = false
+
+    const passTurn = () => {
+      if (turnPassed || !stillOurTurn() || !isFightStarted(gameWindow)) return
+      turnPassed = true
+      finishTurn(gameWindow)
+      log('Turn ended')
+    }
+
+    try {
+      await playCombo()
+    } finally {
+      // Whatever happened above — an early return, an error, a message we did
+      // not expect — the turn is never left hanging.
+      if (settings.endTurnAfterCombo) passTurn()
+    }
+
+    async function playCombo() {
+
+    // Acting before the server declares the turn playable is ignored at best,
+    // and wedges the fight at worst.
+    if (!turnPlayable && missedPlayableAnnouncements < 2) {
+      const ready = await waitFor(() => turnPlayable || !stillOurTurn(), TURN_PLAYABLE_TIMEOUT_MS)
+      if (!ready && stillOurTurn()) {
+        missedPlayableAnnouncements += 1
+        log(
+          missedPlayableAnnouncements >= 2
+            ? 'This build never announces the turn: acting straight away from now on'
+            : 'The turn was never announced as playable, acting anyway'
+        )
+      }
+    }
+    if (!stillOurTurn()) return
+
+    await waitForIdle()
+    if (!stillOurTurn()) return
+
+    if (combo.length === 0) {
+      log(`Turn ${turn}: ${label} is empty, passing`)
+      return
+    }
+
+    log(`Turn ${turn}: playing the ${label}`)
+    await humanSleep(settings.turnStartDelayMs)
+
+    const rules = deriveChallengeRules(withChallengeTexts())
+    if (rules.noMove) log('A challenge forbids moving: casting from here')
+
+    if (settings.brain === 'ollama') {
+      const outcome = await playWithModel(settings, combo, turn, stillOurTurn)
+      if (outcome === 'played') return
+      if (outcome === 'no-cast') {
+        log('The model only moved: casting the combo on top')
+        await castCombo(settings, combo, rules, stillOurTurn)
+        return
+      }
+    }
+
+    await breakMeleeWithPush(settings, combo)
+    if (!stillOurTurn() || !isFightStarted(gameWindow)) return
+
+    if (!rules.noMove) await positionForTurn(settings, combo)
+    if (!stillOurTurn() || !isFightStarted(gameWindow)) return
+
+    await castCombo(settings, combo, rules, stillOurTurn)
 
     if (!stillOurTurn()) return
     if (settings.endTurnAfterCombo) {
@@ -682,6 +713,7 @@ export function initCombatAi(
 
   const onTurnPlaying = () => {
     turnPlayable = true
+    missedPlayableAnnouncements = 0
   }
 
   /**

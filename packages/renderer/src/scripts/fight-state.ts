@@ -21,6 +21,8 @@ import {
  */
 
 export interface StateFighter {
+  /** Short number the model is asked to use, 1, 2, 3... */
+  n: number
   id: number
   name: string | null
   cellId: number | null
@@ -38,7 +40,7 @@ export interface StateSpell {
   name: string | null
   range: number
   minRange: number
-  /** Enemies this spell can hit right now, by fighter id. */
+  /** Enemies this spell can hit right now, by their short number. */
   targets: number[]
   self: boolean
   /** Pushes its target away, which breaks melee without paying a tackle. */
@@ -125,9 +127,15 @@ export interface FightState {
 
 const MAX_CELLS = 12
 
-function describe(gameWindow: DofusWindow, from: number | null, fighter: Fighter): StateFighter {
+function describe(
+  gameWindow: DofusWindow,
+  from: number | null,
+  fighter: Fighter,
+  index: number
+): StateFighter {
   const point = fighter.cellId !== null ? cellCoordinates(fighter.cellId) : null
   return {
+    n: index + 1,
     id: fighter.id,
     name: fighter.name,
     cellId: fighter.cellId,
@@ -183,7 +191,7 @@ export function buildFightState(
             const distance = cellDistance(from, enemy.cellId)
             return distance >= minRange && distance <= range && hasLineOfSight(gameWindow, from, enemy.cellId)
           })
-          .map((enemy) => enemy.id)
+          .map((enemy) => enemies.indexOf(enemy) + 1)
 
     return {
       id: entry.id,
@@ -251,8 +259,8 @@ export function buildFightState(
       canMove: !held && !rules.noMove && (me?.mp ?? 0) > 0
     },
     spells,
-    enemies: enemies.map((enemy) => describe(gameWindow, from, enemy)),
-    allies: allies.map((ally) => describe(gameWindow, from, ally)),
+    enemies: enemies.map((enemy, index) => describe(gameWindow, from, enemy, index)),
+    allies: allies.map((ally, index) => describe(gameWindow, from, ally, index)),
     cells: rules.noMove ? [] : cells,
     challenges,
     challengeRules: rules
@@ -324,6 +332,8 @@ export function readChallengeTexts(gameWindow: DofusWindow): Array<{ name: strin
       const label = (name ?? whole).trim().slice(0, 60)
       if (label.length === 0) continue
       if (found.some((entry) => entry.name === label)) continue
+      // The panel's own heading is not a challenge.
+      if (/^(challenges?|defis?|défis?)$/i.test(label)) continue
 
       found.push({
         name: label,
