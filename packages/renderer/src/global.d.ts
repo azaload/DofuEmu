@@ -2,6 +2,7 @@
 import type { GameContext } from '@dofemu/shared'
 import type { NativeNotificationPayload } from '@dofemu/shared'
 import type { AppUpdateStatus } from '@dofemu/shared'
+import type { OllamaRequest, OllamaResponse } from '@dofemu/shared'
 
 interface DofemuAPI {
   fetchGameContext(): Promise<GameContext>
@@ -27,6 +28,7 @@ interface DofemuAPI {
   showNativeNotification(payload: NativeNotificationPayload): void
   onNativeNotificationClick(cb: (tabId?: string) => void): () => void
   setSoundOnFocus(value: boolean): void
+  ollamaChat(request: OllamaRequest): Promise<OllamaResponse>
   storeGet(key: string): Promise<string | null>
   storeSet(key: string, value: string): void
   storeDelete(key: string): void

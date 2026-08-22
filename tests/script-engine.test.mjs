@@ -1673,6 +1673,178 @@ async function testMovementReportsNoEntryPoint(ScriptRunner) {
   console.log('ok - movement reports a missing entry point')
 }
 
+async function testModelBrain() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const asked = []
+  globalThis.window = {
+    dofemu: {
+      ollamaChat: async (request) => {
+        asked.push(request)
+        if (state.modelAnswer === null) return { ok: false, error: 'connection refused', elapsedMs: 12 }
+        return { ok: true, content: state.modelAnswer, elapsedMs: 42 }
+      }
+    }
+  }
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 161, name: 'Bolt', range: 12 }],
+    turnCombos: [],
+    targetStrategy: 'nearest',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 12,
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    spreadCasts: false,
+    brain: 'ollama',
+    ollamaEndpoint: 'http://127.0.0.1:11434',
+    ollamaModel: 'test-model',
+    ollamaTimeoutMs: 1000,
+    preferChallenges: true
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 350
+  state.fighters[2].data.disposition.cellId = 350
+
+  // The model answers with a legal cast plus one action it invented.
+  state.modelAnswer = JSON.stringify({
+    actions: [
+      { type: 'cast', spellId: 161, targetId: 20 },
+      { type: 'cast', spellId: 777, targetId: 20 }
+    ],
+    reason: 'hit the closest'
+  })
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 600))
+
+  assert.strictEqual(asked.length, 1, 'the model is asked once for the turn')
+  assert.strictEqual(asked[0].model, 'test-model', 'with the configured model')
+  assert.ok(asked[0].prompt.includes('"cells"') || asked[0].prompt.includes('cells'), 'the prompt carries the state')
+
+  const casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.strictEqual(casts.length, 1, 'only the legal cast is played')
+  assert.strictEqual(casts[0].data.spellId, 161)
+  assert.ok(logs.some((line) => line.includes('hit the closest')), 'the reason is logged')
+  assert.ok(logs.some((line) => line.includes('not in the combo')), 'the invented spell is reported')
+  assert.ok(
+    state.sent.some((m) => m.name === 'GameFightTurnFinishMessage'),
+    'the turn is still passed'
+  )
+
+  // With no model answering, the rules take the turn.
+  state.sent.length = 0
+  state.modelAnswer = null
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 800))
+
+  assert.ok(
+    logs.some((line) => line.includes('playing the rules')),
+    'the fallback is announced'
+  )
+  assert.ok(
+    state.sent.some((m) => m.name === 'GameActionFightCastRequestMessage'),
+    'the rules still cast'
+  )
+
+  delete globalThis.window
+  dispose()
+  console.log('ok - model brain with fallback')
+}
+
+async function testTurnPlanValidation() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/turn-plan.ts'))
+  const { validatePlan, parsePlan } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'turn-plan.js')).href}?t=${Date.now()}`
+  )
+
+  const state = {
+    turn: 1,
+    me: { id: 7, name: 'Tester', cellId: 280, life: 500, maxLife: 500, ap: 6, mp: 3 },
+    spells: [
+      { id: 161, name: 'Bolt', range: 6, minRange: 0, targets: [20], self: false },
+      { id: 100, name: 'Buff', range: 0, minRange: 0, targets: [], self: true }
+    ],
+    enemies: [
+      { id: 20, name: 'Close', cellId: 294, x: 0, y: 0, life: 100, maxLife: 200, distance: 1, lineOfSight: true, aligned: true },
+      { id: 21, name: 'Far', cellId: 400, x: 0, y: 0, life: 50, maxLife: 200, distance: 12, lineOfSight: false, aligned: false }
+    ],
+    allies: [],
+    cells: [
+      { cellId: 266, cost: 1, enemyDistance: 2, sees: [20], alignedWith: [20] },
+      { cellId: 252, cost: 2, enemyDistance: 3, sees: [20], alignedWith: [] }
+    ],
+    challenges: []
+  }
+
+  const { actions, rejected } = validatePlan(
+    {
+      actions: [
+        { type: 'move', cellId: 266 },
+        { type: 'move', cellId: 252 },
+        { type: 'cast', spellId: 161, targetId: 20 },
+        { type: 'cast', spellId: 100 },
+        { type: 'cast', spellId: 999, targetId: 20 },
+        { type: 'cast', spellId: 161, targetId: 99 },
+        { type: 'dance' }
+      ]
+    },
+    state
+  )
+
+  assert.deepStrictEqual(
+    actions,
+    [
+      { type: 'move', cellId: 266 },
+      { type: 'cast', spellId: 161, targetId: 20 },
+      { type: 'cast', spellId: 100 }
+    ],
+    'only the legal actions survive, in order'
+  )
+  assert.strictEqual(rejected.length, 4, 'the others are reported')
+  assert.ok(rejected.some((line) => line.includes('only one move per turn')), 'a second move is refused')
+  assert.ok(rejected.some((line) => line.includes('not in the combo')), 'an unknown spell is refused')
+  assert.ok(rejected.some((line) => line.includes('unknown target')), 'an unknown target is refused')
+
+  // A cast at an enemy out of reach is dropped when we have not moved.
+  const stillPut = validatePlan({ actions: [{ type: 'cast', spellId: 161, targetId: 21 }] }, state)
+  assert.strictEqual(stillPut.actions.length, 0, 'an unreachable target is dropped')
+  assert.ok(stillPut.rejected[0].includes('out of reach'), 'and says why')
+
+  // The parser copes with a model wrapping its JSON in prose.
+  const parsed = parsePlan('Sure! {"actions":[{"type":"cast","spellId":161,"targetId":20}],"reason":"hit"} done')
+  assert.strictEqual(parsed.actions.length, 1, 'the plan is extracted from the prose')
+  assert.strictEqual(parsed.reason, 'hit')
+  assert.strictEqual(parsePlan('no json here'), null, 'garbage is refused')
+
+  console.log('ok - turn plan validation')
+}
+
 async function testConnectionCheck() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/game-bridge.ts'))
   const { isConnected } = await import(
@@ -1848,6 +2020,8 @@ async function main() {
   await testTurnSynchronisation()
   await testMovementDiscovery(ScriptRunner)
   await testMovementReportsNoEntryPoint(ScriptRunner)
+  await testModelBrain()
+  await testTurnPlanValidation()
   await testConnectionCheck()
   await testTemplatesCompile()
 

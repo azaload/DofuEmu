@@ -168,3 +168,50 @@ export function reachableCells(
 
   return reached
 }
+
+/**
+ * Whether a spell thrown from `from` can see `to`.
+ *
+ * Walks the straight line between the two cells and stops at the first one the
+ * map marks as blocking sight. The game's own check is used when the build
+ * exposes one, since it also knows about fighters standing in the way.
+ */
+export function hasLineOfSight(gameWindow: DofusWindow, from: number, to: number): boolean {
+  if (from === to) return true
+
+  const mapRenderer = asDict(asDict(gameWindow.isoEngine)?.mapRenderer)
+  for (const method of ['isInLineOfSight', 'lineOfSight', 'losBetween']) {
+    const fn = mapRenderer?.[method]
+    if (typeof fn === 'function') {
+      try {
+        return (fn as (a: number, b: number) => boolean).call(mapRenderer, from, to) !== false
+      } catch {}
+    }
+  }
+
+  const start = cellCoordinates(from)
+  const end = cellCoordinates(to)
+  const steps = Math.max(Math.abs(end.x - start.x), Math.abs(end.y - start.y))
+  if (steps <= 1) return true
+
+  const cells = asDict(asDict(mapRenderer?.map)?.cells)
+  const blocksSight = (cellId: number): boolean => {
+    const cell = Array.isArray(cells) ? asDict(cells[cellId]) : asDict(cells?.[cellId])
+    const flags = cell?.l
+    // Bit 2 of the cell flags carries "sight passes through".
+    if (typeof flags === 'number') return (flags & 2) === 0
+    return false
+  }
+
+  for (let step = 1; step < steps; step++) {
+    const ratio = step / steps
+    const x = Math.round(start.x + (end.x - start.x) * ratio)
+    const y = Math.round(start.y + (end.y - start.y) * ratio)
+    const cellId = cellFromCoordinates(x, y)
+    if (cellId === null) continue
+    if (cellId === from || cellId === to) continue
+    if (blocksSight(cellId)) return false
+  }
+
+  return true
+}

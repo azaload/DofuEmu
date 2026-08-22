@@ -110,7 +110,12 @@ const defaultState = {
     preferLineUp: true,
     positioning: 'keep-distance' as const,
     tackleAware: true,
-    spreadCasts: true
+    spreadCasts: true,
+    brain: 'rules' as const,
+    ollamaEndpoint: 'http://127.0.0.1:11434',
+    ollamaModel: 'qwen2.5:1.5b-instruct',
+    ollamaTimeoutMs: 4000,
+    preferChallenges: false
   },
   scripts: {
     enabled: true,

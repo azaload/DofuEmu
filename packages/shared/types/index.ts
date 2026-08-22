@@ -92,9 +92,23 @@ export interface CombatSettings {
    * a single one. With one enemy in range this plays the combo as written.
    */
   spreadCasts: boolean
+  /** Who decides the turn: the built-in rules, or a local model. */
+  brain: CombatBrain
+  ollamaEndpoint: string
+  ollamaModel: string
+  ollamaTimeoutMs: number
+  /** Ask the model to hold the fight's challenges, even at a cost. */
+  preferChallenges: boolean
 }
 
 export type CombatPositioning = 'keep-distance' | 'close-in'
+
+export type CombatBrain = 'rules' | 'ollama'
+
+export const COMBAT_BRAIN_LABELS: Record<CombatBrain, string> = {
+  rules: 'Built-in rules',
+  ollama: 'Local model (Ollama)'
+}
 
 export const COMBAT_POSITIONING_LABELS: Record<CombatPositioning, string> = {
   'keep-distance': 'Keep your distance',
@@ -342,5 +356,22 @@ export enum IPCEvents {
   NATIVE_NOTIFICATION_CLICK = 'native_notification_click',
   STORE_GET = 'store_get',
   STORE_SET = 'store_set',
-  STORE_DELETE = 'store_delete'
+  STORE_DELETE = 'store_delete',
+  OLLAMA_CHAT = 'ollama_chat'
+}
+
+export interface OllamaRequest {
+  endpoint: string
+  model: string
+  prompt: string
+  system?: string
+  timeoutMs?: number
+}
+
+export interface OllamaResponse {
+  ok: boolean
+  content?: string
+  error?: string
+  /** Round trip in milliseconds, for the activity log. */
+  elapsedMs?: number
 }

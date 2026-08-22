@@ -6,8 +6,8 @@ import { useGameTabStore } from '@/stores/gameTabStore'
 import { useCombatStore } from '@/stores/combatStore'
 import { getSpells, isFightStarted, type SpellInfo } from '@/scripts/fight-bridge'
 import { colors } from '@/theme'
-import { COMBAT_POSITIONING_LABELS, COMBAT_TARGET_LABELS } from '@dofemu/shared'
-import type { CombatPositioning, CombatTargetStrategy } from '@dofemu/shared'
+import { COMBAT_BRAIN_LABELS, COMBAT_POSITIONING_LABELS, COMBAT_TARGET_LABELS } from '@dofemu/shared'
+import type { CombatBrain, CombatPositioning, CombatTargetStrategy } from '@dofemu/shared'
 
 const TARGET_OPTIONS = (Object.keys(COMBAT_TARGET_LABELS) as CombatTargetStrategy[]).map((value) => ({
   value,
@@ -17,6 +17,11 @@ const TARGET_OPTIONS = (Object.keys(COMBAT_TARGET_LABELS) as CombatTargetStrateg
 const POSITIONING_OPTIONS = (Object.keys(COMBAT_POSITIONING_LABELS) as CombatPositioning[]).map(
   (value) => ({ value, label: COMBAT_POSITIONING_LABELS[value] })
 )
+
+const BRAIN_OPTIONS = (Object.keys(COMBAT_BRAIN_LABELS) as CombatBrain[]).map((value) => ({
+  value,
+  label: COMBAT_BRAIN_LABELS[value]
+}))
 
 function activeGameWindow() {
   const activeTabId = useGameTabStore.getState().activeTabId
@@ -350,6 +355,50 @@ export function CombatScreen() {
             {fighting ? 'in fight' : 'out of fight'}
           </span>
         </Row>
+        <Row label="Decides the turn" desc="The built-in rules, or a local model">
+          <Select
+            value={combat.brain}
+            onChange={(value) => setCombatSettings({ brain: value as CombatBrain })}
+            options={BRAIN_OPTIONS}
+          />
+        </Row>
+        {combat.brain === 'ollama' && (
+          <>
+            <Row label="Ollama endpoint" desc="Where the local server listens">
+              <div style={{ width: 200 }}>
+                <TextInput
+                  value={combat.ollamaEndpoint}
+                  onChange={(v) => setCombatSettings({ ollamaEndpoint: v })}
+                  placeholder="http://127.0.0.1:11434"
+                />
+              </div>
+            </Row>
+            <Row label="Model" desc="A small one answers in under a second">
+              <div style={{ width: 200 }}>
+                <TextInput
+                  value={combat.ollamaModel}
+                  onChange={(v) => setCombatSettings({ ollamaModel: v })}
+                  placeholder="qwen2.5:1.5b-instruct"
+                />
+              </div>
+            </Row>
+            <Row label="Answer timeout (ms)" desc="Past this the rules play the turn">
+              <div style={{ width: 90 }}>
+                <TextInput
+                  type="number"
+                  value={String(combat.ollamaTimeoutMs)}
+                  onChange={(v) => setCombatSettings({ ollamaTimeoutMs: Math.max(500, parseInt(v, 10) || 500) })}
+                />
+              </div>
+            </Row>
+            <Row label="Play the challenges" desc="Hold the fight's challenges, even at a cost">
+              <Toggle
+                checked={combat.preferChallenges}
+                onChange={(v) => setCombatSettings({ preferChallenges: v })}
+              />
+            </Row>
+          </>
+        )}
         <Row label="Target" desc="Which enemy the combo is cast on">
           <Select
             value={combat.targetStrategy}

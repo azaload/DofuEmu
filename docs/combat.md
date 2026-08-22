@@ -71,6 +71,57 @@ range the game reports, and the **Fallback range** setting when it reports none.
 when a ranged spell keeps walking towards the enemy instead of casting: that means the
 range could not be read and the fallback (1, melee) was used.
 
+## Letting a local model play the turn
+
+**Decides the turn** switches between the built-in rules and a model running on your own
+machine through [Ollama](https://ollama.com). Nothing leaves the machine, and no key is
+needed.
+
+```bash
+ollama pull qwen2.5:1.5b-instruct
+ollama serve
+```
+
+Then set **Decides the turn** to *Local model*, and check the endpoint
+(`http://127.0.0.1:11434` by default) and the model name.
+
+### What the model receives
+
+Not the raw fight — a snapshot where the hard parts are already solved:
+
+- your cell, life, action and movement points
+- the spells of the combo, with their range and, for each, **the enemies it can actually
+  hit right now** (range and line of sight already checked)
+- every enemy and ally with position, life, distance, line of sight and alignment
+- **the cells you can reach this turn**, each with its cost in movement points, its
+  distance to the closest enemy, and which enemies it sees or lines up with
+- the fight's challenges when the client exposes them
+
+A one- or two-billion-parameter model cannot work out geometry on its own; it can pick from
+a list of legal options. That is the whole design.
+
+### What comes back
+
+A plan: an ordered list of `move` and `cast` actions. Every one is checked against the
+snapshot before anything reaches the game — a cell that is not reachable, a spell that is
+not in the combo, a target out of reach or unknown — and what is dropped is written to the
+activity log. If the model does not answer within **Answer timeout**, answers nothing
+usable, or is not running at all, the built-in rules play the turn instead. A fight is
+never lost to a model that stalls.
+
+### Challenges
+
+**Play the challenges** tells the model to hold the fight's challenges even at the cost of
+damage. It only works as far as the client exposes them; when it exposes none, the option
+changes nothing.
+
+### Honest limits
+
+- A small model on CPU answers in roughly half a second to two seconds. Fast, not instant.
+- It is asked once per turn, and plans the whole turn at once.
+- The rules remain the safety net, and the validation the guardrail: the model chooses,
+  it never bypasses what the game allows.
+
 ## A different combo on a given turn
 
 The default combo runs on every turn. To open a fight differently — buffs on turn 1, then

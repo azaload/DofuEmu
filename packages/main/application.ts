@@ -8,7 +8,14 @@ import { join } from 'path'
 import { resolveStaticPath } from './static-file'
 import fs from 'fs'
 import ElectronStore from 'electron-store'
-import { IPCEvents, GameContext, NativeNotificationPayload, AppUpdateStatus } from '@dofemu/shared'
+import {
+  IPCEvents,
+  GameContext,
+  NativeNotificationPayload,
+  AppUpdateStatus,
+  OllamaRequest,
+  OllamaResponse
+} from '@dofemu/shared'
 import { get } from './constants'
 import { GameWindow } from './windows/game-window'
 import { UpdaterWindow } from './windows/updater-window'
@@ -245,6 +252,54 @@ export class Application {
         this._store.set('settings', JSON.parse(settings))
       } catch {}
     })
+
+    // The combat AI asks a local model for a turn. It goes through the main
+    // process: the renderer runs on a file origin, and a browser fetch to
+    // localhost would be a cross-origin request the model server refuses.
+    ipcMain.handle(
+      IPCEvents.OLLAMA_CHAT,
+      async (_event, request: OllamaRequest): Promise<OllamaResponse> => {
+        const startedAt = Date.now()
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), request.timeoutMs ?? 5000)
+
+        try {
+          const response = await fetch(`${request.endpoint.replace(/\/$/, '')}/api/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify({
+              model: request.model,
+              prompt: request.prompt,
+              system: request.system,
+              stream: false,
+              format: 'json',
+              options: { temperature: 0, num_predict: 320 }
+            })
+          })
+
+          if (!response.ok) {
+            return { ok: false, error: `HTTP ${response.status}`, elapsedMs: Date.now() - startedAt }
+          }
+
+          const body = (await response.json()) as { response?: string }
+          return {
+            ok: true,
+            content: body.response ?? '',
+            elapsedMs: Date.now() - startedAt
+          }
+        } catch (err) {
+          const aborted = err instanceof Error && err.name === 'AbortError'
+          return {
+            ok: false,
+            error: aborted ? `timed out after ${request.timeoutMs ?? 5000}ms` : String(err),
+            elapsedMs: Date.now() - startedAt
+          }
+        } finally {
+          clearTimeout(timeout)
+        }
+      }
+    )
 
     ipcMain.handle(IPCEvents.STORE_GET, (_event, key: string) => {
       const val = this._store.get(key)

@@ -1,5 +1,7 @@
 import type { CombatSettings, CombatSpell } from '@dofemu/shared'
 import { closeUiPopups } from '@/scripts/ui-bridge'
+import { buildFightState } from '@/scripts/fight-state'
+import { planTurnWithOllama } from '@/scripts/ollama-planner'
 import {
   areCellsAligned,
   castSpell,
@@ -9,6 +11,7 @@ import {
   tacklingEnemies,
   finishTurn,
   getEnemies,
+  getFighters,
   getMyFighter,
   getMyFighterId,
   getSpellRange,
@@ -18,6 +21,7 @@ import {
   setFightReady
 } from '@/scripts/fight-bridge'
 import { requestMoveToCell } from '@/scripts/game-bridge'
+import { reachableCells } from '@/scripts/cells'
 import type { DofusWindow } from '@/types/dofus-window'
 
 /**
@@ -337,6 +341,104 @@ export function initCombatAi(
     }
   }
 
+  /** The steps to walk from `from` to `to`, or null when nothing legal leads there. */
+  const reachablePath = (from: number | null, to: number): number[] | null => {
+    if (from === null) return null
+    const me = getMyFighter(gameWindow)
+    const occupied = new Set(
+      getFighters(gameWindow)
+        .filter((fighter) => fighter.alive && fighter.cellId !== null && fighter.cellId !== from)
+        .map((fighter) => fighter.cellId as number)
+    )
+    return reachableCells(gameWindow, from, me?.mp ?? 0, occupied).get(to)?.path ?? null
+  }
+
+  /**
+   * Hands the turn to the local model. Returns false when it could not be
+   * used — no answer, no usable action — so the rules play the turn instead.
+   */
+  const playWithModel = async (
+    settings: CombatSettings,
+    combo: CombatSpell[],
+    turn: number,
+    stillOurTurn: () => boolean
+  ): Promise<boolean> => {
+    const state = buildFightState(gameWindow, {
+      turn,
+      combo,
+      fallbackRange: settings.defaultSpellRange
+    })
+
+    let result
+    try {
+      result = await planTurnWithOllama(state, settings)
+    } catch (err) {
+      log(`Model unreachable (${err instanceof Error ? err.message : String(err)}), playing the rules`)
+      return false
+    }
+
+    if (!stillOurTurn()) return true
+
+    if (result.error) {
+      log(`Model: ${result.error} (${result.elapsedMs}ms), playing the rules`)
+      return false
+    }
+
+    for (const rejected of result.rejected) log(`Model action dropped — ${rejected}`)
+
+    if (result.actions.length === 0) {
+      log(`Model returned nothing usable (${result.elapsedMs}ms), playing the rules`)
+      return false
+    }
+
+    log(`Model plan in ${result.elapsedMs}ms: ${result.reason ?? result.actions.length + ' action(s)'}`)
+
+    for (const action of result.actions) {
+      if (!stillOurTurn() || !isFightStarted(gameWindow)) return true
+
+      if (action.type === 'move') {
+        const cell = state.cells.find((candidate) => candidate.cellId === action.cellId)
+        if (!cell) continue
+        if (settings.tackleAware && tacklingEnemies(getEnemies(gameWindow), state.me.cellId ?? -1).length > 0) {
+          log('Model asked to move while held in contact — skipped')
+          continue
+        }
+
+        const path = reachablePath(state.me.cellId, cell.cellId)
+        if (!path) {
+          log(`No path to cell ${cell.cellId} — move skipped`)
+          continue
+        }
+
+        log(`Moving to cell ${cell.cellId} (${cell.cost} MP, model)`)
+        if (sendFightMove(gameWindow, path)) {
+          await waitForMove(cell.cellId)
+          await waitForIdle()
+          await humanSleep(0)
+        }
+        continue
+      }
+
+      const target = action.targetId !== undefined
+        ? getEnemies(gameWindow).find((enemy) => enemy.id === action.targetId)
+        : getMyFighter(gameWindow)
+      const cellId = target?.cellId ?? null
+      if (cellId === null) continue
+
+      try {
+        castSpell(gameWindow, action.spellId, cellId)
+        log(`Cast ${action.spellId} on ${target?.name ?? target?.id ?? 'myself'} (model)`)
+      } catch (err) {
+        log(`Cast failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+
+      await humanSleep(settings.castDelayMs)
+      await waitForIdle()
+    }
+
+    return true
+  }
+
   const playTurn = async (turn: number, token: number) => {
     const settings = callbacks.getSettings()
     const { combo, label } = comboForTurn(settings, turn)
@@ -380,6 +482,10 @@ export function initCombatAi(
 
     log(`Turn ${turn}: playing the ${label}`)
     await humanSleep(settings.turnStartDelayMs)
+
+    if (settings.brain === 'ollama' && (await playWithModel(settings, combo, turn, stillOurTurn))) {
+      return
+    }
 
     await positionForTurn(settings, combo)
     if (!stillOurTurn() || !isFightStarted(gameWindow)) return
