@@ -3,7 +3,9 @@
 The Combat AI plays fight turns for you. In its current form it does one thing, on every
 turn, on every connected tab: cast a fixed spell combo on a target, then pass the turn.
 
-Configure it in **Settings → Combat**. `Ctrl+Shift+F` toggles it on and off.
+Configure it in **Settings → Combat**. The crossed-swords button in the title bar, between
+the scripts button and the settings gear, turns it on and off at a glance — gold when it is
+playing, struck through when it is paused. `Ctrl+Shift+F` does the same from the keyboard.
 
 ## How a turn is played
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useCallback, type CSSProperties } from 'react'
 import { useSettings } from '@/App'
-import { Plus, X, Settings, Minus, Square, Copy, Zap } from 'lucide-react'
+import { Plus, X, Settings, Minus, Square, Copy, Zap, Swords } from 'lucide-react'
 import { WindowButton } from '@/components/WindowButton'
 import { useGameTabStore, GameTab } from '@/stores/gameTabStore'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -308,6 +308,7 @@ function GameIframe({ tab, gameSrc, isVisible }: { tab: GameTab; gameSrc: string
 export function GameScreen() {
   const { tabs, activeTabId, addTab, removeTab, setActiveTab, canAddTab, reorderTabs } = useGameTabStore()
   const { hotkeys, game, loadSettings, isHydrated } = useSettingsStore()
+  const combatEnabled = useSettingsStore((state) => state.combat.enabled)
   const { activeTeamId, teams, characterTabMap } = useTeamStore()
   const { setSettingsOpen, openSettings } = useSettings()
   const scriptRuns = useScriptStore((state) => state.runs)
@@ -604,6 +605,26 @@ export function GameScreen() {
             {activeRuns.length > 0 ? <Square size={10} /> : <Zap size={12} />}
             {activeRuns.length > 0 && (
               <span style={{ fontSize: 10, fontFamily: 'monospace' }}>{activeRuns.length}</span>
+            )}
+          </button>
+          <button
+            onClick={() => useSettingsStore.getState().toggleCombatAi()}
+            title={combatEnabled ? 'Combat AI on — click to pause it' : 'Combat AI off — click to resume'}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              width: 28, height: '100%', background: 'none', border: 'none', cursor: 'pointer',
+              color: combatEnabled ? colors.accentText : colors.textFaint,
+              position: 'relative'
+            }}
+          >
+            <Swords size={12} />
+            {!combatEnabled && (
+              <span
+                style={{
+                  position: 'absolute', width: 16, height: 1, background: colors.textFaint,
+                  transform: 'rotate(-45deg)'
+                }}
+              />
             )}
           </button>
           <button
