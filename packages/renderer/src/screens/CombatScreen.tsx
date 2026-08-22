@@ -6,8 +6,20 @@ import { useGameTabStore } from '@/stores/gameTabStore'
 import { useCombatStore } from '@/stores/combatStore'
 import { getSpells, isFightStarted, type SpellInfo } from '@/scripts/fight-bridge'
 import { colors } from '@/theme'
-import { COMBAT_BRAIN_LABELS, COMBAT_POSITIONING_LABELS, COMBAT_TARGET_LABELS } from '@dofemu/shared'
-import type { CombatBrain, CombatPositioning, CombatTargetStrategy } from '@dofemu/shared'
+import {
+  COMBAT_BRAIN_LABELS,
+  COMBAT_ELEMENT_LABELS,
+  COMBAT_POSITIONING_LABELS,
+  COMBAT_SPELL_MODE_LABELS,
+  COMBAT_TARGET_LABELS
+} from '@dofemu/shared'
+import type {
+  CombatBrain,
+  CombatElement,
+  CombatPositioning,
+  CombatSpellMode,
+  CombatTargetStrategy
+} from '@dofemu/shared'
 
 const TARGET_OPTIONS = (Object.keys(COMBAT_TARGET_LABELS) as CombatTargetStrategy[]).map((value) => ({
   value,
@@ -17,6 +29,12 @@ const TARGET_OPTIONS = (Object.keys(COMBAT_TARGET_LABELS) as CombatTargetStrateg
 const POSITIONING_OPTIONS = (Object.keys(COMBAT_POSITIONING_LABELS) as CombatPositioning[]).map(
   (value) => ({ value, label: COMBAT_POSITIONING_LABELS[value] })
 )
+
+const SPELL_MODE_OPTIONS = (Object.keys(COMBAT_SPELL_MODE_LABELS) as CombatSpellMode[]).map(
+  (value) => ({ value, label: COMBAT_SPELL_MODE_LABELS[value] })
+)
+
+const ELEMENTS = Object.keys(COMBAT_ELEMENT_LABELS) as CombatElement[]
 
 const BRAIN_OPTIONS = (Object.keys(COMBAT_BRAIN_LABELS) as CombatBrain[]).map((value) => ({
   value,
@@ -433,6 +451,42 @@ export function CombatScreen() {
             {fighting ? 'in fight' : 'out of fight'}
           </span>
         </Row>
+        <Row label="Spells" desc="Cast the combo you configured, or let the AI choose">
+          <Select
+            value={combat.spellMode}
+            onChange={(value) => setCombatSettings({ spellMode: value as CombatSpellMode })}
+            options={SPELL_MODE_OPTIONS}
+          />
+        </Row>
+        {combat.spellMode === 'auto' && (
+          <Row label="Elements" desc="Which damage the AI may use">
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end', maxWidth: 260 }}>
+              {ELEMENTS.map((element) => {
+                const enabled = (combat.elements ?? []).includes(element)
+                return (
+                  <label
+                    key={element}
+                    style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: enabled ? colors.accentText : colors.textFaint, cursor: 'pointer' }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={enabled}
+                      onChange={() =>
+                        setCombatSettings({
+                          elements: enabled
+                            ? (combat.elements ?? []).filter((candidate) => candidate !== element)
+                            : [...(combat.elements ?? []), element]
+                        })
+                      }
+                      style={{ accentColor: colors.accent, cursor: 'pointer', margin: 0 }}
+                    />
+                    {COMBAT_ELEMENT_LABELS[element]}
+                  </label>
+                )
+              })}
+            </div>
+          </Row>
+        )}
         <Row label="Decides the turn" desc="The built-in rules, or a local model">
           <Select
             value={combat.brain}

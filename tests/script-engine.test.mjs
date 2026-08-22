@@ -708,7 +708,9 @@ async function testTurnCombos() {
     positioning: 'close-in',
     positioning: 'close-in',
     tackleAware: true,
-    spreadCasts: false
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -784,7 +786,9 @@ async function testApproachWithMp() {
     preferLineUp: false,
     positioning: 'close-in',
     tackleAware: true,
-    spreadCasts: false
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -863,7 +867,9 @@ async function testSelfCastAndLineUp() {
     preferLineUp: true,
     positioning: 'close-in',
     tackleAware: true,
-    spreadCasts: false
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -971,7 +977,9 @@ async function testRangeAndShortWalk() {
     preferLineUp: false,
     positioning: 'close-in',
     tackleAware: true,
-    spreadCasts: false
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1058,7 +1066,9 @@ async function testKitingAndSingleMove() {
     preferLineUp: false,
     positioning: 'keep-distance',
     tackleAware: true,
-    spreadCasts: false
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1226,7 +1236,9 @@ async function testTackleAwareness() {
     preferLineUp: false,
     positioning: 'keep-distance',
     tackleAware: true,
-    spreadCasts: false
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1338,7 +1350,9 @@ async function testFightMovementGoesThroughTheServer() {
     preferLineUp: false,
     positioning: 'close-in',
     tackleAware: true,
-    spreadCasts: false
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1421,7 +1435,9 @@ async function testHumanDelays() {
     preferLineUp: false,
     positioning: 'keep-distance',
     tackleAware: true,
-    spreadCasts: false
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1495,7 +1511,9 @@ async function testTurnAlwaysPassed() {
     preferLineUp: true,
     positioning: 'keep-distance',
     tackleAware: true,
-    spreadCasts: false
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1568,7 +1586,9 @@ async function testTurnSynchronisation() {
     positioning: 'close-in',
     positioning: 'close-in',
     tackleAware: true,
-    spreadCasts: false
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1721,6 +1741,8 @@ async function testModelBrain() {
     positioning: 'keep-distance',
     tackleAware: true,
     spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral'],
     brain: 'ollama',
     ollamaEndpoint: 'http://127.0.0.1:11434',
     ollamaModel: 'test-model',
@@ -1878,6 +1900,8 @@ async function testPlacementAndLineOfSight() {
     positioning: 'keep-distance',
     tackleAware: true,
     spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral'],
     brain: 'rules',
     ollamaEndpoint: '',
     ollamaModel: '',
@@ -1941,6 +1965,8 @@ async function testPushBreaksMelee() {
     positioning: 'keep-distance',
     tackleAware: true,
     spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral'],
     brain: 'rules',
     ollamaEndpoint: '',
     ollamaModel: '',
@@ -2080,6 +2106,150 @@ async function testAntiIdle() {
   delete globalThis.MouseEvent
   delete globalThis.KeyboardEvent
   console.log('ok - stays connected while idle')
+}
+
+async function testSpellPlanner() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-planner.ts'))
+  const { planSpellTurn, hitsFrom, castableCells } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'spell-planner.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { zoneCells, cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  // A circle of 1 covers the cell and its four neighbours.
+  const circle = zoneCells(67, 1, 280, 322)
+  assert.ok(circle.includes(322), 'the aimed cell is covered')
+  assert.ok(circle.length >= 3, 'and the ones around it')
+  assert.ok(
+    circle.every((cell) => cellDistance(cell, 322) <= 1),
+    'nothing beyond the radius'
+  )
+  assert.deepStrictEqual(zoneCells(80, 0, 280, 322), [322], 'a point spell covers one cell')
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  // A bow mastery to keep up, and an area arrow worth 20 damage.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    100: {
+      id: 100,
+      spell: { nameId: 'Maitrise de l arc' },
+      spellLevel: {
+        apCost: 2,
+        range: 0,
+        minRange: 0,
+        castInLine: false,
+        castTestLos: false,
+        minCastInterval: 3,
+        effects: [{ effectId: 128, diceNum: 30, diceSide: 30, zoneSize: 0 }]
+      }
+    },
+    200: {
+      id: 200,
+      spell: { nameId: 'Fleche de Barrage' },
+      spellLevel: {
+        apCost: 4,
+        range: 8,
+        minRange: 1,
+        castInLine: false,
+        castTestLos: false,
+        maxCastPerTurn: 2,
+        effects: [{ effectId: 100, diceNum: 18, diceSide: 22, zoneShape: 67, zoneSize: 1 }]
+      }
+    }
+  }
+
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[0].data.stats.actionPoints = 6
+  // Two monsters side by side: one arrow should catch both.
+  state.fighters[1].data.disposition.cellId = 322
+  state.fighters[2].data.disposition.cellId = 336
+
+  const lastCastTurn = new Map()
+  const plan = planSpellTurn(gameWindow, {
+    elements: ['fire', 'earth', 'water', 'air', 'neutral'],
+    turn: 1,
+    lastCastTurn,
+    castsThisTurn: new Map(),
+    actionPoints: 6
+  })
+
+  assert.ok(plan.length >= 2, 'the turn spends its action points')
+  assert.strictEqual(plan[0].spellId, 100, 'the boost comes first')
+  assert.strictEqual(plan[1].spellId, 200, 'then the damage')
+
+  const arrow = plan[1]
+  assert.ok(arrow.hits.length >= 1, 'the arrow lands on someone')
+  assert.ok(
+    arrow.cellId === 322 || arrow.cellId === 336 || arrow.hits.length > 1,
+    'aimed at a cell, which is what lets an area spell catch a group'
+  )
+
+  // The area really does reach a monster that was not aimed at.
+  const catalogueSpell = {
+    id: 200,
+    zoneShape: 67,
+    zoneSize: 1,
+    range: 8,
+    minRange: 1,
+    castInLine: false,
+    needsLineOfSight: false
+  }
+  const between = zoneCells(67, 1, 280, 322).find((cell) => cell !== 322)
+  if (between !== undefined) {
+    const hits = hitsFrom(catalogueSpell, 280, between, [
+      { id: 20, cellId: 322, alive: true, teamId: 1, life: 10, maxLife: 10, ap: 0, mp: 0, name: 'A' }
+    ])
+    assert.strictEqual(hits.length, 1, 'a monster is hit without being the aimed cell')
+  }
+
+  // A spell on cooldown is not offered again the next turn.
+  lastCastTurn.set(100, 1)
+  const nextTurn = planSpellTurn(gameWindow, {
+    elements: ['fire', 'earth', 'water', 'air', 'neutral'],
+    turn: 2,
+    lastCastTurn,
+    castsThisTurn: new Map(),
+    actionPoints: 6
+  })
+  assert.ok(!nextTurn.some((cast) => cast.spellId === 100), 'the boost waits for its cooldown')
+
+  // But it returns once the interval has passed.
+  const later = planSpellTurn(gameWindow, {
+    elements: ['fire', 'earth', 'water', 'air', 'neutral'],
+    turn: 5,
+    lastCastTurn,
+    castsThisTurn: new Map(),
+    actionPoints: 6
+  })
+  assert.ok(later.some((cast) => cast.spellId === 100), 'and is recast as soon as it is ready')
+
+  // An element the user unticked is left alone.
+  const noFire = planSpellTurn(gameWindow, {
+    elements: ['earth', 'water', 'air', 'neutral'],
+    turn: 9,
+    lastCastTurn: new Map(),
+    castsThisTurn: new Map(),
+    actionPoints: 6
+  })
+  assert.ok(!noFire.some((cast) => cast.spellId === 200), 'a fire spell is skipped when fire is off')
+
+  // Range and line constraints are the spell's own.
+  const inLine = castableCells(
+    gameWindow,
+    { id: 1, range: 4, minRange: 2, castInLine: true, needsLineOfSight: false, zoneShape: null, zoneSize: null },
+    280
+  )
+  assert.ok(inLine.length > 0, 'a line spell has somewhere to go')
+  assert.ok(
+    inLine.every((cell) => cellDistance(280, cell) >= 2 && cellDistance(280, cell) <= 4),
+    'the minimum and maximum range are respected'
+  )
+
+  console.log('ok - the AI plans from its own spells')
 }
 
 async function testChallengeRules() {
@@ -2415,6 +2585,7 @@ async function main() {
   await testPlacementAndLineOfSight()
   await testPushBreaksMelee()
   await testAntiIdle()
+  await testSpellPlanner()
   await testChallengeRules()
   await testTurnPlanValidation()
   await testConnectionCheck()

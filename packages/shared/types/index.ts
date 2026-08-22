@@ -108,6 +108,10 @@ export interface CombatSettings {
    * a single one. With one enemy in range this plays the combo as written.
    */
   spreadCasts: boolean
+  /** Which spells the built-in AI casts: the combo, or its own choice. */
+  spellMode: CombatSpellMode
+  /** Elements it may use when choosing on its own. */
+  elements: CombatElement[]
   /** Who decides the turn: the built-in rules, or a local model. */
   brain: CombatBrain
   ollamaEndpoint: string
@@ -115,6 +119,24 @@ export interface CombatSettings {
   ollamaTimeoutMs: number
   /** Ask the model to hold the fight's challenges, even at a cost. */
   preferChallenges: boolean
+}
+
+export type CombatElement = 'fire' | 'earth' | 'water' | 'air' | 'neutral'
+
+export const COMBAT_ELEMENT_LABELS: Record<CombatElement, string> = {
+  fire: 'Fire',
+  earth: 'Earth',
+  water: 'Water',
+  air: 'Air',
+  neutral: 'Neutral'
+}
+
+/** How the built-in AI decides which spells to cast. */
+export type CombatSpellMode = 'combo' | 'auto'
+
+export const COMBAT_SPELL_MODE_LABELS: Record<CombatSpellMode, string> = {
+  combo: 'The combo I configured',
+  auto: 'Choose from my spells'
 }
 
 export type CombatPositioning = 'keep-distance' | 'close-in'

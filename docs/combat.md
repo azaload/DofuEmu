@@ -229,6 +229,39 @@ when **exactly one** enemy holds the character, freeing it for the rest of the t
 With two or more monsters in contact it is not used: pushing one leaves the other holding,
 for nothing.
 
+## Letting the AI choose its spells
+
+**Spells** decides what the built-in AI casts: *The combo I configured*, or *Choose from my
+spells* (the default). In the second mode it reads the character's spellbook from the game
+and plans the turn itself.
+
+For every spell it knows the numbers the game gives it:
+
+| Read from the spell | Used for |
+|---------------------|----------|
+| Action point cost | chaining casts until the points run out |
+| Range and minimum range | which cells it may be aimed at |
+| Straight line only | a spell that must be thrown along an axis is only aimed there |
+| Line of sight required | a blocked line rules the cell out — for that spell only |
+| Area shape and size | what a cast actually touches |
+| Cooldown, casts per turn | when a spell is available again |
+| Element | the filter below |
+
+**A cast is aimed at a cell, not at a fighter.** That is what lets an area spell — *Flèche
+de Barrage* and its zone — catch two monsters at once, or reach one it could not target
+directly. Every reachable cell is scored by what its area lands on, and the cast that
+touches the most enemies wins, the cheapest one breaking a tie.
+
+Boosts come first while they are off cooldown: *Maîtrise de l'arc* is recast the moment its
+interval has passed, since a boost held up all fight is worth more than one extra hit.
+
+**Elements** ticks which damage the AI may use — fire, earth, water, air, neutral. A spell
+whose element the client does not expose is never filtered out, so a gap in that reading
+cannot silently disable a spell.
+
+If nothing is worth casting, the configured combo is played instead, so the turn is never
+empty.
+
 ## Spreading the casts
 
 **Spread the casts** (on by default) plays a turn across the group rather than dumping it

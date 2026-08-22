@@ -215,3 +215,70 @@ export function hasLineOfSight(gameWindow: DofusWindow, from: number, to: number
 
   return true
 }
+
+/**
+ * Cells an area of effect covers.
+ *
+ * Dofus describes a zone by a shape letter and a size: a point, a circle, a
+ * cross, a line, and a few rarer ones. The shapes below are the ones that
+ * change how a spell is aimed; anything unknown falls back to a circle, which
+ * over-estimates rather than misses.
+ */
+export function zoneCells(
+  shape: number | string | null,
+  size: number | null,
+  from: number,
+  target: number
+): number[] {
+  const radius = Math.max(0, size ?? 0)
+  if (radius === 0) return [target]
+
+  const letter =
+    typeof shape === 'number' ? String.fromCharCode(shape).toUpperCase() : (shape ?? 'C').toUpperCase()
+
+  const centre = cellCoordinates(target)
+  const hit: number[] = []
+
+  const push = (x: number, y: number) => {
+    const cellId = cellFromCoordinates(x, y)
+    if (cellId !== null && !hit.includes(cellId)) hit.push(cellId)
+  }
+
+  switch (letter) {
+    case 'P': // a single cell
+      return [target]
+
+    case 'X': // cross: the two grid axes through the target
+      push(centre.x, centre.y)
+      for (let step = 1; step <= radius; step++) {
+        push(centre.x + step, centre.y)
+        push(centre.x - step, centre.y)
+        push(centre.x, centre.y + step)
+        push(centre.x, centre.y - step)
+      }
+      return hit
+
+    case 'L': // line: carries on away from the caster
+    case 'T': {
+      const origin = cellCoordinates(from)
+      const dx = Math.sign(centre.x - origin.x)
+      const dy = Math.sign(centre.y - origin.y)
+      push(centre.x, centre.y)
+      for (let step = 1; step <= radius; step++) {
+        push(centre.x + dx * step, centre.y + dy * step)
+      }
+      return hit
+    }
+
+    default: {
+      // Circle, and anything we do not know: every cell within the radius.
+      for (let x = centre.x - radius; x <= centre.x + radius; x++) {
+        for (let y = centre.y - radius; y <= centre.y + radius; y++) {
+          if (Math.abs(x - centre.x) + Math.abs(y - centre.y) > radius) continue
+          push(x, y)
+        }
+      }
+      return hit
+    }
+  }
+}

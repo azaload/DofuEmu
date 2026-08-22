@@ -29,6 +29,7 @@ import {
 } from '@/scripts/fight-bridge'
 import { requestMoveToCell } from '@/scripts/game-bridge'
 import { reachableCells } from '@/scripts/cells'
+import { planSpellTurn } from '@/scripts/spell-planner'
 import type { DofusWindow } from '@/types/dofus-window'
 
 /**
@@ -125,6 +126,8 @@ export function initCombatAi(
   /** Starting cells the placement phase offers. */
   let placementCells: number[] = []
   let placed = false
+  /** Turn each spell was last cast on, so a cooldown is respected. */
+  let lastCastTurn = new Map<number, number>()
 
   const log = (message: string) => callbacks.onLog?.(`[${tabId.slice(0, 6)}] ${message}`)
 
@@ -597,6 +600,57 @@ export function initCombatAi(
     }
   }
 
+  /**
+   * Plays the turn from the character's own spells rather than a fixed combo:
+   * boosts are kept up as their cooldown allows, then the cast that reaches the
+   * most enemies is chained until the action points run out.
+   */
+  const castFromSpellbook = async (
+    settings: CombatSettings,
+    turn: number,
+    stillOurTurn: () => boolean
+  ): Promise<number> => {
+    const me = getMyFighter(gameWindow)
+    const actionPoints = me?.ap ?? 0
+    if (actionPoints <= 0) return 0
+
+    const plan = planSpellTurn(gameWindow, {
+      elements: settings.elements ?? [],
+      turn,
+      lastCastTurn,
+      castsThisTurn: new Map(),
+      actionPoints
+    })
+
+    if (plan.length === 0) {
+      log('No spell worth casting from here')
+      return 0
+    }
+
+    let cast = 0
+    for (const action of plan) {
+      if (!stillOurTurn() || !isFightStarted(gameWindow)) break
+
+      try {
+        castSpell(gameWindow, action.spellId, action.cellId)
+        lastCastTurn.set(action.spellId, turn)
+        cast += 1
+        log(
+          `Cast ${action.name || action.spellId} on cell ${action.cellId}: ${action.reason}` +
+            (action.apCost > 0 ? ` (${action.apCost} AP)` : '')
+        )
+      } catch (err) {
+        log(`Cast failed: ${err instanceof Error ? err.message : String(err)}`)
+        break
+      }
+
+      await humanSleep(settings.castDelayMs)
+      await waitForIdle()
+    }
+
+    return cast
+  }
+
   const playTurn = async (turn: number, token: number) => {
     const settings = callbacks.getSettings()
     const { combo, label } = comboForTurn(settings, turn)
@@ -654,7 +708,12 @@ export function initCombatAi(
       if (outcome === 'played') return
       if (outcome === 'no-cast') {
         log('The model only moved: casting the combo on top')
-        await castCombo(settings, combo, rules, stillOurTurn)
+        if (settings.spellMode === 'auto') {
+      const cast = await castFromSpellbook(settings, turn, stillOurTurn)
+      if (cast === 0) await castCombo(settings, combo, rules, stillOurTurn)
+    } else {
+      await castCombo(settings, combo, rules, stillOurTurn)
+    }
         return
       }
     }
@@ -665,7 +724,12 @@ export function initCombatAi(
     if (!rules.noMove) await positionForTurn(settings, combo)
     if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
-    await castCombo(settings, combo, rules, stillOurTurn)
+    if (settings.spellMode === 'auto') {
+      const cast = await castFromSpellbook(settings, turn, stillOurTurn)
+      if (cast === 0) await castCombo(settings, combo, rules, stillOurTurn)
+    } else {
+      await castCombo(settings, combo, rules, stillOurTurn)
+    }
 
     if (!stillOurTurn()) return
     if (settings.endTurnAfterCombo) {
@@ -844,6 +908,7 @@ export function initCombatAi(
     turnToken += 1
     challenges = []
     placed = false
+    lastCastTurn = new Map()
     // The placement cells arrive with the preparation phase, which can come
     // before this message: clearing them here would throw them away.
     const settings = callbacks.getSettings()

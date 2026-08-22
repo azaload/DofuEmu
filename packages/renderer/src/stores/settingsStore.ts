@@ -9,6 +9,7 @@ import type {
   CombatSettings,
   CombatSpell,
   CombatTurnCombo,
+  CombatElement,
   DEFAULT_HOTKEYS
 } from '@dofemu/shared'
 
@@ -115,6 +116,8 @@ const defaultState = {
     positioning: 'keep-distance' as const,
     tackleAware: true,
     spreadCasts: true,
+    spellMode: 'auto' as const,
+    elements: ['fire', 'earth', 'water', 'air', 'neutral'] as CombatElement[],
     brain: 'rules' as const,
     ollamaEndpoint: 'http://127.0.0.1:11434',
     ollamaModel: 'qwen2.5:1.5b-instruct',
