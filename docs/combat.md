@@ -47,6 +47,11 @@ Tick **on me** on a spell to cast it on your own character — buffs, heals, sum
 feet. A self spell needs no target and no movement: it is cast even when every enemy is out
 of reach.
 
+The number next to it is that spell's **cast range in cells**. Leave it empty to use the
+range the game reports, and the **Fallback range** setting when it reports none. Set it
+when a ranged spell keeps walking towards the enemy instead of casting: that means the
+range could not be read and the fallback (1, melee) was used.
+
 ## A different combo on a given turn
 
 The default combo runs on every turn. To open a fight differently — buffs on turn 1, then
@@ -74,9 +79,14 @@ column with the enemy, which is what line-only spells need. Out of range, lining
 over one extra cell of progress — but only when the move still gets closer; it never
 trades progress for an alignment that goes nowhere.
 
-The range comes from the game's own spell data when it exposes it; otherwise the
-**Fallback range** setting is used (1 = melee). Cells occupied by other fighters are
-skipped.
+The range used is the one set on the spell, then the game's own value, then the **Fallback
+range** setting (1 = melee). Cells occupied by other fighters are skipped.
+
+The engine sometimes walks less far than asked — a blocked path, a shorter route. The AI
+checks where it actually landed and tries again while it makes progress and has points
+left, at most three times per spell, then casts from wherever it stands. Every step is in
+the activity log with the distance and the range used, so a spell the server refuses can be
+traced back to its cause.
 
 Distances are grid distances — obstacles and the real path length are not simulated — so
 the move is a best effort. If nothing can be improved, or there are no movement points

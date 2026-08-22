@@ -102,6 +102,7 @@ The no-code version of a fixed combo lives in **Settings → Combat** — see
 | `api.monsters(filter)` | Monster groups on the current map, nearest first. Filter with `minLevel`, `maxLevel`, `minSize`, `maxSize` (`level` is the summed level of the whole group), or pass `nearestFirst: false` to keep the game's order. |
 | `await api.attack(group)` | Walk next to the group and start the fight. Resolves `false` when no fight started within the timeout; `{ approach: false }` skips the walk. Each step is written to the script log. |
 | `api.closePopups()` | Close the fight results and level-up screens, which block the next move. Returns what was closed. |
+| `api.inspectMap()` | Log what the game exposes about the current map. Use it when `travelTo` reports missing coordinates. |
 
 ### Interaction
 

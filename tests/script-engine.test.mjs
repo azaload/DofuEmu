@@ -10,6 +10,18 @@ const tmpDir = path.join(root, 'tests/.tmp')
 const bundlePath = path.join(tmpDir, 'engine.js')
 const combatBundlePath = path.join(tmpDir, 'combat-ai.js')
 
+/** Same grid maths as the app, to spend the right number of MP in the stub. */
+function cellGridDistance(from, to) {
+  const point = (cellId) => {
+    const row = Math.floor(cellId / 14)
+    const col = cellId % 14
+    return { x: col + Math.floor((row + 1) / 2), y: Math.floor(row / 2) - col }
+  }
+  const a = point(from)
+  const b = point(to)
+  return Math.abs(a.x - b.x) + Math.abs(a.y - b.y)
+}
+
 const MAP_A = 1000
 const MAP_B = 1001
 const EXIT_CELL_RIGHT = 293
@@ -191,10 +203,18 @@ function createFakeGameWindow() {
       },
       moveTo: (cellId) => {
         state.moves.push(cellId)
+        // state.walkLimit caps how far the engine actually walks, the way the
+        // real one stops short when the path is blocked.
+        const landing = state.walkLimit ? state.walkLimit(cellId) : cellId
         setTimeout(() => {
-          state.cellId = cellId
-          gameWindow.isoEngine.actorManager.userActor.cellId = cellId
-          fighters[0].data.disposition.cellId = cellId
+          const spent = cellGridDistance(fighters[0].data.disposition.cellId, landing)
+          state.cellId = landing
+          gameWindow.isoEngine.actorManager.userActor.cellId = landing
+          fighters[0].data.disposition.cellId = landing
+          fighters[0].data.stats.movementPoints = Math.max(
+            0,
+            fighters[0].data.stats.movementPoints - spent
+          )
         }, 5)
       }
     }
@@ -225,7 +245,9 @@ function createFakeGameWindow() {
     gameWindow.gui.fightManager.isFightStarted = true
     gameWindow.gui.playerData.isFighting = true
   }
+  state.mpPerTurn = 3
   state.startTurn = (fighterId) => {
+    if (fighterId === 7) fighters[0].data.stats.movementPoints = state.mpPerTurn
     state.emit('GameFightTurnStartMessage', { id: fighterId })
     state.emit('GameFightTurnStartPlayingMessage', { id: fighterId })
   }
@@ -652,7 +674,7 @@ async function testApproachWithMp() {
 
   // With no MP left it should say so instead of moving.
   // Put the character back where it started, far from the enemy.
-  state.fighters[0].data.stats.movementPoints = 0
+  state.mpPerTurn = 0
   state.fighters[0].data.disposition.cellId = 280
   gameWindow.isoEngine.actorManager.userActor.cellId = 280
   state.fighters[1].data.disposition.cellId = 322
@@ -765,6 +787,89 @@ async function testSelfCastAndLineUp() {
 
   dispose()
   console.log('ok - self cast and line-up approach')
+}
+
+async function testRangeAndShortWalk() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-bridge.ts'))
+  const { cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-bridge.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    // The spell reaches 6 cells, so no walking should happen at 4.
+    combo: [{ id: 165, name: 'Bolt', range: 6 }],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1,
+    preferLineUp: false
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  // Enemy 4 cells away: within the spell's own range, so cast without moving.
+  const myCell = 280
+  const enemyCell = 336
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+  state.fighters[1].data.disposition.cellId = enemyCell
+  state.fighters[2].data.disposition.cellId = enemyCell
+  assert.strictEqual(cellDistance(myCell, enemyCell), 4, 'the enemy is 4 cells away')
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 300))
+
+  assert.strictEqual(state.moves.length, 0, 'a ranged spell does not chase the target')
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
+    'the spell is cast from where we stand'
+  )
+  assert.ok(logs.some((line) => line.includes('from 4 cell(s)')), 'the cast distance is logged')
+
+  // Now a melee spell against a walk the engine cuts short.
+  combatSettings.combo = [{ id: 165, name: 'Punch', range: 1 }]
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+  state.moves.length = 0
+  state.sent.length = 0
+  // The engine only ever advances one cell towards the request.
+  state.walkLimit = () => 294
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  // Each retry can spend up to the move-start timeout before giving up.
+  await new Promise((resolve) => setTimeout(resolve, 4500))
+
+  assert.ok(state.moves.length >= 2, 'a walk cut short is retried')
+  assert.ok(
+    logs.some((line) => line.includes('Stopped on cell 294')),
+    'stopping short is reported'
+  )
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
+    'the spell is still cast afterwards'
+  )
+
+  state.walkLimit = null
+  dispose()
+  console.log('ok - spell range and short walks')
 }
 
 async function testTurnSynchronisation() {
@@ -1024,6 +1129,7 @@ async function main() {
   await testTurnCombos()
   await testApproachWithMp()
   await testSelfCastAndLineUp()
+  await testRangeAndShortWalk()
   await testTurnSynchronisation()
   await testConnectionCheck()
   await testTemplatesCompile()

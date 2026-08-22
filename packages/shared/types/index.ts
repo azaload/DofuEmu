@@ -50,6 +50,8 @@ export interface CombatSpell {
   name: string
   /** Cast on our own cell instead of the target. */
   self?: boolean
+  /** Cast range in cells. Overrides what the game reports, when set. */
+  range?: number
 }
 
 /** A combo that replaces the default one on a given turn of the fight. */

@@ -98,6 +98,8 @@ export interface ScriptApi {
   fight: FightApi
 
   closePopups: (patterns?: string[]) => string[]
+  /** Logs what the game exposes about the current map, for troubleshooting. */
+  inspectMap: () => string[]
 
   monsters: (filter?: MonsterFilter) => MonsterGroup[]
   attack: (group: MonsterGroup | number, options?: AttackOptions) => Promise<boolean>

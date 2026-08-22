@@ -7,6 +7,7 @@ import {
   getGuiEmitter,
   getInteractiveElements,
   getMapChangeCells,
+  describeMapSources,
   getMapInfo,
   getMonsterGroups,
   isConnected,
@@ -621,6 +622,12 @@ export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
     fight,
 
     closePopups: (patterns) => closeUiPopups(gameWindow, patterns),
+
+    inspectMap: () => {
+      const lines = describeMapSources(gameWindow)
+      for (const line of lines) ctx.hooks.onLog('info', line)
+      return lines
+    },
 
     monsters,
     attack,

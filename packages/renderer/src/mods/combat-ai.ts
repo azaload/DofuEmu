@@ -52,7 +52,13 @@ const DISMISS_DELAYS_MS = [800, 2000, 4500]
 
 /** How long to wait for a fight move to land before casting anyway. */
 const MOVE_TIMEOUT_MS = 6000
-const MOVE_POLL_MS = 200
+const MOVE_POLL_MS = 150
+/** How long to wait for a walk to start before calling it refused. */
+const MOVE_START_TIMEOUT_MS = 2000
+/** A position held this long means the walk is over. */
+const MOVE_SETTLE_MS = 600
+/** How many times to re-try closing in during one spell. */
+const MAX_APPROACH_STEPS = 3
 
 /** How long to wait for the server to declare our turn playable. */
 const TURN_PLAYABLE_TIMEOUT_MS = 6000
@@ -135,61 +141,127 @@ export function initCombatAi(
     return { combo: settings.combo, label: 'default combo' }
   }
 
-  const waitForMove = async (targetCell: number) => {
-    const deadline = Date.now() + MOVE_TIMEOUT_MS
-    while (Date.now() < deadline) {
-      if (disposed) return
-      const me = getMyFighter(gameWindow)
-      if (me?.cellId === targetCell) return
+  const currentCell = () => getMyFighter(gameWindow)?.cellId ?? null
+
+  /**
+   * Follows a move request to its end. The engine walks as far as it can, which
+   * is not always the cell we asked for, so the outcome is reported instead of
+   * being assumed.
+   */
+  const waitForMove = async (
+    targetCell: number
+  ): Promise<'arrived' | 'stopped-short' | 'no-move'> => {
+    const start = currentCell()
+
+    // Wait for the walk to begin.
+    const startDeadline = Date.now() + MOVE_START_TIMEOUT_MS
+    let moving = false
+    while (Date.now() < startDeadline) {
+      if (disposed) return 'no-move'
+      const cell = currentCell()
+      if (cell === targetCell) return 'arrived'
+      if (cell !== start) {
+        moving = true
+        break
+      }
       await sleep(MOVE_POLL_MS)
     }
+    if (!moving) return 'no-move'
+
+    // Then for it to settle.
+    const deadline = Date.now() + MOVE_TIMEOUT_MS
+    let last = currentCell()
+    let stableSince = Date.now()
+    while (Date.now() < deadline) {
+      if (disposed) return 'stopped-short'
+      const cell = currentCell()
+      if (cell === targetCell) return 'arrived'
+      if (cell !== last) {
+        last = cell
+        stableSince = Date.now()
+      } else if (Date.now() - stableSince > MOVE_SETTLE_MS) {
+        return 'stopped-short'
+      }
+      await sleep(MOVE_POLL_MS)
+    }
+    return 'stopped-short'
+  }
+
+  /** Range to assume for a spell: the one set on it, the game's, then the fallback. */
+  const rangeFor = (settings: CombatSettings, spell: CombatSpell): { range: number; source: string } => {
+    if (typeof spell.range === 'number' && spell.range >= 0) {
+      return { range: spell.range, source: 'spell setting' }
+    }
+    const fromGame = getSpellRange(gameWindow, spell.id)
+    if (fromGame !== null) return { range: fromGame, source: 'game data' }
+    return { range: settings.defaultSpellRange, source: 'fallback' }
   }
 
   /**
    * Walks towards `target` with the movement points left: to get in range, or
-   * simply as close as possible when the target is further than that.
+   * as close as possible when the target is further than that.
+   *
+   * The engine can stop short of the cell we asked for, so the walk is repeated
+   * while it makes progress and there are points left.
    */
   const approach = async (settings: CombatSettings, spell: CombatSpell, targetCell: number) => {
     if (!settings.approachEnemies) return
 
-    const me = getMyFighter(gameWindow)
-    if (!me || me.cellId === null) return
+    const { range, source } = rangeFor(settings, spell)
 
-    const range = getSpellRange(gameWindow, spell.id) ?? settings.defaultSpellRange
-    const inRange = cellDistance(me.cellId, targetCell) <= range
-    const aligned = areCellsAligned(me.cellId, targetCell)
-    if (inRange && (!settings.preferLineUp || aligned)) return
+    for (let step = 0; step < MAX_APPROACH_STEPS; step++) {
+      const me = getMyFighter(gameWindow)
+      if (!me || me.cellId === null) return
 
-    const movementPoints = me.mp ?? 0
-    if (movementPoints <= 0) {
-      if (!inRange) log('Out of range with no MP left')
-      return
+      const distance = cellDistance(me.cellId, targetCell)
+      const inRange = distance <= range
+      const aligned = areCellsAligned(me.cellId, targetCell)
+      if (inRange && (!settings.preferLineUp || aligned)) return
+
+      const movementPoints = me.mp ?? 0
+      if (movementPoints <= 0) {
+        if (!inRange) {
+          log(`Target ${distance} cell(s) away, range ${range} (${source}), no MP left`)
+        }
+        return
+      }
+
+      const target = pickTarget(gameWindow, settings.targetStrategy)
+      if (!target) return
+
+      const move = findApproachCell(gameWindow, target, range, movementPoints, {
+        preferLineUp: settings.preferLineUp
+      })
+
+      if (!move) {
+        if (!inRange) {
+          log(`Target ${distance} cell(s) away, range ${range} (${source}), nowhere better within ${movementPoints} MP`)
+        }
+        return
+      }
+
+      log(
+        `Moving to cell ${move.cellId} (${move.cost} MP of ${movementPoints}, target ${distance} cell(s) away, range ${range} from ${source})`
+      )
+
+      if (!requestMoveToCell(gameWindow, move.cellId)) {
+        log('No movement entry point on this game build')
+        return
+      }
+
+      const outcome = await waitForMove(move.cellId)
+      await waitForIdle()
+
+      const landed = currentCell()
+      if (outcome === 'no-move') {
+        log('The character did not move — the path is blocked')
+        return
+      }
+      if (outcome === 'stopped-short') {
+        log(`Stopped on cell ${landed} instead of ${move.cellId}`)
+        if (landed === me.cellId) return
+      }
     }
-
-    const target = pickTarget(gameWindow, settings.targetStrategy)
-    if (!target) return
-
-    const move = findApproachCell(gameWindow, target, range, movementPoints, {
-      preferLineUp: settings.preferLineUp
-    })
-
-    if (!move) {
-      if (!inRange) log(`No better cell within ${movementPoints} MP`)
-      return
-    }
-
-    const reason = move.inRange
-      ? `in range${move.aligned ? ' and lined up' : ''}`
-      : `${move.distanceToTarget} cell(s) away${move.aligned ? ', lined up' : ''}`
-    log(`Moving to cell ${move.cellId} (${move.cost} MP, ${reason})`)
-
-    if (!requestMoveToCell(gameWindow, move.cellId)) {
-      log('No movement entry point on this game build')
-      return
-    }
-
-    await waitForMove(move.cellId)
-    await waitForIdle()
   }
 
   const playTurn = async (turn: number, token: number) => {
@@ -256,7 +328,15 @@ export function initCombatAi(
 
       try {
         castSpell(gameWindow, spell.id, target.cellId)
-        log(`Cast ${spell.name || spell.id} on ${target.name ?? target.id}`)
+        const me = getMyFighter(gameWindow)
+        const distance =
+          me?.cellId !== null && me?.cellId !== undefined && target.cellId !== null
+            ? cellDistance(me.cellId, target.cellId)
+            : null
+        log(
+          `Cast ${spell.name || spell.id} on ${target.name ?? target.id}` +
+            (distance !== null ? ` from ${distance} cell(s)` : '')
+        )
       } catch (err) {
         log(`Cast failed: ${err instanceof Error ? err.message : String(err)}`)
         break

@@ -190,9 +190,26 @@ function getMapRenderer(gameWindow: DofusWindow): Dict | null {
   return asDict(asDict(gameWindow.isoEngine)?.mapRenderer)
 }
 
+/** First numeric value found under any of `keys`, at the given depth. */
+function firstNumber(sources: Array<Dict | null>, keys: string[]): number | null {
+  for (const source of sources) {
+    if (!source) continue
+    for (const key of keys) {
+      const value = asNumber(source[key])
+      if (value !== null) return value
+    }
+  }
+  return null
+}
+
+const X_KEYS = ['posX', 'worldX', 'x', 'coordX', 'mapPosX']
+const Y_KEYS = ['posY', 'worldY', 'y', 'coordY', 'mapPosY']
+
 export function getMapInfo(gameWindow: DofusWindow): MapInfo {
   const mapRenderer = getMapRenderer(gameWindow)
   const map = asDict(mapRenderer?.map)
+  const playerData = asDict(asDict(gameWindow.gui)?.playerData)
+  const position = asDict(playerData?.position)
 
   const neighbours = {} as Record<Direction, number | null>
   for (const direction of DIRECTIONS) {
@@ -200,13 +217,65 @@ export function getMapInfo(gameWindow: DofusWindow): MapInfo {
     neighbours[direction] = raw !== null && raw > 0 ? raw : null
   }
 
+  // Coordinates live in a different place on every build: on the map data, on
+  // the renderer, or on the player position.
+  const sources: Array<Dict | null> = [
+    map,
+    asDict(map?.coordinates),
+    mapRenderer,
+    asDict(mapRenderer?.mapCoordinates),
+    position,
+    asDict(position?.coordinates),
+    playerData
+  ]
+
   return {
-    id: asNumber(mapRenderer?.mapId) ?? asNumber(map?.id),
-    x: asNumber(map?.posX) ?? asNumber(mapRenderer?.worldX),
-    y: asNumber(map?.posY) ?? asNumber(mapRenderer?.worldY),
+    id: asNumber(mapRenderer?.mapId) ?? asNumber(map?.id) ?? asNumber(position?.mapId),
+    x: firstNumber(sources, X_KEYS),
+    y: firstNumber(sources, Y_KEYS),
     subAreaId: asNumber(map?.subareaId) ?? asNumber(map?.subAreaId),
     neighbours
   }
+}
+
+/**
+ * What the game exposes about the current map, as flat text.
+ * Meant for the script log when a helper cannot find what it needs.
+ */
+export function describeMapSources(gameWindow: DofusWindow): string[] {
+  const mapRenderer = getMapRenderer(gameWindow)
+  const map = asDict(mapRenderer?.map)
+  const playerData = asDict(asDict(gameWindow.gui)?.playerData)
+  const position = asDict(playerData?.position)
+
+  const lines: string[] = []
+  const interesting = /^(pos|world|coord|map|x$|y$|sub|neighbour|id$)/i
+
+  const describe = (label: string, source: Dict | null) => {
+    if (!source) {
+      lines.push(`${label}: missing`)
+      return
+    }
+    const keys = Object.keys(source)
+    const matching = keys.filter((key) => interesting.test(key))
+    const shown = (matching.length > 0 ? matching : keys.slice(0, 25))
+      .map((key) => {
+        const value = source[key]
+        const printable =
+          value === null || ['number', 'string', 'boolean'].includes(typeof value)
+            ? String(value)
+            : typeof value
+        return `${key}=${printable}`
+      })
+      .join(' ')
+    lines.push(`${label} (${keys.length} keys): ${shown}`)
+  }
+
+  describe('isoEngine.mapRenderer', mapRenderer)
+  describe('mapRenderer.map', map)
+  describe('gui.playerData.position', position)
+
+  return lines
 }
 
 function getUserActor(gameWindow: DofusWindow): Dict | null {

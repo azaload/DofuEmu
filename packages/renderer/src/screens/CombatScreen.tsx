@@ -36,6 +36,7 @@ function ComboEditor() {
     removeComboSpell,
     moveComboSpell,
     toggleComboSpellSelf,
+    setComboSpellRange,
     addTurnCombo,
     removeTurnCombo
   } = useSettingsStore()
@@ -114,7 +115,8 @@ function ComboEditor() {
         {selectedTurn === null
           ? 'Cast in this order on every turn without its own combo, then the turn is passed.'
           : `Replaces the default combo on turn ${selectedTurn}. An empty combo passes the turn.`}
-        {' '}Tick <em>on me</em> for a spell cast on your own character (buffs, heals).
+        {' '}Tick <em>on me</em> for a spell cast on your own character (buffs, heals). The
+        number is the cast range in cells — leave it empty to use the game's own value.
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, paddingBottom: 10 }}>
@@ -171,6 +173,26 @@ function ComboEditor() {
             {spell.name}
           </span>
           <span style={{ fontSize: 10, color: colors.textFaint, fontFamily: 'monospace' }}>#{spell.id}</span>
+          <input
+            type="number"
+            min={0}
+            value={spell.range === undefined ? '' : String(spell.range)}
+            placeholder="auto"
+            title="Cast range in cells. Empty uses the game's own value, then the fallback."
+            onChange={(event) => {
+              const value = event.target.value.trim()
+              const parsed = parseInt(value, 10)
+              setComboSpellRange(
+                selectedTurn,
+                index,
+                value === '' || !Number.isFinite(parsed) || parsed < 0 ? undefined : parsed
+              )
+            }}
+            style={{
+              width: 52, background: colors.input, border: `1px solid ${colors.border}`,
+              borderRadius: 5, color: colors.textLight, fontSize: 10, padding: '3px 6px', outline: 'none'
+            }}
+          />
           <label
             title="Cast this spell on my own character"
             style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: spell.self ? colors.accentText : colors.textFaint, cursor: 'pointer' }}

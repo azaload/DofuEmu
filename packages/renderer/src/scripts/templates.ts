@@ -174,33 +174,23 @@ const FILTER = { minLevel: 1, maxLevel: 9999, maxSize: 8 }
 // Fights are played by the Combat AI (Settings -> Combat).
 const FIGHT_TIMEOUT = 1800000
 
-const outward = []
-for (let x = FROM_X; x <= TO_X; x++) outward.push(x)
-const route = [...outward, ...[...outward].reverse().slice(1)]
-
-api.log(\`Lap \${api.iteration}: [\${FROM_X}, \${Y}] -> [\${TO_X}, \${Y}] and back\`)
-
-for (const x of route) {
+async function settle() {
   if (!api.isConnected()) {
     api.warn('Not in game, waiting')
     await api.waitUntil(() => api.isConnected(), { timeout: 300000, interval: 3000 })
   }
-
   if (api.isInFight()) {
     await api.fight.waitForFightEnd({ timeout: FIGHT_TIMEOUT, interval: 2000 })
     await api.waitRandom(1200, 2000)
     api.closePopups()
   }
+}
 
-  const here = api.map()
-  if (here.x !== x || here.y !== Y) {
-    api.log(\`Travelling to [\${x}, \${Y}]\`)
-    await api.travelTo(x, Y)
-  }
+async function fightHere() {
+  await settle()
 
-  // Fight everything on this map before moving on.
   let groups = api.monsters(FILTER)
-  api.log(\`[\${x}, \${Y}] map \${api.mapId()}: \${groups.length} group(s)\`)
+  api.log(\`Map \${api.mapId()}: \${groups.length} group(s)\`)
 
   while (groups.length > 0) {
     const group = groups[0]
@@ -224,6 +214,44 @@ for (const x of route) {
   }
 
   await api.waitRandom(800, 1800)
+}
+
+await settle()
+
+const steps = Math.abs(TO_X - FROM_X)
+const forward = TO_X >= FROM_X ? 'right' : 'left'
+const backward = forward === 'right' ? 'left' : 'right'
+
+if (api.map().x === null) {
+  // This game build does not expose map coordinates: walk by direction
+  // instead, starting from wherever the character stands.
+  api.warn(\`No map coordinates on this build — patrolling \${steps} maps to the \${forward} and back\`)
+  api.inspectMap()
+
+  await fightHere()
+  for (let step = 0; step < steps; step++) {
+    await api.move(forward)
+    await fightHere()
+  }
+  for (let step = 0; step < steps; step++) {
+    await api.move(backward)
+    await fightHere()
+  }
+} else {
+  const outward = []
+  for (let x = FROM_X; x <= TO_X; x++) outward.push(x)
+  const route = [...outward, ...[...outward].reverse().slice(1)]
+
+  api.log(\`Lap \${api.iteration}: [\${FROM_X}, \${Y}] -> [\${TO_X}, \${Y}] and back\`)
+
+  for (const x of route) {
+    const here = api.map()
+    if (here.x !== x || here.y !== Y) {
+      api.log(\`Travelling to [\${x}, \${Y}]\`)
+      await api.travelTo(x, Y)
+    }
+    await fightHere()
+  }
 }
 `
   },
