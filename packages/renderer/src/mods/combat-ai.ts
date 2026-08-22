@@ -1,6 +1,7 @@
 import type { CombatSettings, CombatSpell } from '@dofemu/shared'
 import { closeUiPopups } from '@/scripts/ui-bridge'
 import {
+  areCellsAligned,
   castSpell,
   cellDistance,
   findApproachCell,
@@ -110,7 +111,10 @@ export function initCombatAi(
     }
   }
 
-  /** Walks towards `target` with the movement points left, when out of range. */
+  /**
+   * Walks towards `target` with the movement points left: to get in range, or
+   * simply as close as possible when the target is further than that.
+   */
   const approach = async (settings: CombatSettings, spell: CombatSpell, targetCell: number) => {
     if (!settings.approachEnemies) return
 
@@ -118,30 +122,39 @@ export function initCombatAi(
     if (!me || me.cellId === null) return
 
     const range = getSpellRange(gameWindow, spell.id) ?? settings.defaultSpellRange
-    if (cellDistance(me.cellId, targetCell) <= range) return
+    const inRange = cellDistance(me.cellId, targetCell) <= range
+    const aligned = areCellsAligned(me.cellId, targetCell)
+    if (inRange && (!settings.preferLineUp || aligned)) return
 
     const movementPoints = me.mp ?? 0
     if (movementPoints <= 0) {
-      log('Out of range with no MP left')
+      if (!inRange) log('Out of range with no MP left')
       return
     }
 
     const target = pickTarget(gameWindow, settings.targetStrategy)
     if (!target) return
 
-    const cell = findApproachCell(gameWindow, target, range, movementPoints)
-    if (cell === null) {
-      log(`Cannot get within ${range} cell(s) of the target with ${movementPoints} MP`)
+    const move = findApproachCell(gameWindow, target, range, movementPoints, {
+      preferLineUp: settings.preferLineUp
+    })
+
+    if (!move) {
+      if (!inRange) log(`No better cell within ${movementPoints} MP`)
       return
     }
 
-    log(`Moving to cell ${cell} to reach the target (${movementPoints} MP)`)
-    if (!requestMoveToCell(gameWindow, cell)) {
+    const reason = move.inRange
+      ? `in range${move.aligned ? ' and lined up' : ''}`
+      : `${move.distanceToTarget} cell(s) away${move.aligned ? ', lined up' : ''}`
+    log(`Moving to cell ${move.cellId} (${move.cost} MP, ${reason})`)
+
+    if (!requestMoveToCell(gameWindow, move.cellId)) {
       log('No movement entry point on this game build')
       return
     }
 
-    await waitForMove(cell)
+    await waitForMove(move.cellId)
   }
 
   const playTurn = async (turn: number) => {
@@ -159,6 +172,24 @@ export function initCombatAi(
 
     for (const spell of combo) {
       if (disposed || !isFightStarted(gameWindow)) return
+
+      // Spells flagged "on me" need no target and no approach.
+      if (spell.self) {
+        const me = getMyFighter(gameWindow)
+        if (!me || me.cellId === null) {
+          log(`Cannot cast ${spell.name || spell.id} on myself: unknown position`)
+          continue
+        }
+        try {
+          castSpell(gameWindow, spell.id, me.cellId)
+          log(`Cast ${spell.name || spell.id} on myself`)
+        } catch (err) {
+          log(`Cast failed: ${err instanceof Error ? err.message : String(err)}`)
+          break
+        }
+        await sleep(settings.castDelayMs)
+        continue
+      }
 
       let target = pickTarget(gameWindow, settings.targetStrategy)
       if (!target || target.cellId === null) {

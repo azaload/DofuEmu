@@ -37,6 +37,10 @@ Spells are identified by their in-game spell id. Two ways to fill the list:
 
 Use the arrows to reorder, the cross to remove. The number on the left is the cast order.
 
+Tick **on me** on a spell to cast it on your own character — buffs, heals, summons at your
+feet. A self spell needs no target and no movement: it is cast even when every enemy is out
+of reach.
+
 ## A different combo on a given turn
 
 The default combo runs on every turn. To open a fight differently — buffs on turn 1, then
@@ -52,16 +56,24 @@ number next to **Add turn** and fill the list that appears.
 ## Moving towards enemies
 
 With **Move towards enemies** on (the default), a target out of range does not waste the
-turn: the AI spends the movement points it has left to get within the spell's range, then
-casts.
+turn. Cells reachable with the movement points left are ranked like this:
+
+1. **In range and lined up** with the target — the best spot.
+2. **In range** — the cheapest one, so movement points are kept.
+3. **Neither** — the target is too far to reach this turn, so the AI walks anyway to close
+   distance, spending the points it has rather than standing still.
+
+**Line up with the target** (on by default) makes the AI favour cells sharing a row or a
+column with the enemy, which is what line-only spells need. Out of range, lining up wins
+over one extra cell of progress — but only when the move still gets closer; it never
+trades progress for an alignment that goes nowhere.
 
 The range comes from the game's own spell data when it exposes it; otherwise the
-**Fallback range** setting is used (1 = melee). The destination is chosen among the cells
-that bring the target in range: the AI walks as little as possible and stays as far as the
-range allows, avoiding cells occupied by other fighters.
+**Fallback range** setting is used (1 = melee). Cells occupied by other fighters are
+skipped.
 
 Distances are grid distances — obstacles and the real path length are not simulated — so
-the move is a best effort. If no reachable cell works, or there are no movement points
+the move is a best effort. If nothing can be improved, or there are no movement points
 left, it says so in the activity log and casts anyway (the server refuses what is out of
 range).
 

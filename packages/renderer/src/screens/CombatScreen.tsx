@@ -35,6 +35,7 @@ function ComboEditor() {
     addComboSpell,
     removeComboSpell,
     moveComboSpell,
+    toggleComboSpellSelf,
     addTurnCombo,
     removeTurnCombo
   } = useSettingsStore()
@@ -113,6 +114,7 @@ function ComboEditor() {
         {selectedTurn === null
           ? 'Cast in this order on every turn without its own combo, then the turn is passed.'
           : `Replaces the default combo on turn ${selectedTurn}. An empty combo passes the turn.`}
+        {' '}Tick <em>on me</em> for a spell cast on your own character (buffs, heals).
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, paddingBottom: 10 }}>
@@ -169,6 +171,18 @@ function ComboEditor() {
             {spell.name}
           </span>
           <span style={{ fontSize: 10, color: colors.textFaint, fontFamily: 'monospace' }}>#{spell.id}</span>
+          <label
+            title="Cast this spell on my own character"
+            style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: spell.self ? colors.accentText : colors.textFaint, cursor: 'pointer' }}
+          >
+            <input
+              type="checkbox"
+              checked={spell.self === true}
+              onChange={() => toggleComboSpellSelf(selectedTurn, index)}
+              style={{ accentColor: colors.accent, cursor: 'pointer', margin: 0 }}
+            />
+            on me
+          </label>
           <button
             onClick={() => moveComboSpell(selectedTurn, index, -1)}
             disabled={index === 0}
@@ -326,6 +340,14 @@ export function CombatScreen() {
             onChange={(v) => setCombatSettings({ approachEnemies: v })}
           />
         </Row>
+        {combat.approachEnemies && (
+          <Row label="Line up with the target" desc="Prefer cells sharing a row or column with the enemy">
+            <Toggle
+              checked={combat.preferLineUp}
+              onChange={(v) => setCombatSettings({ preferLineUp: v })}
+            />
+          </Row>
+        )}
         {combat.approachEnemies && (
           <Row label="Fallback range" desc="Cast range assumed when the game does not report the spell's">
             <div style={{ width: 90 }}>

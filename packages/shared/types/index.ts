@@ -48,6 +48,8 @@ export type CombatTargetStrategy = 'nearest' | 'weakest' | 'strongest' | 'first'
 export interface CombatSpell {
   id: number
   name: string
+  /** Cast on our own cell instead of the target. */
+  self?: boolean
 }
 
 /** A combo that replaces the default one on a given turn of the fight. */
@@ -70,6 +72,8 @@ export interface CombatSettings {
   approachEnemies: boolean
   /** Cast range assumed when the game does not report the spell's own range. */
   defaultSpellRange: number
+  /** Move onto a cell lined up with the target when possible. */
+  preferLineUp: boolean
 }
 
 export const COMBAT_TARGET_LABELS: Record<CombatTargetStrategy, string> = {

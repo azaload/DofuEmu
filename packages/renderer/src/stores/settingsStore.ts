@@ -41,6 +41,7 @@ interface SettingsState {
   addComboSpell: (turn: number | null, spell: CombatSpell) => void
   removeComboSpell: (turn: number | null, index: number) => void
   moveComboSpell: (turn: number | null, index: number, direction: -1 | 1) => void
+  toggleComboSpellSelf: (turn: number | null, index: number) => void
   addTurnCombo: (turn: number) => void
   removeTurnCombo: (turn: number) => void
   setResolution: (width: number, height: number) => void
@@ -102,7 +103,8 @@ const defaultState = {
     endTurnAfterCombo: true,
     closeEndScreens: true,
     approachEnemies: true,
-    defaultSpellRange: 1
+    defaultSpellRange: 1,
+    preferLineUp: true
   },
   scripts: {
     enabled: true,
@@ -227,6 +229,13 @@ export const useSettingsStore = create<SettingsState>()((set, get) => {
           next.splice(target, 0, moved)
           return next
         })
+      })),
+
+    toggleComboSpellSelf: (turn, index) =>
+      mutate((s) => ({
+        combat: mapCombo(s.combat, turn, (combo) =>
+          combo.map((spell, i) => (i === index ? { ...spell, self: !spell.self } : spell))
+        )
       })),
 
     addTurnCombo: (turn) =>

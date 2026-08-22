@@ -515,7 +515,8 @@ async function testTurnCombos() {
     endTurnAfterCombo: true,
     closeEndScreens: true,
     approachEnemies: false,
-    defaultSpellRange: 1
+    defaultSpellRange: 1,
+    preferLineUp: false
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -584,7 +585,8 @@ async function testApproachWithMp() {
     endTurnAfterCombo: true,
     closeEndScreens: true,
     approachEnemies: true,
-    defaultSpellRange: 1
+    defaultSpellRange: 1,
+    preferLineUp: false
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -628,6 +630,106 @@ async function testApproachWithMp() {
 
   dispose()
   console.log('ok - approach with MP')
+}
+
+async function testSelfCastAndLineUp() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-bridge.ts'))
+  const { cellCoordinates, cellDistance, areCellsAligned } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-bridge.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [
+      { id: 100, name: 'Buff', self: true },
+      { id: 165, name: 'Attack' }
+    ],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1,
+    preferLineUp: true
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  // Far enemy: the AI must spend its MP to close in, not stand still.
+  const myCell = 280
+  const farCell = 400
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+  state.fighters[1].data.disposition.cellId = farCell
+  state.fighters[2].data.disposition.cellId = farCell
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 400))
+
+  const casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.strictEqual(casts[0].data.spellId, 100, 'the self spell is cast first')
+  assert.strictEqual(casts[0].data.cellId, myCell, 'the self spell targets my own cell')
+  assert.ok(logs.some((line) => line.includes('on myself')), 'the self cast is logged')
+
+  assert.strictEqual(state.moves.length, 1, 'the AI moves towards a far target')
+  const destination = state.moves[0]
+  const spent = cellDistance(myCell, destination)
+  assert.strictEqual(spent, 3, 'it spends all 3 MP when the target is far')
+  assert.ok(
+    cellDistance(destination, farCell) < cellDistance(myCell, farCell),
+    'the move closes distance to the target'
+  )
+  // Nothing lines up within 3 MP here, so closing distance is the right call.
+  assert.ok(
+    !areCellsAligned(myCell, farCell),
+    'the starting position is not lined up with the target'
+  )
+
+  // Now a lined-up cell is reachable: it must win over one more cell of progress.
+  const cellAt = (x, y) => {
+    for (let cellId = 0; cellId < 560; cellId++) {
+      const point = cellCoordinates(cellId)
+      if (point.x === x && point.y === y) return cellId
+    }
+    throw new Error(`no cell at [${x}, ${y}]`)
+  }
+
+  const nearTarget = cellAt(12, 4)
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+  state.fighters[1].data.disposition.cellId = nearTarget
+  state.fighters[2].data.disposition.cellId = nearTarget
+  state.moves.length = 0
+
+  state.startTurn(20)
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 400))
+
+  assert.strictEqual(state.moves.length, 1, 'the AI moves again')
+  const lined = state.moves[0]
+  assert.ok(
+    areCellsAligned(lined, nearTarget),
+    `the destination lines up with the target (${JSON.stringify(cellCoordinates(lined))} vs [12, 4])`
+  )
+  assert.ok(
+    cellDistance(lined, nearTarget) < cellDistance(myCell, nearTarget),
+    'lining up still closes distance'
+  )
+
+  dispose()
+  console.log('ok - self cast and line-up approach')
 }
 
 async function testConnectionCheck() {
@@ -711,6 +813,7 @@ async function testCombatAi() {
     targetStrategy: 'weakest',
     approachEnemies: false,
     defaultSpellRange: 1,
+    preferLineUp: false,
     autoReady: true,
     turnStartDelayMs: 0,
     castDelayMs: 0,
@@ -784,6 +887,7 @@ async function main() {
   await testClosePopups(ScriptRunner)
   await testTurnCombos()
   await testApproachWithMp()
+  await testSelfCastAndLineUp()
   await testConnectionCheck()
   await testTemplatesCompile()
 
