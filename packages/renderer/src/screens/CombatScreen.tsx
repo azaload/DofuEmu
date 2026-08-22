@@ -6,13 +6,17 @@ import { useGameTabStore } from '@/stores/gameTabStore'
 import { useCombatStore } from '@/stores/combatStore'
 import { getSpells, isFightStarted, type SpellInfo } from '@/scripts/fight-bridge'
 import { colors } from '@/theme'
-import { COMBAT_TARGET_LABELS } from '@dofemu/shared'
-import type { CombatTargetStrategy } from '@dofemu/shared'
+import { COMBAT_POSITIONING_LABELS, COMBAT_TARGET_LABELS } from '@dofemu/shared'
+import type { CombatPositioning, CombatTargetStrategy } from '@dofemu/shared'
 
 const TARGET_OPTIONS = (Object.keys(COMBAT_TARGET_LABELS) as CombatTargetStrategy[]).map((value) => ({
   value,
   label: COMBAT_TARGET_LABELS[value]
 }))
+
+const POSITIONING_OPTIONS = (Object.keys(COMBAT_POSITIONING_LABELS) as CombatPositioning[]).map(
+  (value) => ({ value, label: COMBAT_POSITIONING_LABELS[value] })
+)
 
 function activeGameWindow() {
   const activeTabId = useGameTabStore.getState().activeTabId
@@ -356,12 +360,21 @@ export function CombatScreen() {
         <Row label="Ready up automatically" desc="Send ready when a fight starts">
           <Toggle checked={combat.autoReady} onChange={(v) => setCombatSettings({ autoReady: v })} />
         </Row>
-        <Row label="Move towards enemies" desc="Use the remaining MP when the target is out of range">
+        <Row label="Move in fights" desc="Spend the movement points to get in position">
           <Toggle
             checked={combat.approachEnemies}
             onChange={(v) => setCombatSettings({ approachEnemies: v })}
           />
         </Row>
+        {combat.approachEnemies && (
+          <Row label="Positioning" desc="Where to stand before casting">
+            <Select
+              value={combat.positioning}
+              onChange={(value) => setCombatSettings({ positioning: value as CombatPositioning })}
+              options={POSITIONING_OPTIONS}
+            />
+          </Row>
+        )}
         {combat.approachEnemies && (
           <Row label="Line up with the target" desc="Prefer cells sharing a row or column with the enemy">
             <Toggle

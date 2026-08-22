@@ -76,6 +76,15 @@ export interface CombatSettings {
   defaultSpellRange: number
   /** Move onto a cell lined up with the target when possible. */
   preferLineUp: boolean
+  /** How to place the character before casting. */
+  positioning: CombatPositioning
+}
+
+export type CombatPositioning = 'keep-distance' | 'close-in'
+
+export const COMBAT_POSITIONING_LABELS: Record<CombatPositioning, string> = {
+  'keep-distance': 'Keep your distance',
+  'close-in': 'Close in on the target'
 }
 
 export const COMBAT_TARGET_LABELS: Record<CombatTargetStrategy, string> = {

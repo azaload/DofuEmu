@@ -641,7 +641,9 @@ async function testTurnCombos() {
     closeEndScreens: true,
     approachEnemies: false,
     defaultSpellRange: 1,
-    preferLineUp: false
+    preferLineUp: false,
+    positioning: 'close-in',
+    positioning: 'close-in'
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -711,7 +713,8 @@ async function testApproachWithMp() {
     closeEndScreens: true,
     approachEnemies: true,
     defaultSpellRange: 1,
-    preferLineUp: false
+    preferLineUp: false,
+    positioning: 'close-in'
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -784,7 +787,8 @@ async function testSelfCastAndLineUp() {
     closeEndScreens: true,
     approachEnemies: true,
     defaultSpellRange: 1,
-    preferLineUp: true
+    preferLineUp: true,
+    positioning: 'close-in'
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -805,7 +809,11 @@ async function testSelfCastAndLineUp() {
 
   const casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
   assert.strictEqual(casts[0].data.spellId, 100, 'the self spell is cast first')
-  assert.strictEqual(casts[0].data.cellId, myCell, 'the self spell targets my own cell')
+  assert.strictEqual(
+    casts[0].data.cellId,
+    state.fighters[0].data.disposition.cellId,
+    'the self spell targets our own cell, wherever the turn left us'
+  )
   assert.ok(logs.some((line) => line.includes('on myself')), 'the self cast is logged')
 
   assert.strictEqual(state.moves.length, 1, 'the AI moves towards a far target')
@@ -882,7 +890,8 @@ async function testRangeAndShortWalk() {
     closeEndScreens: true,
     approachEnemies: true,
     defaultSpellRange: 1,
-    preferLineUp: false
+    preferLineUp: false,
+    positioning: 'close-in'
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -922,13 +931,12 @@ async function testRangeAndShortWalk() {
   state.startTurn(20)
   state.emit('GameFightTurnEndMessage', { id: 20 })
   state.startTurn(7)
-  // Each retry can spend up to the move-start timeout before giving up.
-  await new Promise((resolve) => setTimeout(resolve, 4500))
+  await new Promise((resolve) => setTimeout(resolve, 1500))
 
-  assert.ok(state.moves.length >= 2, 'a walk cut short is retried')
+  assert.strictEqual(state.moves.length, 1, 'one move per turn, never a burst of small steps')
   assert.ok(
     logs.some((line) => line.includes('Stopped on cell 294')),
-    'stopping short is reported'
+    'a walk cut short by an obstacle is reported'
   )
   assert.ok(
     state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
@@ -938,6 +946,94 @@ async function testRangeAndShortWalk() {
   state.walkLimit = null
   dispose()
   console.log('ok - spell range and short walks')
+}
+
+async function testKitingAndSingleMove() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-bridge.ts'))
+  const { cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-bridge.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Bolt', range: 5 }],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1,
+    preferLineUp: false,
+    positioning: 'keep-distance'
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  // A melee monster right next to us, with a spell that reaches 5 cells:
+  // the AI should back off and still be able to cast.
+  const myCell = 280
+  const meleeCell = 294
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+  state.fighters[1].data.disposition.cellId = meleeCell
+  state.fighters[2].data.disposition.cellId = meleeCell
+  assert.strictEqual(cellDistance(myCell, meleeCell), 1, 'the monster starts in contact')
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  assert.strictEqual(state.moves.length, 1, 'exactly one move is requested for the turn')
+  const landing = state.moves[0]
+  assert.ok(
+    cellDistance(landing, meleeCell) > 1,
+    `the AI backs away from the melee monster (landed ${cellDistance(landing, meleeCell)} cells away)`
+  )
+  assert.ok(
+    cellDistance(landing, meleeCell) <= 5,
+    'it stays within casting range'
+  )
+  assert.ok(logs.some((line) => line.includes('keeping')), 'the intent is logged')
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
+    'the spell is cast from the new position'
+  )
+
+  // Closing in is still available for melee builds.
+  state.sent.length = 0
+  state.moves.length = 0
+  combatSettings.positioning = 'close-in'
+  combatSettings.combo = [{ id: 165, name: 'Punch', range: 1 }]
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+  state.fighters[1].data.disposition.cellId = 350
+  state.fighters[2].data.disposition.cellId = 350
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  assert.strictEqual(state.moves.length, 1, 'still a single move per turn')
+  assert.ok(
+    cellDistance(state.moves[0], 350) < cellDistance(myCell, 350),
+    'close-in walks towards the target'
+  )
+
+  dispose()
+  console.log('ok - kiting and one move per turn')
 }
 
 async function testTurnSynchronisation() {
@@ -960,7 +1056,9 @@ async function testTurnSynchronisation() {
     closeEndScreens: true,
     approachEnemies: false,
     defaultSpellRange: 1,
-    preferLineUp: false
+    preferLineUp: false,
+    positioning: 'close-in',
+    positioning: 'close-in'
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1157,6 +1255,7 @@ async function testCombatAi() {
     approachEnemies: false,
     defaultSpellRange: 1,
     preferLineUp: false,
+    positioning: 'close-in',
     autoReady: true,
     turnStartDelayMs: 0,
     castDelayMs: 0,
@@ -1235,6 +1334,7 @@ async function main() {
   await testApproachWithMp()
   await testSelfCastAndLineUp()
   await testRangeAndShortWalk()
+  await testKitingAndSingleMove()
   await testTurnSynchronisation()
   await testMovementDiscovery(ScriptRunner)
   await testMovementReportsNoEntryPoint(ScriptRunner)

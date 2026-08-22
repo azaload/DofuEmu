@@ -69,34 +69,33 @@ number next to **Add turn** and fill the list that appears.
 - A turn with no override plays the default combo.
 - An override with an empty list is meaningful: that turn casts nothing and passes.
 
-## Moving towards enemies
+## Positioning
 
-With **Move towards enemies** on (the default), a target out of range does not waste the
-turn. Cells reachable with the movement points left are ranked like this:
+With **Move in fights** on (the default), the AI places the character **once per turn**,
+before casting anything — one move, followed to its end. Asking again while the engine is
+still walking is what made a character cross three cells one step at a time.
 
-1. **In range and lined up** with the target — the best spot.
-2. **In range** — the cheapest one, so movement points are kept.
-3. **Neither** — the target is too far to reach this turn, so the AI walks anyway to close
-   distance, spending the points it has rather than standing still.
+Two modes:
 
-**Line up with the target** (on by default) makes the AI favour cells sharing a row or a
-column with the enemy, which is what line-only spells need. Out of range, lining up wins
-over one extra cell of progress — but only when the move still gets closer; it never
-trades progress for an alignment that goes nowhere.
+- **Keep your distance** (default) — stand as far from every enemy as the spells still
+  allow. A monster in contact is a reason to step back, not to trade blows: the AI moves
+  out of melee and casts from range.
+- **Close in on the target** — walk up to the target instead, for melee builds.
 
-The range used is the one set on the spell, then the game's own value, then the **Fallback
-range** setting (1 = melee). Cells occupied by other fighters are skipped.
+The range used for the decision is the **shortest** range in the combo, so every spell can
+still reach from where the character ends up. It comes from the range set on the spell, then
+the game's own value, then the **Fallback range** setting.
 
-The engine sometimes walks less far than asked — a blocked path, a shorter route. The AI
-checks where it actually landed and tries again while it makes progress and has points
-left, at most three times per spell, then casts from wherever it stands. Every step is in
-the activity log with the distance and the range used, so a spell the server refuses can be
-traced back to its cause.
+**Line up with the target** (on by default) breaks ties in favour of cells sharing a row or
+a column with the enemy, for line-only spells.
 
-Distances are grid distances — obstacles and the real path length are not simulated — so
-the move is a best effort. If nothing can be improved, or there are no movement points
-left, it says so in the activity log and casts anyway (the server refuses what is out of
-range).
+When nothing brings the target in range, both modes close as much distance as the movement
+points allow rather than standing still. Cells occupied by other fighters are skipped, and a
+walk the engine cuts short — a blocked path, a monster in the way — is reported in the
+activity log with where the character actually stopped.
+
+Distances are grid distances: obstacles and the real path length are not simulated, so the
+move is a best effort.
 
 ## Target strategies
 
@@ -116,8 +115,9 @@ This is deliberately the basic version:
 
 - No line of sight or action-point checks — a cast the server refuses is simply skipped,
   and the AI moves on to the next spell.
-- Movement is limited to closing in on the target: no kiting, no cover, no repositioning
-  between casts.
+- One placement per turn: no repositioning between two casts of the same turn.
+- No line-of-sight or cover reasoning — "keep your distance" maximises raw distance from
+  enemies, nothing more.
 - No spell conditions (cooldowns, states) beyond the turn-number combos above.
 - The AI does not look for fights: pair it with the hunt script below to farm.
 

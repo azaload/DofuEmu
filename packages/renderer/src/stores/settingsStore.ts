@@ -105,7 +105,8 @@ const defaultState = {
     closeEndScreens: true,
     approachEnemies: true,
     defaultSpellRange: 1,
-    preferLineUp: true
+    preferLineUp: true,
+    positioning: 'keep-distance' as const
   },
   scripts: {
     enabled: true,

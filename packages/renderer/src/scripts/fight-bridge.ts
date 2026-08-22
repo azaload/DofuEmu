@@ -1,4 +1,4 @@
-import type { CombatTargetStrategy } from '@dofemu/shared'
+import type { CombatPositioning, CombatTargetStrategy } from '@dofemu/shared'
 import type { DofusWindow } from '@/types/dofus-window'
 import { areCellsAligned, cellDistance, isCellWalkable, CELL_COUNT } from './cells'
 import { sendMessage } from './game-bridge'
@@ -230,112 +230,136 @@ export function getSpellRange(gameWindow: DofusWindow, spellId: number): number 
   return getSpells(gameWindow).find((spell) => spell.id === spellId)?.range ?? null
 }
 
-export interface ApproachOptions {
+export interface PositionOptions {
   /** Favour cells lined up with the target, for line-only spells. */
   preferLineUp?: boolean
+  /** Keep as far from enemies as the range allows, or walk right up to them. */
+  positioning?: CombatPositioning
 }
 
-export interface ApproachResult {
+export interface PositionResult {
   cellId: number
-  /** Whether the target is within range from there. */
+  /** The target is within range from there. */
   inRange: boolean
   aligned: boolean
   /** Movement points the move costs. */
   cost: number
   distanceToTarget: number
+  /** Distance to the closest living enemy from there. */
+  distanceToClosestEnemy: number
+}
+
+/** Distance from `cellId` to the nearest living enemy. */
+function closestEnemyDistance(enemies: Fighter[], cellId: number): number {
+  let closest = Number.MAX_SAFE_INTEGER
+  for (const enemy of enemies) {
+    if (enemy.cellId === null) continue
+    closest = Math.min(closest, cellDistance(cellId, enemy.cellId))
+  }
+  return closest
 }
 
 /**
- * Where to walk to attack `target`.
+ * Where to stand to cast at `target` with a spell of `range`.
  *
- * Candidates are ranked in tiers: in range and lined up first, then in range,
- * then — when nothing brings the target in range — a cell that closes distance,
- * so the movement points are spent instead of standing still. Out of range,
- * lining up wins over one extra cell of progress; in range, the cheapest move
- * wins.
+ * In "keep-distance" the character stays as far from every enemy as the range
+ * allows — a melee monster next to us is a reason to step back, not to stay.
+ * In "close-in" it walks up to the target instead. When nothing brings the
+ * target in range, both modes close as much distance as the movement points
+ * allow rather than standing still.
  *
  * Distances are grid distances: obstacles and the real path length are not
  * accounted for, so the move is a best effort and the caller should re-check
- * the distance afterwards.
+ * where the character actually landed.
  */
-export function findApproachCell(
+export function findPositionCell(
   gameWindow: DofusWindow,
   target: Fighter,
   range: number,
   movementPoints: number,
-  options: ApproachOptions = {}
-): ApproachResult | null {
+  options: PositionOptions = {}
+): PositionResult | null {
   const me = getMyFighter(gameWindow)
   if (!me || me.cellId === null || target.cellId === null) return null
   if (movementPoints <= 0) return null
 
   const preferLineUp = options.preferLineUp !== false
+  const keepDistance = (options.positioning ?? 'keep-distance') === 'keep-distance'
   const from = me.cellId
   const to = target.cellId
 
-  const startDistance = cellDistance(from, to)
-  const alreadyInRange = startDistance <= range
-  if (alreadyInRange && (!preferLineUp || areCellsAligned(from, to))) return null
-
+  const enemies = getEnemies(gameWindow)
   const occupied = new Set(
     getFighters(gameWindow)
       .filter((fighter) => fighter.alive && fighter.cellId !== null)
       .map((fighter) => fighter.cellId as number)
   )
 
-  /** Lower is better. */
-  const tierOf = (inRange: boolean, aligned: boolean): number => {
-    if (inRange && aligned) return 0
-    if (inRange) return preferLineUp ? 1 : 0
-    return 2
-  }
+  const startDistance = cellDistance(from, to)
+  const startInRange = startDistance <= range
+  const startEnemyDistance = closestEnemyDistance(enemies, from)
+  const startAligned = areCellsAligned(from, to)
 
-  let best: (ApproachResult & { tier: number }) | null = null
+  const score = (cellId: number): PositionResult => ({
+    cellId,
+    inRange: cellDistance(cellId, to) <= range,
+    aligned: areCellsAligned(cellId, to),
+    cost: cellDistance(from, cellId),
+    distanceToTarget: cellDistance(cellId, to),
+    distanceToClosestEnemy: closestEnemyDistance(enemies, cellId)
+  })
+
+  const current = score(from)
+  const candidates: PositionResult[] = [current]
 
   for (let cellId = 0; cellId < CELL_COUNT; cellId++) {
     if (cellId === from || occupied.has(cellId)) continue
-
-    const cost = cellDistance(from, cellId)
-    if (cost > movementPoints) continue
+    if (cellDistance(from, cellId) > movementPoints) continue
     if (!isCellWalkable(gameWindow, cellId)) continue
-
-    const distanceToTarget = cellDistance(cellId, to)
-    const inRange = distanceToTarget <= range
-    const aligned = areCellsAligned(cellId, to)
-    const tier = tierOf(inRange, aligned)
-    const candidate = { cellId, inRange, aligned, cost, distanceToTarget, tier }
-
-    if (!best || tier < best.tier) {
-      best = candidate
-      continue
-    }
-    if (tier > best.tier) continue
-
-    if (tier === 2) {
-      // Out of range. Lining up wins as long as the move still closes distance;
-      // otherwise close as much distance as the movement points allow.
-      const closes = distanceToTarget < startDistance
-      if (preferLineUp && aligned !== best.aligned) {
-        if (aligned && closes) best = candidate
-        continue
-      }
-      if (distanceToTarget < best.distanceToTarget) best = candidate
-      else if (distanceToTarget === best.distanceToTarget && cost < best.cost) best = candidate
-      continue
-    }
-
-    // Already in range there: spend as few movement points as possible.
-    if (cost < best.cost) best = candidate
-    else if (cost === best.cost && aligned && !best.aligned) best = candidate
+    candidates.push(score(cellId))
   }
 
-  if (!best) return null
+  const anyInRange = candidates.some((candidate) => candidate.inRange)
 
-  // Never trade a position in range for one that is not, and never move
-  // without getting closer when the target stays out of reach.
-  if (alreadyInRange && !best.inRange) return null
-  if (!alreadyInRange && !best.inRange && best.distanceToTarget >= startDistance) return null
+  const better = (a: PositionResult, b: PositionResult): boolean => {
+    // Being able to cast comes first.
+    if (anyInRange && a.inRange !== b.inRange) return a.inRange
 
-  const { tier: _tier, ...result } = best
-  return result
+    if (!anyInRange) {
+      // Nothing reaches: close as much distance as we can.
+      if (a.distanceToTarget !== b.distanceToTarget) return a.distanceToTarget < b.distanceToTarget
+      if (preferLineUp && a.aligned !== b.aligned) return a.aligned
+      return a.cost < b.cost
+    }
+
+    if (keepDistance && a.distanceToClosestEnemy !== b.distanceToClosestEnemy) {
+      return a.distanceToClosestEnemy > b.distanceToClosestEnemy
+    }
+    if (!keepDistance && a.distanceToTarget !== b.distanceToTarget) {
+      return a.distanceToTarget < b.distanceToTarget
+    }
+    if (preferLineUp && a.aligned !== b.aligned) return a.aligned
+    return a.cost < b.cost
+  }
+
+  let best = candidates[0]
+  for (const candidate of candidates.slice(1)) {
+    if (better(candidate, best)) best = candidate
+  }
+
+  if (best.cellId === from) return null
+
+  // Never give up a castable position, and never move for nothing.
+  if (startInRange && !best.inRange) return null
+  if (!startInRange && !best.inRange && best.distanceToTarget >= startDistance) return null
+  if (
+    startInRange &&
+    best.inRange &&
+    best.distanceToClosestEnemy <= startEnemyDistance &&
+    (!preferLineUp || best.aligned === startAligned)
+  ) {
+    return null
+  }
+
+  return best
 }

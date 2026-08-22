@@ -4,7 +4,7 @@ import {
   areCellsAligned,
   castSpell,
   cellDistance,
-  findApproachCell,
+  findPositionCell,
   finishTurn,
   getMyFighter,
   getMyFighterId,
@@ -202,69 +202,82 @@ export function initCombatAi(
   }
 
   /**
-   * Walks towards `target` with the movement points left: to get in range, or
-   * as close as possible when the target is further than that.
-   *
-   * The engine can stop short of the cell we asked for, so the walk is repeated
-   * while it makes progress and there are points left.
+   * Range every spell of the combo can be cast from: the shortest one, so the
+   * whole combo still reaches from where we end up.
    */
-  const approach = async (settings: CombatSettings, spell: CombatSpell, targetCell: number) => {
+  const comboRange = (settings: CombatSettings, combo: CombatSpell[]) => {
+    const ranges = combo
+      .filter((spell) => !spell.self)
+      .map((spell) => rangeFor(settings, spell))
+    if (ranges.length === 0) return null
+    return ranges.reduce((shortest, candidate) =>
+      candidate.range < shortest.range ? candidate : shortest
+    )
+  }
+
+  /**
+   * Places the character for the turn — once, before casting anything.
+   *
+   * One move, followed to its end: asking again while the engine is still
+   * walking is what made the character crawl one cell at a time.
+   */
+  const positionForTurn = async (settings: CombatSettings, combo: CombatSpell[]) => {
     if (!settings.approachEnemies) return
 
-    const { range, source } = rangeFor(settings, spell)
+    const spellRange = comboRange(settings, combo)
+    if (!spellRange) return
 
-    for (let step = 0; step < MAX_APPROACH_STEPS; step++) {
-      const me = getMyFighter(gameWindow)
-      if (!me || me.cellId === null) return
+    const me = getMyFighter(gameWindow)
+    if (!me || me.cellId === null) return
 
-      const distance = cellDistance(me.cellId, targetCell)
-      const inRange = distance <= range
-      const aligned = areCellsAligned(me.cellId, targetCell)
-      if (inRange && (!settings.preferLineUp || aligned)) return
+    const movementPoints = me.mp ?? 0
+    const target = pickTarget(gameWindow, settings.targetStrategy)
+    if (!target || target.cellId === null) return
 
-      const movementPoints = me.mp ?? 0
-      if (movementPoints <= 0) {
-        if (!inRange) {
-          log(`Target ${distance} cell(s) away, range ${range} (${source}), no MP left`)
-        }
-        return
+    const distance = cellDistance(me.cellId, target.cellId)
+    const { range, source } = spellRange
+
+    if (movementPoints <= 0) {
+      if (distance > range) log(`Target ${distance} cell(s) away, range ${range} (${source}), no MP left`)
+      return
+    }
+
+    const move = findPositionCell(gameWindow, target, range, movementPoints, {
+      preferLineUp: settings.preferLineUp,
+      positioning: settings.positioning
+    })
+
+    if (!move) {
+      if (distance > range) {
+        log(`Target ${distance} cell(s) away, range ${range} (${source}), nowhere better within ${movementPoints} MP`)
       }
+      return
+    }
 
-      const target = pickTarget(gameWindow, settings.targetStrategy)
-      if (!target) return
+    const intent =
+      settings.positioning === 'keep-distance'
+        ? `keeping ${move.distanceToClosestEnemy} cell(s) from the closest enemy`
+        : `closing to ${move.distanceToTarget} cell(s)`
+    log(
+      `Moving to cell ${move.cellId}: ${move.cost} of ${movementPoints} MP, ${intent}` +
+        (move.aligned ? ', lined up' : '') +
+        ` (range ${range} from ${source})`
+    )
 
-      const move = findApproachCell(gameWindow, target, range, movementPoints, {
-        preferLineUp: settings.preferLineUp
-      })
+    if (!requestMoveToCell(gameWindow, move.cellId)) {
+      log('No movement entry point on this build — run api.inspect() from a script')
+      return
+    }
 
-      if (!move) {
-        if (!inRange) {
-          log(`Target ${distance} cell(s) away, range ${range} (${source}), nowhere better within ${movementPoints} MP`)
-        }
-        return
-      }
+    const outcome = await waitForMove(move.cellId)
+    await waitForIdle()
 
-      log(
-        `Moving to cell ${move.cellId} (${move.cost} MP of ${movementPoints}, target ${distance} cell(s) away, range ${range} from ${source})`
-      )
-
-      if (!requestMoveToCell(gameWindow, move.cellId)) {
-        log('No movement entry point on this game build')
-        return
-      }
-
-      const outcome = await waitForMove(move.cellId)
-      await waitForIdle()
-
-      const landed = currentCell()
-      if (outcome === 'no-move') {
-        log('The character did not move — the path is blocked')
-        return
-      }
-      if (outcome === 'stopped-short') {
-        log(`Stopped on cell ${landed} instead of ${move.cellId}`)
-        if (landed === me.cellId) return
-      }
+    if (outcome === 'no-move') {
+      log('The character did not move — blocked, or the engine refused the path')
+      return
+    }
+    if (outcome === 'stopped-short') {
+      log(`Stopped on cell ${currentCell()} instead of ${move.cellId} — the way is blocked`)
     }
   }
 
@@ -295,6 +308,9 @@ export function initCombatAi(
     log(`Turn ${turn}: playing the ${label}`)
     await sleep(settings.turnStartDelayMs)
 
+    await positionForTurn(settings, combo)
+    if (!stillOurTurn() || !isFightStarted(gameWindow)) return
+
     for (const spell of combo) {
       if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
@@ -317,18 +333,11 @@ export function initCombatAi(
         continue
       }
 
-      let target = pickTarget(gameWindow, settings.targetStrategy)
+      const target = pickTarget(gameWindow, settings.targetStrategy)
       if (!target || target.cellId === null) {
         log('No reachable target, stopping the combo')
         break
       }
-
-      await approach(settings, spell, target.cellId)
-      if (!stillOurTurn() || !isFightStarted(gameWindow)) return
-
-      // The target may have been re-evaluated while moving.
-      target = pickTarget(gameWindow, settings.targetStrategy) ?? target
-      if (target.cellId === null) break
 
       try {
         castSpell(gameWindow, spell.id, target.cellId)
