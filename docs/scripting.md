@@ -100,7 +100,7 @@ The no-code version of a fixed combo lives in **Settings → Combat** — see
 | Call | Description |
 |------|-------------|
 | `api.monsters(filter)` | Monster groups on the current map, nearest first. Filter with `minLevel`, `maxLevel`, `minSize`, `maxSize` (`level` is the summed level of the whole group), or pass `nearestFirst: false` to keep the game's order. |
-| `await api.attack(group)` | Walk onto the group's cell and start the fight. Resolves `false` when no fight started within the timeout; `{ approach: false }` skips the walk. |
+| `await api.attack(group)` | Walk next to the group and start the fight. Resolves `false` when no fight started within the timeout; `{ approach: false }` skips the walk. Each step is written to the script log. |
 | `api.closePopups()` | Close the fight results and level-up screens, which block the next move. Returns what was closed. |
 
 ### Interaction
@@ -143,6 +143,7 @@ The **From template…** menu creates a ready-made script:
 - **Follow the leader** — the leader broadcasts its map changes, followers reproduce them.
 - **Anti-AFK** — small random moves at random intervals.
 - **Hunt: fight a map circuit** — walks a list of maps and fights the groups that match your filters.
+- **Patrol a line and fight** — back and forth along one row of maps, fighting on each.
 - **Combat: spell combo** — casts a combo each turn and passes the turn.
 - **Fight watcher** — logs fight starts and notifies the other tabs.
 
@@ -167,6 +168,19 @@ The turns themselves are played by the [Combat AI](combat.md) — enable it, or 
 After each fight the template calls `api.closePopups()` twice: the results screen appears
 right away, the level-up window sometimes a moment later, and both block the next move.
 The Combat AI does the same on its own when **Close end screens** is on.
+
+## Patrolling a line of maps
+
+**Patrol a line and fight** walks a row back and forth — the whole trip is one lap:
+
+```js
+const Y = -21
+const FROM_X = -2
+const TO_X = 7
+```
+
+It travels to each map in turn, fights every group matching `FILTER`, dismisses the
+end-of-fight screens, and comes back the other way. With **Loop** on, laps chain.
 
 ## Import and export
 

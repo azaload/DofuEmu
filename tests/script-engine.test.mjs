@@ -476,14 +476,41 @@ async function testMonsterHunt(ScriptRunner) {
   )
   assert.ok(logs.some((line) => line.includes('small -1')), 'the level filter excludes big groups')
 
-  const walked = state.cellId
-  assert.strictEqual(walked, 114, 'the character walks onto the group cell before attacking')
+  // The group on cell 114 is already next to us: no walking needed.
+  assert.strictEqual(state.moves.length, 0, 'no move when already next to the group')
   assert.ok(
     state.sent.some((message) => message.name === 'GameRolePlayAttackMonsterRequestMessage'),
     'the attack request is sent'
   )
   assert.ok(logs.some((line) => line.includes('fight started true')), 'the fight start is awaited')
   console.log('ok - monster hunt')
+}
+
+async function testAttackApproach(ScriptRunner) {
+  const { logs, state } = await run(
+    ScriptRunner,
+    `
+      const far = api.monsters().find((group) => group.id === -1)
+      api.log('target cell', far.cellId)
+      api.log('started', await api.attack(far))
+    `
+  )
+
+  // The far group sits on cell 300, out of reach: we must walk next to it,
+  // never onto it — that cell is occupied and the walk would never complete.
+  assert.strictEqual(state.moves.length, 1, 'one approach move is requested')
+  const landing = state.moves[0]
+  assert.notStrictEqual(landing, 300, 'the character does not walk onto the group')
+  assert.ok(
+    logs.some((line) => line.includes('next to the group on 300')),
+    'the approach is reported in the log'
+  )
+  assert.ok(
+    logs.some((line) => line.includes('Attack: requesting group -1')),
+    'the attack request is reported with the group id'
+  )
+  assert.ok(logs.some((line) => line.includes('started true')), 'the fight starts')
+  console.log('ok - attack approach')
 }
 
 async function testClosePopups(ScriptRunner) {
@@ -992,6 +1019,7 @@ async function main() {
   await testTargetStrategies(ScriptRunner)
   await testCombatAi()
   await testMonsterHunt(ScriptRunner)
+  await testAttackApproach(ScriptRunner)
   await testClosePopups(ScriptRunner)
   await testTurnCombos()
   await testApproachWithMp()

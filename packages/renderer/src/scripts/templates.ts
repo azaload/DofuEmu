@@ -156,6 +156,78 @@ for (const spot of MAPS) {
 `
   },
   {
+    id: 'line-patrol-fight',
+    name: 'Patrol a line and fight',
+    description:
+      'Walks back and forth along a row of maps, fighting every group it finds on the way.',
+    target: 'active-tab',
+    loop: true,
+    loopDelayMs: 4000,
+    source: `// Back and forth along one row of maps, fighting on every map.
+const Y = -21
+const FROM_X = -2
+const TO_X = 7
+
+// Which groups to attack. level is the sum of the levels of the whole group.
+const FILTER = { minLevel: 1, maxLevel: 9999, maxSize: 8 }
+
+// Fights are played by the Combat AI (Settings -> Combat).
+const FIGHT_TIMEOUT = 1800000
+
+const outward = []
+for (let x = FROM_X; x <= TO_X; x++) outward.push(x)
+const route = [...outward, ...[...outward].reverse().slice(1)]
+
+api.log(\`Lap \${api.iteration}: [\${FROM_X}, \${Y}] -> [\${TO_X}, \${Y}] and back\`)
+
+for (const x of route) {
+  if (!api.isConnected()) {
+    api.warn('Not in game, waiting')
+    await api.waitUntil(() => api.isConnected(), { timeout: 300000, interval: 3000 })
+  }
+
+  if (api.isInFight()) {
+    await api.fight.waitForFightEnd({ timeout: FIGHT_TIMEOUT, interval: 2000 })
+    await api.waitRandom(1200, 2000)
+    api.closePopups()
+  }
+
+  const here = api.map()
+  if (here.x !== x || here.y !== Y) {
+    api.log(\`Travelling to [\${x}, \${Y}]\`)
+    await api.travelTo(x, Y)
+  }
+
+  // Fight everything on this map before moving on.
+  let groups = api.monsters(FILTER)
+  api.log(\`[\${x}, \${Y}] map \${api.mapId()}: \${groups.length} group(s)\`)
+
+  while (groups.length > 0) {
+    const group = groups[0]
+    api.log(\`Attacking group \${group.id} (size \${group.size}, level \${group.level}) on cell \${group.cellId}\`)
+
+    if (!(await api.attack(group))) {
+      api.warn('No fight started, leaving this map')
+      break
+    }
+
+    await api.fight.waitForFightEnd({ timeout: FIGHT_TIMEOUT, interval: 2000 })
+
+    // The results screen, and sometimes a level-up window, block the next move.
+    await api.waitRandom(1200, 2000)
+    api.closePopups()
+    await api.waitRandom(1200, 2000)
+    api.closePopups()
+    api.log('Fight over')
+
+    groups = api.monsters(FILTER)
+  }
+
+  await api.waitRandom(800, 1800)
+}
+`
+  },
+  {
     id: 'follow-leader',
     name: 'Follow the leader',
     description:

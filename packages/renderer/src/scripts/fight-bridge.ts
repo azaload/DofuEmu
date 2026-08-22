@@ -1,6 +1,9 @@
 import type { CombatTargetStrategy } from '@dofemu/shared'
 import type { DofusWindow } from '@/types/dofus-window'
+import { areCellsAligned, cellDistance, isCellWalkable, CELL_COUNT } from './cells'
 import { sendMessage } from './game-bridge'
+
+export { areCellsAligned, cellCoordinates, cellDistance, isCellWalkable } from './cells'
 
 /**
  * Fight-side accessors. Same contract as game-bridge: probe the shapes known
@@ -8,8 +11,6 @@ import { sendMessage } from './game-bridge'
  */
 
 type Dict = Record<string, unknown>
-
-const MAP_WIDTH = 14
 
 export interface Fighter {
   id: number
@@ -50,22 +51,6 @@ function values(container: unknown): unknown[] {
   const dict = asDict(container)
   if (!dict) return []
   return Object.values(dict)
-}
-
-/**
- * Grid coordinates of a cell. Dofus lays 560 cells out as 40 interleaved rows
- * of 14, and distance between two cells is the Manhattan distance here.
- */
-export function cellCoordinates(cellId: number): { x: number; y: number } {
-  const row = Math.floor(cellId / MAP_WIDTH)
-  const col = cellId % MAP_WIDTH
-  return { x: col + Math.floor((row + 1) / 2), y: Math.floor(row / 2) - col }
-}
-
-export function cellDistance(from: number, to: number): number {
-  const a = cellCoordinates(from)
-  const b = cellCoordinates(to)
-  return Math.abs(a.x - b.x) + Math.abs(a.y - b.y)
 }
 
 function getPlayerData(gameWindow: DofusWindow): Dict | null {
@@ -245,38 +230,6 @@ export function getSpellRange(gameWindow: DofusWindow, spellId: number): number 
   return getSpells(gameWindow).find((spell) => spell.id === spellId)?.range ?? null
 }
 
-/** Cells that can be walked on, as far as the map data lets us tell. */
-export function isCellWalkable(gameWindow: DofusWindow, cellId: number): boolean {
-  if (cellId < 0 || cellId >= 560) return false
-
-  const mapRenderer = asDict(asDict(gameWindow.isoEngine)?.mapRenderer)
-  if (!mapRenderer) return false
-
-  const isWalkable = mapRenderer.isWalkable
-  if (typeof isWalkable === 'function') {
-    try {
-      return (isWalkable as (id: number) => boolean).call(mapRenderer, cellId) !== false
-    } catch {}
-  }
-
-  const cells = asDict(mapRenderer.map)?.cells
-  const cell = Array.isArray(cells) ? asDict(cells[cellId]) : asDict(asDict(cells)?.[cellId])
-  if (!cell) return false
-
-  // `l` carries the cell flags; bit 1 is "movable" on the builds we know.
-  const flags = asNumber(cell.l)
-  if (flags !== null) return (flags & 1) !== 0
-
-  return true
-}
-
-/** Two cells are aligned when they share a row or a column of the fight grid. */
-export function areCellsAligned(a: number, b: number): boolean {
-  const first = cellCoordinates(a)
-  const second = cellCoordinates(b)
-  return first.x === second.x || first.y === second.y
-}
-
 export interface ApproachOptions {
   /** Favour cells lined up with the target, for line-only spells. */
   preferLineUp?: boolean
@@ -339,7 +292,7 @@ export function findApproachCell(
 
   let best: (ApproachResult & { tier: number }) | null = null
 
-  for (let cellId = 0; cellId < 560; cellId++) {
+  for (let cellId = 0; cellId < CELL_COUNT; cellId++) {
     if (cellId === from || occupied.has(cellId)) continue
 
     const cost = cellDistance(from, cellId)

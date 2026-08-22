@@ -19,6 +19,7 @@ import {
   type EventEmitterLike,
   type MonsterGroup
 } from './game-bridge'
+import { findCellNextTo } from './cells'
 import { closeUiPopups } from './ui-bridge'
 import {
   castSpell,
@@ -55,7 +56,8 @@ const DEFAULT_WAIT_TIMEOUT = 15000
 const DEFAULT_POLL_INTERVAL = 200
 const DEFAULT_TRAVEL_STEPS = 60
 const DEFAULT_CAST_TIMEOUT = 4000
-const DEFAULT_ATTACK_TIMEOUT = 30000
+const DEFAULT_ATTACK_TIMEOUT = 20000
+const ATTACK_APPROACH_TIMEOUT = 12000
 const DEFAULT_TURN_TIMEOUT = 300000
 const TURN_POLL_INTERVAL = 400
 const BROADCAST_PREFIX = 'dofemu-script:'
@@ -506,19 +508,48 @@ export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
     throwIfAborted()
 
     const groupId = typeof group === 'number' ? group : group.id
-    const cell = typeof group === 'number' ? null : group.cellId
+    const groupCell = typeof group === 'number' ? null : group.cellId
+    const report = (message: string) => ctx.hooks.onLog('info', message)
 
-    if (options.approach !== false && cell !== null) {
-      try {
-        await moveToCell(cell)
-      } catch (err) {
-        if (err instanceof ScriptAbortError) throw err
-        // The group cell can be unreachable; the server may still accept the attack.
+    if (options.approach !== false && groupCell !== null) {
+      const from = getCellId(gameWindow)
+
+      if (from === null) {
+        report('Attack: unknown position, attacking from where we stand')
+      } else if (cellDistance(from, groupCell) > 1) {
+        // Walking onto the group's own cell never completes — it is occupied.
+        // Stand next to it instead.
+        const occupied = new Set(
+          getMonsterGroups(gameWindow)
+            .map((candidate) => candidate.cellId)
+            .filter((cellId): cellId is number => cellId !== null)
+        )
+        const landing = findCellNextTo(gameWindow, groupCell, from, occupied)
+
+        if (landing === null) {
+          report(`Attack: no free cell next to the group on cell ${groupCell}`)
+        } else {
+          report(`Attack: walking to cell ${landing}, next to the group on ${groupCell}`)
+          try {
+            await moveToCell(landing, { timeout: options.timeout ?? ATTACK_APPROACH_TIMEOUT })
+          } catch (err) {
+            if (err instanceof ScriptAbortError) throw err
+            report(`Attack: could not reach the group (${err instanceof Error ? err.message : String(err)})`)
+          }
+        }
       }
     }
 
     const timeout = options.timeout ?? DEFAULT_ATTACK_TIMEOUT
     const started = waitForMessage('GameFightStartingMessage', { timeout })
+
+    const distance = groupCell !== null && getCellId(gameWindow) !== null
+      ? cellDistance(getCellId(gameWindow) as number, groupCell)
+      : null
+    report(
+      `Attack: requesting group ${groupId}` +
+        (distance !== null ? ` from ${distance} cell(s) away` : '')
+    )
 
     attackMonsterGroup(gameWindow, groupId)
 
@@ -527,6 +558,7 @@ export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
       return true
     } catch (err) {
       if (err instanceof ScriptAbortError) throw err
+      report(`Attack: no fight started within ${timeout}ms`)
       return false
     }
   }
