@@ -1777,6 +1777,98 @@ async function testModelBrain() {
   console.log('ok - model brain with fallback')
 }
 
+async function testPushBreaksMelee() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-state.ts'))
+  const { buildFightState } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-state.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [
+      { id: 300, name: 'Shove', range: 4, push: true },
+      { id: 165, name: 'Bolt', range: 6 }
+    ],
+    turnCombos: [],
+    targetStrategy: 'nearest',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1,
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    spreadCasts: false,
+    brain: 'rules',
+    ollamaEndpoint: '',
+    ollamaModel: '',
+    ollamaTimeoutMs: 1000,
+    preferChallenges: false
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  // One monster in contact, one far away.
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 294
+  state.fighters[2].data.disposition.cellId = 400
+
+  // The state handed to a model must say the character is held.
+  const snapshot = buildFightState(gameWindow, {
+    turn: 1,
+    combo: combatSettings.combo,
+    fallbackRange: 1,
+    tackleAware: true
+  })
+  assert.deepStrictEqual(snapshot.me.tackledBy, [20], 'the holder is named')
+  assert.strictEqual(snapshot.me.canMove, false, 'and moving is ruled out')
+  assert.strictEqual(snapshot.cells.length, 0, 'no cell is offered while held')
+  assert.strictEqual(snapshot.spells[0].push, true, 'the push spell is flagged')
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 700))
+
+  const casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.strictEqual(casts[0].data.spellId, 300, 'the push is cast first, at the holder')
+  assert.strictEqual(casts[0].data.cellId, 294, 'on the monster in contact')
+  assert.ok(logs.some((line) => line.includes('to break contact')), 'the intent is logged')
+  assert.strictEqual(state.moves.length, 0, 'no tackled move is attempted')
+
+  // Two monsters in contact: pushing one changes nothing, so it is not used.
+  state.sent.length = 0
+  logs.length = 0
+  state.fighters[2].data.disposition.cellId = 266
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 700))
+
+  assert.ok(
+    !logs.some((line) => line.includes('to break contact')),
+    'no push when several monsters hold the character'
+  )
+
+  dispose()
+  console.log('ok - push breaks a lone hold')
+}
+
 async function testAntiIdle() {
   await bundleModule(path.join(root, 'packages/renderer/src/mods/anti-idle.ts'))
   const { initAntiIdle, dismissInactivityDialog, signalActivity } = await import(
@@ -2103,6 +2195,7 @@ async function main() {
   await testMovementDiscovery(ScriptRunner)
   await testMovementReportsNoEntryPoint(ScriptRunner)
   await testModelBrain()
+  await testPushBreaksMelee()
   await testAntiIdle()
   await testTurnPlanValidation()
   await testConnectionCheck()

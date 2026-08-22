@@ -58,6 +58,11 @@ export interface CombatSpell {
   self?: boolean
   /** Cast range in cells. Overrides what the game reports, when set. */
   range?: number
+  /**
+   * Pushes its target away. Used to break away from a monster in contact
+   * without paying a tackle.
+   */
+  push?: boolean
 }
 
 /** A combo that replaces the default one on a given turn of the fight. */

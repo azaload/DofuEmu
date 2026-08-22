@@ -7,6 +7,7 @@ import {
   getFighters,
   getMyFighter,
   getSpells,
+  tacklingEnemies,
   type Fighter,
   type SpellInfo
 } from './fight-bridge'
@@ -40,6 +41,8 @@ export interface StateSpell {
   /** Enemies this spell can hit right now, by fighter id. */
   targets: number[]
   self: boolean
+  /** Pushes its target away, which breaks melee without paying a tackle. */
+  push: boolean
 }
 
 export interface StateCell {
@@ -69,6 +72,10 @@ export interface FightState {
     maxLife: number | null
     ap: number | null
     mp: number | null
+    /** Enemies in contact. Leaving their reach is tackled. */
+    tackledBy: number[]
+    /** False while held in contact: no move action may be planned. */
+    canMove: boolean
   }
   spells: StateSpell[]
   enemies: StateFighter[]
@@ -107,7 +114,7 @@ function rangeOf(spell: SpellInfo, configured: CombatSpell | undefined, fallback
 
 export function buildFightState(
   gameWindow: DofusWindow,
-  options: { turn: number; combo: CombatSpell[]; fallbackRange: number }
+  options: { turn: number; combo: CombatSpell[]; fallbackRange: number; tackleAware?: boolean }
 ): FightState {
   const me = getMyFighter(gameWindow)
   const from = me?.cellId ?? null
@@ -139,7 +146,8 @@ export function buildFightState(
       range,
       minRange,
       targets,
-      self: entry.self === true
+      self: entry.self === true,
+      push: entry.push === true
     }
   })
 
@@ -149,8 +157,9 @@ export function buildFightState(
       .map((fighter) => fighter.cellId as number)
   )
 
+  // No cells are offered while held: a move would be tackled.
   const cells: StateCell[] = []
-  if (from !== null && (me?.mp ?? 0) > 0) {
+  if (from !== null && (me?.mp ?? 0) > 0 && !(options.tackleAware !== false && tacklingEnemies(enemies, from).length > 0)) {
     const reachable = [...reachableCells(gameWindow, from, me?.mp ?? 0, occupied).values()]
       .filter((entry) => entry.cellId !== from)
       .sort((a, b) => a.cost - b.cost)
@@ -178,6 +187,9 @@ export function buildFightState(
     }
   }
 
+  const tackledBy = from === null ? [] : tacklingEnemies(enemies, from).map((enemy) => enemy.id)
+  const held = options.tackleAware !== false && tackledBy.length > 0
+
   return {
     turn: options.turn,
     me: {
@@ -187,7 +199,9 @@ export function buildFightState(
       life: me?.life ?? null,
       maxLife: me?.maxLife ?? null,
       ap: me?.ap ?? null,
-      mp: me?.mp ?? null
+      mp: me?.mp ?? null,
+      tackledBy,
+      canMove: !held && (me?.mp ?? 0) > 0
     },
     spells,
     enemies: enemies.map((enemy) => describe(gameWindow, from, enemy)),

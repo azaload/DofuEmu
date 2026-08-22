@@ -96,12 +96,14 @@ the ones after that are the speed you will get in fights.
 
 Not the raw fight — a snapshot where the hard parts are already solved:
 
-- your cell, life, action and movement points
-- the spells of the combo, with their range and, for each, **the enemies it can actually
-  hit right now** (range and line of sight already checked)
+- your cell, life, action and movement points, **who holds you in contact** and whether
+  moving is allowed at all
+- the spells of the combo, with their range, whether they push their target, and, for each,
+  **the enemies it can actually hit right now** (range and line of sight already checked)
 - every enemy and ally with position, life, distance, line of sight and alignment
 - **the cells you can reach this turn**, each with its cost in movement points, its
-  distance to the closest enemy, and which enemies it sees or lines up with
+  distance to the closest enemy, and which enemies it sees or lines up with — the list is
+  empty while a monster holds you, so a move cannot even be considered
 - the fight's challenges when the client exposes them
 
 A one- or two-billion-parameter model cannot work out geometry on its own; it can pick from
@@ -179,6 +181,15 @@ positioning mode and however many movement points are left. The log says so:
 
 Turn it off only if you want the AI to attempt escapes; it will then place itself as it
 would out of melee, and report what the tackle really cost.
+
+### Breaking a hold with a push
+
+Fleeing on foot is tackled — pushing the monster away is not. Tick **push** on a spell that
+throws its target back, and in *Keep your distance* the AI casts it at the start of the turn
+when **exactly one** enemy holds the character, freeing it for the rest of the turn.
+
+With two or more monsters in contact it is not used: pushing one leaves the other holding,
+for nothing.
 
 ## Spreading the casts
 

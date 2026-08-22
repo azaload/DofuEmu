@@ -366,7 +366,8 @@ export function initCombatAi(
     const state = buildFightState(gameWindow, {
       turn,
       combo,
-      fallbackRange: settings.defaultSpellRange
+      fallbackRange: settings.defaultSpellRange,
+      tackleAware: settings.tackleAware
     })
 
     let result
@@ -439,6 +440,49 @@ export function initCombatAi(
     return true
   }
 
+  /**
+   * Throws a monster in contact away with a push spell.
+   *
+   * Fleeing on foot is tackled, but pushing the holder is not: with a single
+   * enemy in contact this frees the character for the rest of the turn.
+   */
+  const breakMeleeWithPush = async (settings: CombatSettings, combo: CombatSpell[]) => {
+    if (settings.positioning !== 'keep-distance') return
+
+    const me = getMyFighter(gameWindow)
+    if (!me || me.cellId === null) return
+
+    const holders = tacklingEnemies(getEnemies(gameWindow), me.cellId)
+    if (holders.length !== 1) return
+
+    const push = combo.find((spell) => spell.push && !spell.self)
+    if (!push) return
+
+    const holder = holders[0]
+    if (holder.cellId === null) return
+
+    const { range } = rangeFor(settings, push)
+    if (cellDistance(me.cellId, holder.cellId) > range) return
+
+    try {
+      castSpell(gameWindow, push.id, holder.cellId)
+      log(`Pushing ${holder.name ?? holder.id} away with ${push.name || push.id} to break contact`)
+    } catch (err) {
+      log(`Push failed: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
+
+    await humanSleep(settings.castDelayMs)
+    await waitForIdle()
+
+    const after = getMyFighter(gameWindow)
+    const stillHeld =
+      after?.cellId !== null && after?.cellId !== undefined
+        ? tacklingEnemies(getEnemies(gameWindow), after.cellId).length > 0
+        : true
+    log(stillHeld ? 'Still in contact after the push' : 'Contact broken, free to move')
+  }
+
   const playTurn = async (turn: number, token: number) => {
     const settings = callbacks.getSettings()
     const { combo, label } = comboForTurn(settings, turn)
@@ -486,6 +530,9 @@ export function initCombatAi(
     if (settings.brain === 'ollama' && (await playWithModel(settings, combo, turn, stillOurTurn))) {
       return
     }
+
+    await breakMeleeWithPush(settings, combo)
+    if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
     await positionForTurn(settings, combo)
     if (!stillOurTurn() || !isFightStarted(gameWindow)) return

@@ -16,6 +16,10 @@ Answer with JSON only: {"actions":[...],"reason":"short"}.
 Actions are {"type":"move","cellId":N} and {"type":"cast","spellId":N,"targetId":N}.
 Rules you must respect:
 - at most one move, and only to a cellId listed in "cells"
+- when "me.canMove" is false, plan no move at all: the character is held in
+  contact by the ids in "me.tackledBy" and leaving is punished
+- a spell with "push":true throws its target away, which breaks that hold
+  without moving — prefer it when exactly one enemy holds the character
 - only spellIds listed in "spells"
 - a spell may only target an id listed in that spell's "targets"
 - a spell with "self":true takes no targetId

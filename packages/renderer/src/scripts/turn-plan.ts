@@ -46,6 +46,10 @@ export function validatePlan(plan: TurnPlan, state: FightState): ValidationResul
     }
 
     if (action.type === 'move') {
+      if (state.me.canMove === false) {
+        rejected.push(`move to ${action.cellId}: held in contact, moving is tackled`)
+        continue
+      }
       if (moved) {
         rejected.push(`move to ${action.cellId}: only one move per turn`)
         continue

@@ -43,6 +43,7 @@ interface SettingsState {
   moveComboSpell: (turn: number | null, index: number, direction: -1 | 1) => void
   toggleComboSpellSelf: (turn: number | null, index: number) => void
   setComboSpellRange: (turn: number | null, index: number, range: number | undefined) => void
+  toggleComboSpellPush: (turn: number | null, index: number) => void
   addTurnCombo: (turn: number) => void
   removeTurnCombo: (turn: number) => void
   setResolution: (width: number, height: number) => void
@@ -248,6 +249,13 @@ export const useSettingsStore = create<SettingsState>()((set, get) => {
       mutate((s) => ({
         combat: mapCombo(s.combat, turn, (combo) =>
           combo.map((spell, i) => (i === index ? { ...spell, self: !spell.self } : spell))
+        )
+      })),
+
+    toggleComboSpellPush: (turn, index) =>
+      mutate((s) => ({
+        combat: mapCombo(s.combat, turn, (combo) =>
+          combo.map((spell, i) => (i === index ? { ...spell, push: !spell.push } : spell))
         )
       })),
 

@@ -46,6 +46,7 @@ function ComboEditor() {
     moveComboSpell,
     toggleComboSpellSelf,
     setComboSpellRange,
+    toggleComboSpellPush,
     addTurnCombo,
     removeTurnCombo
   } = useSettingsStore()
@@ -124,8 +125,10 @@ function ComboEditor() {
         {selectedTurn === null
           ? 'Cast in this order on every turn without its own combo, then the turn is passed.'
           : `Replaces the default combo on turn ${selectedTurn}. An empty combo passes the turn.`}
-        {' '}Tick <em>on me</em> for a spell cast on your own character (buffs, heals). The
-        number is the cast range in cells — leave it empty to use the game's own value.
+        {' '}Tick <em>on me</em> for a spell cast on your own character (buffs, heals), and
+        <em> push</em> for one that throws its target away — the flee mode uses it to break a
+        monster's hold instead of paying a tackle. The number is the cast range in cells; leave
+        it empty to use the game's own value.
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, paddingBottom: 10 }}>
@@ -202,6 +205,18 @@ function ComboEditor() {
               borderRadius: 5, color: colors.textLight, fontSize: 10, padding: '3px 6px', outline: 'none'
             }}
           />
+          <label
+            title="This spell pushes its target away, which breaks a monster's hold"
+            style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: spell.push ? colors.accentText : colors.textFaint, cursor: 'pointer' }}
+          >
+            <input
+              type="checkbox"
+              checked={spell.push === true}
+              onChange={() => toggleComboSpellPush(selectedTurn, index)}
+              style={{ accentColor: colors.accent, cursor: 'pointer', margin: 0 }}
+            />
+            push
+          </label>
           <label
             title="Cast this spell on my own character"
             style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: spell.self ? colors.accentText : colors.textFaint, cursor: 'pointer' }}
