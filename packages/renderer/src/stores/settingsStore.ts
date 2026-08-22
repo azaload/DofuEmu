@@ -101,6 +101,8 @@ const defaultState = {
     autoReady: true,
     turnStartDelayMs: 250,
     castDelayMs: 350,
+    readyDelayMs: 900,
+    randomJitterMs: 600,
     endTurnAfterCombo: true,
     closeEndScreens: true,
     approachEnemies: true,

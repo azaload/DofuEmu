@@ -111,6 +111,16 @@ export function initCombatAi(
   const sleep = (ms: number) =>
     new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, ms)))
 
+  /**
+   * A pause with a random tail, so two actions are never the same distance
+   * apart. Acting on the exact millisecond is what makes the client sit on
+   * "waiting for..." and what reads as a machine playing.
+   */
+  const humanSleep = (base: number) => {
+    const jitter = Math.max(0, callbacks.getSettings().randomJitterMs ?? 0)
+    return sleep(Math.max(0, base) + Math.floor(Math.random() * (jitter + 1)))
+  }
+
   /** Waits for `check` to hold, giving up after `timeout` so we never hang. */
   const waitFor = async (check: () => boolean, timeout: number): Promise<boolean> => {
     const deadline = Date.now() + timeout
@@ -281,6 +291,7 @@ export function initCombatAi(
 
     const outcome = await waitForMove(move.cellId)
     await waitForIdle()
+    await humanSleep(0)
 
     if (outcome === 'no-move') {
       log('The character did not move — blocked, or the engine refused the path')
@@ -351,7 +362,7 @@ export function initCombatAi(
     }
 
     log(`Turn ${turn}: playing the ${label}`)
-    await sleep(settings.turnStartDelayMs)
+    await humanSleep(settings.turnStartDelayMs)
 
     await positionForTurn(settings, combo)
     if (!stillOurTurn() || !isFightStarted(gameWindow)) return
@@ -373,7 +384,7 @@ export function initCombatAi(
           log(`Cast failed: ${err instanceof Error ? err.message : String(err)}`)
           break
         }
-        await sleep(settings.castDelayMs)
+        await humanSleep(settings.castDelayMs)
         await waitForIdle()
         continue
       }
@@ -400,7 +411,7 @@ export function initCombatAi(
         break
       }
 
-      await sleep(settings.castDelayMs)
+      await humanSleep(settings.castDelayMs)
       // Let the spell animation play out before the next action.
       await waitForIdle()
     }
@@ -496,10 +507,16 @@ export function initCombatAi(
     turnToken += 1
     const settings = callbacks.getSettings()
     if (disposed || !settings.enabled || !settings.autoReady) return
-    try {
-      setFightReady(gameWindow, true)
-      log('Ready for the fight')
-    } catch {}
+
+    // Pressing ready the instant the fight opens leaves the client showing
+    // "waiting for...", and reads as a machine.
+    void humanSleep(settings.readyDelayMs).then(() => {
+      if (disposed || !callbacks.getSettings().autoReady) return
+      try {
+        setFightReady(gameWindow, true)
+        log('Ready for the fight')
+      } catch {}
+    })
   }
 
   for (const source of [gui, connectionManager]) {

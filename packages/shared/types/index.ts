@@ -68,6 +68,10 @@ export interface CombatSettings {
   autoReady: boolean
   turnStartDelayMs: number
   castDelayMs: number
+  /** Pause before pressing ready at the start of a fight. */
+  readyDelayMs: number
+  /** Random extra time added to every pause, so actions are not clockwork. */
+  randomJitterMs: number
   endTurnAfterCombo: boolean
   closeEndScreens: boolean
   /** Walk towards the target with the remaining MP when it is out of range. */

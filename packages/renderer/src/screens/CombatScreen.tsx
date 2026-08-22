@@ -417,6 +417,24 @@ export function CombatScreen() {
             onChange={(v) => setCombatSettings({ endTurnAfterCombo: v })}
           />
         </Row>
+        <Row label="Ready delay (ms)" desc="Pause before pressing ready when a fight opens">
+          <div style={{ width: 90 }}>
+            <TextInput
+              type="number"
+              value={String(combat.readyDelayMs)}
+              onChange={(v) => setCombatSettings({ readyDelayMs: Math.max(0, parseInt(v, 10) || 0) })}
+            />
+          </div>
+        </Row>
+        <Row label="Random jitter (ms)" desc="Random extra time added to every pause">
+          <div style={{ width: 90 }}>
+            <TextInput
+              type="number"
+              value={String(combat.randomJitterMs)}
+              onChange={(v) => setCombatSettings({ randomJitterMs: Math.max(0, parseInt(v, 10) || 0) })}
+            />
+          </div>
+        </Row>
         <Row label="Delays (ms)" desc="Before the first cast / between casts">
           <div style={{ display: 'flex', gap: 6, width: 180 }}>
             <TextInput

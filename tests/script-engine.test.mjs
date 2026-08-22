@@ -678,6 +678,8 @@ async function testTurnCombos() {
     autoReady: true,
     turnStartDelayMs: 0,
     castDelayMs: 0,
+    readyDelayMs: 0,
+    randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
     approachEnemies: false,
@@ -751,6 +753,8 @@ async function testApproachWithMp() {
     autoReady: true,
     turnStartDelayMs: 0,
     castDelayMs: 0,
+    readyDelayMs: 0,
+    randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
     approachEnemies: true,
@@ -826,6 +830,8 @@ async function testSelfCastAndLineUp() {
     autoReady: true,
     turnStartDelayMs: 0,
     castDelayMs: 0,
+    readyDelayMs: 0,
+    randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
     approachEnemies: true,
@@ -930,6 +936,8 @@ async function testRangeAndShortWalk() {
     autoReady: true,
     turnStartDelayMs: 0,
     castDelayMs: 0,
+    readyDelayMs: 0,
+    randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
     approachEnemies: true,
@@ -1013,6 +1021,8 @@ async function testKitingAndSingleMove() {
     autoReady: true,
     turnStartDelayMs: 0,
     castDelayMs: 0,
+    readyDelayMs: 0,
+    randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
     approachEnemies: true,
@@ -1100,6 +1110,8 @@ async function testTackleAwareness() {
     autoReady: true,
     turnStartDelayMs: 0,
     castDelayMs: 0,
+    readyDelayMs: 0,
+    randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
     approachEnemies: true,
@@ -1181,6 +1193,76 @@ async function testTackleAwareness() {
   console.log('ok - tackle awareness')
 }
 
+async function testHumanDelays() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Bolt', range: 5 }],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 300,
+    randomJitterMs: 200,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: false,
+    defaultSpellRange: 1,
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: () => {}
+  })
+
+  const readySent = () => state.sent.some((message) => message.name === 'GameFightReadyMessage')
+
+  state.startFight()
+  state.emit('GameFightStartingMessage', {})
+
+  assert.strictEqual(readySent(), false, 'ready is not pressed on the same tick')
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.strictEqual(readySent(), false, 'nor before the configured delay')
+
+  await new Promise((resolve) => setTimeout(resolve, 700))
+  assert.strictEqual(readySent(), true, 'but it is pressed once the pause is over')
+
+  // Two turns in a row must not be spaced identically.
+  combatSettings.readyDelayMs = 0
+  combatSettings.turnStartDelayMs = 40
+  combatSettings.randomJitterMs = 400
+
+  const gaps = []
+  for (let round = 0; round < 3; round++) {
+    state.sent.length = 0
+    state.emit('GameFightTurnEndMessage', { id: 7 })
+    state.startTurn(20)
+    state.emit('GameFightTurnEndMessage', { id: 20 })
+    const startedAt = Date.now()
+    state.startTurn(7)
+    await new Promise((resolve) => setTimeout(resolve, 900))
+    const cast = state.sent.find((message) => message.name === 'GameActionFightCastRequestMessage')
+    assert.ok(cast, 'the spell is cast every turn')
+    gaps.push(Date.now() - startedAt)
+  }
+
+  assert.ok(
+    gaps.every((gap) => gap >= 40),
+    `every turn waits at least the configured pause (${gaps.join(', ')})`
+  )
+
+  dispose()
+  console.log('ok - randomised pauses')
+}
+
 async function testTurnAlwaysPassed() {
   await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
   const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
@@ -1197,6 +1279,8 @@ async function testTurnAlwaysPassed() {
     autoReady: true,
     turnStartDelayMs: 0,
     castDelayMs: 0,
+    readyDelayMs: 0,
+    randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
     approachEnemies: true,
@@ -1265,6 +1349,8 @@ async function testTurnSynchronisation() {
     autoReady: true,
     turnStartDelayMs: 0,
     castDelayMs: 0,
+    readyDelayMs: 0,
+    randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
     approachEnemies: false,
@@ -1473,6 +1559,8 @@ async function testCombatAi() {
     autoReady: true,
     turnStartDelayMs: 0,
     castDelayMs: 0,
+    readyDelayMs: 0,
+    randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true
   }
@@ -1483,6 +1571,7 @@ async function testCombatAi() {
   })
 
   state.emit('GameFightStartingMessage', {})
+  await new Promise((resolve) => setTimeout(resolve, 60))
   assert.ok(
     state.sent.some((message) => message.name === 'GameFightReadyMessage'),
     'the AI readies up when a fight starts'
@@ -1551,6 +1640,7 @@ async function main() {
   await testRangeAndShortWalk()
   await testKitingAndSingleMove()
   await testTackleAwareness()
+  await testHumanDelays()
   await testTurnAlwaysPassed()
   await testTurnSynchronisation()
   await testMovementDiscovery(ScriptRunner)

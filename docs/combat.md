@@ -18,10 +18,20 @@ Configure it in **Settings → Combat**. `Ctrl+Shift+F` toggles it on and off.
 Settings are read at the start of every turn, so editing the combo mid-fight applies from
 the next turn — nothing to restart.
 
-Delays are deliberately short — a turn costs about a second plus your configured
-**turn start delay** and **cast delay**. If the AI feels slow, those two settings are the
-first place to look: they default to 250 ms and 350 ms, but a profile created before that
-default keeps its older, larger values.
+### Pauses
+
+Every pause carries a random tail, so two actions are never the same distance apart:
+
+| Setting | What it spaces |
+|---------|----------------|
+| **Ready delay** | Before pressing ready when a fight opens (900 ms by default). Pressing it instantly leaves the client showing *"waiting for…"*. |
+| **Turn start delay** | Between the turn opening and the first action (250 ms). |
+| **Cast delay** | Between two spells (350 ms). |
+| **Random jitter** | Added at random to each of the above, from 0 to its value (600 ms). |
+
+Delays are deliberately short — a turn costs about a second plus those pauses. If the AI
+feels slow, they are the first place to look: a profile created before these defaults keeps
+its older, larger values.
 
 Whatever happens during a turn — an unexpected message, a spell that cannot be cast, an
 error — the turn is always passed at the end when **End turn after the combo** is on. A
