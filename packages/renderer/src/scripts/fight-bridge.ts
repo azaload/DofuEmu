@@ -4,6 +4,7 @@ import {
   areCellsAligned,
   cellDistance,
   directionBetween,
+  hasLineOfSight,
   isCellWalkable,
   reachableCells
 } from './cells'
@@ -372,15 +373,18 @@ export function findPositionCell(
   const reachable = reachableCells(gameWindow, from, budget, occupiedByFighters)
 
   const startDistance = cellDistance(from, to)
-  const startInRange = startDistance <= range
+  const startSees = hasLineOfSight(gameWindow, from, to)
+  const startInRange = startDistance <= range && startSees
   const startEnemyDistance = closestEnemyDistance(enemies, from)
-  const startAligned = areCellsAligned(from, to)
+  const startAligned = areCellsAligned(from, to) && startSees
 
   const score = (cellId: number, cost: number, path: number[]): PositionResult => ({
     cellId,
     path,
-    inRange: cellDistance(cellId, to) <= range,
-    aligned: areCellsAligned(cellId, to),
+    // Being in range is not enough: a spell needs to see its target, so a cell
+    // whose line is blocked is no better than one out of reach.
+    inRange: cellDistance(cellId, to) <= range && hasLineOfSight(gameWindow, cellId, to),
+    aligned: areCellsAligned(cellId, to) && hasLineOfSight(gameWindow, cellId, to),
     cost,
     distanceToTarget: cellDistance(cellId, to),
     distanceToClosestEnemy: closestEnemyDistance(enemies, cellId)
@@ -437,4 +441,72 @@ export function findPositionCell(
   if (startInRange && best.inRange && !gainsAlignment && !gainsDistance) return null
 
   return best
+}
+
+/** Cells the placement phase offers, when the fight told us about them. */
+export function sendPlacementMove(gameWindow: DofusWindow, cellId: number): void {
+  sendMessage(gameWindow, 'GameFightPlacementPositionRequestMessage', { cellId })
+}
+
+export interface PlacementChoice {
+  cellId: number
+  /** Enemies this cell can cast at, by fighter id. */
+  sees: number[]
+  alignedWith: number[]
+  distanceToClosestEnemy: number
+}
+
+/**
+ * Best starting cell among those offered.
+ *
+ * A placement cell that sees an enemy in a straight line is worth more than a
+ * safe one: the first turn opens with a spell instead of a walk. Which of
+ * those wins then depends on how the character fights — at range or in contact.
+ */
+export function choosePlacementCell(
+  gameWindow: DofusWindow,
+  cells: number[],
+  options: { positioning?: CombatPositioning } = {}
+): PlacementChoice | null {
+  const enemies = getEnemies(gameWindow)
+  if (cells.length === 0) return null
+
+  const keepDistance = (options.positioning ?? 'keep-distance') === 'keep-distance'
+
+  const scored: PlacementChoice[] = cells
+    .filter((cellId) => cellId >= 0)
+    .map((cellId) => {
+      const sees: number[] = []
+      const alignedWith: number[] = []
+      let closest = Number.MAX_SAFE_INTEGER
+
+      for (const enemy of enemies) {
+        if (enemy.cellId === null) continue
+        closest = Math.min(closest, cellDistance(cellId, enemy.cellId))
+        if (!hasLineOfSight(gameWindow, cellId, enemy.cellId)) continue
+        sees.push(enemy.id)
+        if (areCellsAligned(cellId, enemy.cellId)) alignedWith.push(enemy.id)
+      }
+
+      return {
+        cellId,
+        sees,
+        alignedWith,
+        distanceToClosestEnemy: closest === Number.MAX_SAFE_INTEGER ? -1 : closest
+      }
+    })
+
+  const better = (a: PlacementChoice, b: PlacementChoice): boolean => {
+    // A straight line to an enemy first: the fight opens with a cast.
+    if ((a.alignedWith.length > 0) !== (b.alignedWith.length > 0)) return a.alignedWith.length > 0
+    if ((a.sees.length > 0) !== (b.sees.length > 0)) return a.sees.length > 0
+    if (a.distanceToClosestEnemy !== b.distanceToClosestEnemy) {
+      return keepDistance
+        ? a.distanceToClosestEnemy > b.distanceToClosestEnemy
+        : a.distanceToClosestEnemy < b.distanceToClosestEnemy
+    }
+    return a.sees.length > b.sees.length
+  }
+
+  return scored.reduce((best, candidate) => (better(candidate, best) ? candidate : best))
 }

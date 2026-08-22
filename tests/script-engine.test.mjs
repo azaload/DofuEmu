@@ -698,6 +698,7 @@ async function testTurnCombos() {
     turnStartDelayMs: 0,
     castDelayMs: 0,
     readyDelayMs: 0,
+    placeBeforeReady: false,
     randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
@@ -774,6 +775,7 @@ async function testApproachWithMp() {
     turnStartDelayMs: 0,
     castDelayMs: 0,
     readyDelayMs: 0,
+    placeBeforeReady: false,
     randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
@@ -852,6 +854,7 @@ async function testSelfCastAndLineUp() {
     turnStartDelayMs: 0,
     castDelayMs: 0,
     readyDelayMs: 0,
+    placeBeforeReady: false,
     randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
@@ -959,6 +962,7 @@ async function testRangeAndShortWalk() {
     turnStartDelayMs: 0,
     castDelayMs: 0,
     readyDelayMs: 0,
+    placeBeforeReady: false,
     randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
@@ -1045,6 +1049,7 @@ async function testKitingAndSingleMove() {
     turnStartDelayMs: 0,
     castDelayMs: 0,
     readyDelayMs: 0,
+    placeBeforeReady: false,
     randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
@@ -1133,6 +1138,7 @@ async function testSpreadCasts() {
     turnStartDelayMs: 0,
     castDelayMs: 0,
     readyDelayMs: 0,
+    placeBeforeReady: false,
     randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
@@ -1211,6 +1217,7 @@ async function testTackleAwareness() {
     turnStartDelayMs: 0,
     castDelayMs: 0,
     readyDelayMs: 0,
+    placeBeforeReady: false,
     randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
@@ -1322,6 +1329,7 @@ async function testFightMovementGoesThroughTheServer() {
     turnStartDelayMs: 0,
     castDelayMs: 0,
     readyDelayMs: 0,
+    placeBeforeReady: false,
     randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
@@ -1478,6 +1486,7 @@ async function testTurnAlwaysPassed() {
     turnStartDelayMs: 0,
     castDelayMs: 0,
     readyDelayMs: 0,
+    placeBeforeReady: false,
     randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
@@ -1549,6 +1558,7 @@ async function testTurnSynchronisation() {
     turnStartDelayMs: 0,
     castDelayMs: 0,
     readyDelayMs: 0,
+    placeBeforeReady: false,
     randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
@@ -1701,6 +1711,7 @@ async function testModelBrain() {
     turnStartDelayMs: 0,
     castDelayMs: 0,
     readyDelayMs: 0,
+    placeBeforeReady: false,
     randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
@@ -1800,6 +1811,102 @@ async function testModelBrain() {
   console.log('ok - model brain with fallback')
 }
 
+async function testPlacementAndLineOfSight() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-bridge.ts'))
+  const { choosePlacementCell, findPositionCell, areCellsAligned } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-bridge.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[2].data.disposition.cellId = 336
+
+  // A cell lined up with the enemy beats a merely safe one.
+  const aligned = 322
+  const offLine = 267
+  assert.ok(areCellsAligned(aligned, 336), 'the first candidate is on the enemy line')
+  const choice = choosePlacementCell(gameWindow, [offLine, aligned], { positioning: 'keep-distance' })
+  assert.strictEqual(choice.cellId, aligned, 'the lined-up starting cell wins')
+
+  // A blocked line must not count as aligned, or the AI stands behind a wall.
+  gameWindow.isoEngine.mapRenderer.isInLineOfSight = (from, to) =>
+    !(from === aligned && to === 336)
+  const blocked = choosePlacementCell(gameWindow, [offLine, aligned], { positioning: 'keep-distance' })
+  assert.strictEqual(blocked.cellId, offLine, 'a blocked line is worth nothing')
+
+  const move = findPositionCell(
+    gameWindow,
+    { id: 20, teamId: 1, alive: true, cellId: 336, life: 100, maxLife: 100, ap: 6, mp: 3, name: 'Champ' },
+    6,
+    3,
+    { preferLineUp: true, positioning: 'keep-distance', tackleAware: true }
+  )
+  if (move) {
+    assert.notStrictEqual(move.cellId, aligned, 'and is never chosen to stand on')
+    assert.strictEqual(
+      move.aligned,
+      gameWindow.isoEngine.mapRenderer.isInLineOfSight(move.cellId, 336) && areCellsAligned(move.cellId, 336),
+      'alignment always implies a clear line'
+    )
+  }
+  delete gameWindow.isoEngine.mapRenderer.isInLineOfSight
+
+  // The placement step runs before ready, and only once.
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Bolt', range: 6 }],
+    turnCombos: [],
+    targetStrategy: 'nearest',
+    autoReady: true,
+    placeBeforeReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 40,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 6,
+    preferLineUp: true,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    spreadCasts: false,
+    brain: 'rules',
+    ollamaEndpoint: '',
+    ollamaModel: '',
+    ollamaTimeoutMs: 500,
+    preferChallenges: false
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.emit('GameFightPlacementPossiblePositionsMessage', { positions: [offLine, aligned] })
+  state.emit('GameFightStartingMessage', {})
+  await new Promise((resolve) => setTimeout(resolve, 400))
+
+  const placements = state.sent.filter((m) => m.name === 'GameFightPlacementPositionRequestMessage')
+  assert.strictEqual(placements.length, 1, 'one placement is requested')
+  assert.strictEqual(placements[0].data.cellId, aligned, 'on the cell lined up with the enemy')
+  assert.ok(logs.some((line) => line.includes('Taking starting cell')), 'the choice is logged')
+
+  const readyAfter = state.sent.findIndex((m) => m.name === 'GameFightReadyMessage')
+  const placedAt = state.sent.findIndex((m) => m.name === 'GameFightPlacementPositionRequestMessage')
+  assert.ok(placedAt < readyAfter, 'the place is taken before readying')
+
+  dispose()
+  console.log('ok - placement and blocked lines')
+}
+
 async function testPushBreaksMelee() {
   await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
   const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
@@ -1824,6 +1931,7 @@ async function testPushBreaksMelee() {
     turnStartDelayMs: 0,
     castDelayMs: 0,
     readyDelayMs: 0,
+    placeBeforeReady: false,
     randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true,
@@ -2215,6 +2323,7 @@ async function testCombatAi() {
     turnStartDelayMs: 0,
     castDelayMs: 0,
     readyDelayMs: 0,
+    placeBeforeReady: false,
     randomJitterMs: 0,
     endTurnAfterCombo: true,
     closeEndScreens: true
@@ -2303,6 +2412,7 @@ async function main() {
   await testMovementDiscovery(ScriptRunner)
   await testMovementReportsNoEntryPoint(ScriptRunner)
   await testModelBrain()
+  await testPlacementAndLineOfSight()
   await testPushBreaksMelee()
   await testAntiIdle()
   await testChallengeRules()

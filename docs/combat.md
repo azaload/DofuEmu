@@ -24,7 +24,7 @@ Every pause carries a random tail, so two actions are never the same distance ap
 
 | Setting | What it spaces |
 |---------|----------------|
-| **Ready delay** | Before pressing ready when a fight opens (900 ms by default). Pressing it instantly leaves the client showing *"waiting for…"*. |
+| **Ready delay** | Before pressing ready when a fight opens (900 ms by default). Pressing it instantly leaves the client showing *"waiting for…"*. The placement is taken half way through it. |
 | **Turn start delay** | Between the turn opening and the first action (250 ms). |
 | **Cast delay** | Between two spells (350 ms). |
 | **Random jitter** | Added at random to each of the above, from 0 to its value (600 ms). |
@@ -194,6 +194,17 @@ then decides between the cells that are lined up.
 Already in range, the AI only moves for something the cast needs — lining up, or backing
 away from the enemies. It does not walk closer for its own sake: that spends points and
 invites melee.
+
+### Choosing a starting cell
+
+**Choose a starting cell** (on by default) uses the placement phase instead of readying
+where the fight dropped you. Among the cells offered, the AI prefers one that sees an enemy
+**in a straight line** — the fight then opens with a spell rather than a walk — then one
+that simply sees an enemy, and finally the distance your positioning mode asks for.
+
+A line that a wall blocks does not count as a line. That check runs everywhere now: a cell
+aligned with an enemy but with no clear sight is treated as unaligned, in placement and in
+movement alike, so the AI walks around the obstacle instead of standing behind it.
 
 ### Tackle
 

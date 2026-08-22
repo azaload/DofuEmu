@@ -13,7 +13,9 @@ import {
   cellDistance,
   findPositionCell,
   sendFightMove,
+  sendPlacementMove,
   tacklingEnemies,
+  choosePlacementCell,
   finishTurn,
   getEnemies,
   getFighters,
@@ -120,6 +122,9 @@ export function initCombatAi(
   let sequenceDepth = 0
   /** Challenges of the current fight, from its messages and its panel. */
   let challenges: FightChallenge[] = []
+  /** Starting cells the placement phase offers. */
+  let placementCells: number[] = []
+  let placed = false
 
   const log = (message: string) => callbacks.onLog?.(`[${tabId.slice(0, 6)}] ${message}`)
 
@@ -720,6 +725,50 @@ export function initCombatAi(
    * Challenges arrive as ids on the wire; the wording lives in the panel. Both
    * are kept, since the text is what says what a challenge forbids.
    */
+  /**
+   * The placement phase hands over the cells the character may start on.
+   * Standing where an enemy is already in a straight line means the first turn
+   * opens with a spell rather than a walk.
+   */
+  const onPlacementPositions = (...args: unknown[]) => {
+    const message = args[0] as { positions?: number[] }
+    if (!Array.isArray(message?.positions) || message.positions.length === 0) return
+    placementCells = message.positions
+  }
+
+  const takePlacementCell = async () => {
+    const settings = callbacks.getSettings()
+    if (disposed || placed || !settings.enabled || !settings.placeBeforeReady) return
+    if (placementCells.length === 0) return
+
+    const choice = choosePlacementCell(gameWindow, placementCells, {
+      positioning: settings.positioning
+    })
+    if (!choice) return
+
+    const current = getMyFighter(gameWindow)?.cellId ?? null
+    if (choice.cellId === current) {
+      placed = true
+      return
+    }
+
+    placed = true
+    try {
+      sendPlacementMove(gameWindow, choice.cellId)
+      const why =
+        choice.alignedWith.length > 0
+          ? `lined up with ${choice.alignedWith.length} enemy(ies)`
+          : choice.sees.length > 0
+            ? `seeing ${choice.sees.length} enemy(ies)`
+            : `${choice.distanceToClosestEnemy} cell(s) from the closest enemy`
+      log(`Taking starting cell ${choice.cellId}: ${why}`)
+    } catch (err) {
+      log(`Could not take a starting cell: ${err instanceof Error ? err.message : String(err)}`)
+    }
+
+    await humanSleep(settings.castDelayMs)
+  }
+
   const onChallengeInfo = (...args: unknown[]) => {
     const message = args[0] as { challengeId?: number; targetId?: number }
     if (typeof message?.challengeId !== 'number') return
@@ -766,6 +815,8 @@ export function initCombatAi(
   const onFightEnd = () => {
     myTurn = 0
     lastTurnOwner = null
+    placementCells = []
+    placed = false
     turnPlayable = false
     sequenceDepth = 0
     turnToken += 1
@@ -792,18 +843,24 @@ export function initCombatAi(
     sequenceDepth = 0
     turnToken += 1
     challenges = []
+    placed = false
+    // The placement cells arrive with the preparation phase, which can come
+    // before this message: clearing them here would throw them away.
     const settings = callbacks.getSettings()
     if (disposed || !settings.enabled || !settings.autoReady) return
 
-    // Pressing ready the instant the fight opens leaves the client showing
-    // "waiting for...", and reads as a machine.
-    void humanSleep(settings.readyDelayMs).then(() => {
+    // Take a place first, then press ready. Pressing it the instant the fight
+    // opens leaves the client showing "waiting for...", and reads as a machine.
+    void (async () => {
+      await humanSleep(Math.round(settings.readyDelayMs / 2))
+      await takePlacementCell()
+      await humanSleep(Math.round(settings.readyDelayMs / 2))
       if (disposed || !callbacks.getSettings().autoReady) return
       try {
         setFightReady(gameWindow, true)
         log('Ready for the fight')
       } catch {}
-    })
+    })()
   }
 
   for (const source of [gui, connectionManager]) {
@@ -811,6 +868,7 @@ export function initCombatAi(
     addListener(source, 'GameFightTurnEndMessage', onTurnEnd, cleanups)
     addListener(source, 'GameFightTurnStartPlayingMessage', onTurnPlaying, cleanups)
     addListener(source, 'ChallengeInfoMessage', onChallengeInfo, cleanups)
+    addListener(source, 'GameFightPlacementPossiblePositionsMessage', onPlacementPositions, cleanups)
     addListener(source, 'SequenceStartMessage', onSequenceStart, cleanups)
     addListener(source, 'SequenceEndMessage', onSequenceEnd, cleanups)
     addListener(source, 'GameFightStartingMessage', onFightStart, cleanups)

@@ -554,6 +554,15 @@ export function CombatScreen() {
             onChange={(v) => setCombatSettings({ endTurnAfterCombo: v })}
           />
         </Row>
+        <Row
+          label="Choose a starting cell"
+          desc="Take a placement cell lined up with an enemy before readying"
+        >
+          <Toggle
+            checked={combat.placeBeforeReady}
+            onChange={(v) => setCombatSettings({ placeBeforeReady: v })}
+          />
+        </Row>
         <Row label="Ready delay (ms)" desc="Pause before pressing ready when a fight opens">
           <div style={{ width: 90 }}>
             <TextInput

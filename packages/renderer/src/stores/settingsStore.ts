@@ -104,6 +104,7 @@ const defaultState = {
     autoReady: true,
     turnStartDelayMs: 250,
     castDelayMs: 350,
+    placeBeforeReady: true,
     readyDelayMs: 900,
     randomJitterMs: 600,
     endTurnAfterCombo: true,

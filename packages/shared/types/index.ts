@@ -79,6 +79,11 @@ export interface CombatSettings {
   autoReady: boolean
   turnStartDelayMs: number
   castDelayMs: number
+  /**
+   * Take a starting cell before pressing ready: one lined up with an enemy
+   * opens the fight with a spell instead of a walk.
+   */
+  placeBeforeReady: boolean
   /** Pause before pressing ready at the start of a fight. */
   readyDelayMs: number
   /** Random extra time added to every pause, so actions are not clockwork. */
