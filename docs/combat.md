@@ -79,11 +79,18 @@ needed.
 
 ```bash
 ollama pull qwen2.5:1.5b-instruct
-ollama serve
 ```
 
-Then set **Decides the turn** to *Local model*, and check the endpoint
-(`http://127.0.0.1:11434` by default) and the model name.
+The Windows and macOS installers already run the server in the background, so `ollama serve`
+answers *"Only one usage of each socket address"* — that error means it is up, not broken.
+`ollama list` confirms it.
+
+Then set **Decides the turn** to *Local model*, check the endpoint (`http://127.0.0.1:11434`
+by default) and the model name, and press **Test**: it sends one tiny request and reports
+the round trip, or what failed.
+
+The first request after a model is pulled loads it into memory and takes a few seconds;
+the ones after that are the speed you will get in fights.
 
 ### What the model receives
 

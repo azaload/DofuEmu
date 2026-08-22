@@ -290,6 +290,69 @@ function ComboEditor() {
   )
 }
 
+/** One-click check that the local model answers, and how fast. */
+function ModelCheck() {
+  const { combat } = useSettingsStore()
+  const [status, setStatus] = useState<string | null>(null)
+  const [checking, setChecking] = useState(false)
+
+  const check = async () => {
+    setChecking(true)
+    setStatus(null)
+    try {
+      const response = await window.dofemu.ollamaChat({
+        endpoint: combat.ollamaEndpoint,
+        model: combat.ollamaModel,
+        system: 'Answer with JSON only.',
+        prompt: 'Answer exactly {"actions":[],"reason":"ok"}',
+        timeoutMs: Math.max(combat.ollamaTimeoutMs, 8000)
+      })
+
+      if (!response.ok) {
+        setStatus(`Failed: ${response.error ?? 'no answer'}`)
+      } else {
+        const answer = (response.content ?? '').trim().slice(0, 60)
+        setStatus(`Answered in ${response.elapsedMs}ms — ${answer || '(empty)'}`)
+      }
+    } catch (err) {
+      setStatus(`Failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  return (
+    <Row label="Check the model" desc="Sends one tiny request and reports the round trip">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+        {status && (
+          <span
+            style={{
+              fontSize: 10,
+              fontFamily: 'monospace',
+              color: status.startsWith('Failed') ? colors.danger : '#4ade80',
+              maxWidth: 260,
+              textAlign: 'right'
+            }}
+          >
+            {status}
+          </span>
+        )}
+        <button
+          onClick={() => void check()}
+          disabled={checking}
+          style={{
+            background: colors.surfaceHover, border: 'none', borderRadius: 6,
+            color: colors.textMuted, fontSize: 11, padding: '6px 12px',
+            cursor: checking ? 'default' : 'pointer'
+          }}
+        >
+          {checking ? 'Checking...' : 'Test'}
+        </button>
+      </div>
+    </Row>
+  )
+}
+
 function CombatLog() {
   const { logs, clearLogs } = useCombatStore()
   const ref = useRef<HTMLDivElement>(null)
@@ -391,6 +454,7 @@ export function CombatScreen() {
                 />
               </div>
             </Row>
+            <ModelCheck />
             <Row label="Play the challenges" desc="Hold the fight's challenges, even at a cost">
               <Toggle
                 checked={combat.preferChallenges}
