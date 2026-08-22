@@ -23,6 +23,10 @@ Delays are deliberately short — a turn costs about a second plus your configur
 first place to look: they default to 250 ms and 350 ms, but a profile created before that
 default keeps its older, larger values.
 
+Whatever happens during a turn — an unexpected message, a spell that cannot be cast, an
+error — the turn is always passed at the end when **End turn after the combo** is on. A
+fight never stalls waiting for the AI.
+
 Every action waits for the client to be idle: the AI never casts or passes the turn while
 an animation sequence is playing, and never sends anything belonging to a turn that has
 already moved on. Acting too early is what freezes a fight — the client keeps waiting for
@@ -86,8 +90,13 @@ The range used for the decision is the **shortest** range in the combo, so every
 still reach from where the character ends up. It comes from the range set on the spell, then
 the game's own value, then the **Fallback range** setting.
 
-**Line up with the target** (on by default) breaks ties in favour of cells sharing a row or
-a column with the enemy, for line-only spells.
+**Line up with the target** (on by default) comes first among the cells that can cast: a
+line spell that cannot be thrown makes the safest cell worthless. Distance from the enemies
+then decides between the cells that are lined up.
+
+Already in range, the AI only moves for something the cast needs — lining up, or backing
+away from the enemies. It does not walk closer for its own sake: that spends points and
+invites melee.
 
 ### Tackle
 

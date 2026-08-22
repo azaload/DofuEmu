@@ -44,8 +44,8 @@ export function attackOwners(gameWindow: DofusWindow): AttackOwner[] {
   ]
 }
 
-const ATTACK_LABEL = /^(attaquer|attack|angreifen|atacar|attacca)$/i
-const CLICKABLE = 'button, .button, [role="button"], .btn, .greenButton, .confirmButton, span, div'
+const ATTACK_LABEL = /(attaquer|attack|angreifen|atacar|attacca)/i
+const CLICKABLE = 'button, .button, [role="button"], .btn, .greenButton, .confirmButton, span, div, li, a'
 
 function asDict(value: unknown): Dict | null {
   return value && typeof value === 'object' ? (value as Dict) : null
@@ -59,21 +59,60 @@ function isVisible(element: Element): boolean {
   return !rect || (rect.width > 0 && rect.height > 0)
 }
 
-/** The confirmation button the game shows once a group is selected. */
+/** Text of an element, without the accents and casing that vary by locale. */
+function labelOf(element: Element): string {
+  const raw = (element as HTMLElement).innerText ?? element.textContent ?? ''
+  return raw
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * The button or menu entry that starts the fight.
+ *
+ * The label is matched loosely — a menu row can carry extra text — and only
+ * the innermost element holding it is returned, so the click lands on the row
+ * itself rather than on a container that ignores it.
+ */
 export function findAttackButton(gameWindow: DofusWindow): HTMLElement | null {
   try {
+    const matches: HTMLElement[] = []
+
     for (const element of gameWindow.document.querySelectorAll(CLICKABLE)) {
-      const text = (element.textContent ?? '').trim()
-      if (!ATTACK_LABEL.test(text)) continue
+      const label = labelOf(element)
+      if (label.length === 0 || label.length > 40) continue
+      if (!ATTACK_LABEL.test(label)) continue
       if (!isVisible(element)) continue
-      // Prefer the innermost element carrying the label.
-      const inner = [...element.querySelectorAll(CLICKABLE)].find(
-        (child) => ATTACK_LABEL.test((child.textContent ?? '').trim()) && isVisible(child)
-      )
-      return (inner ?? element) as HTMLElement
+      matches.push(element as HTMLElement)
     }
+
+    // Deepest match wins: a parent panel usually carries the same text.
+    return (
+      matches
+        .filter((element) => !matches.some((other) => other !== element && element.contains(other)))
+        .shift() ?? null
+    )
   } catch {}
   return null
+}
+
+/** Short visible texts on screen — what a menu or panel is offering. */
+export function visibleLabels(gameWindow: DofusWindow, max = 30): string[] {
+  try {
+    const seen = new Set<string>()
+    for (const element of gameWindow.document.querySelectorAll(CLICKABLE)) {
+      if (!isVisible(element)) continue
+      const label = labelOf(element)
+      if (label.length === 0 || label.length > 30) continue
+      seen.add(label)
+      if (seen.size >= max) break
+    }
+    return [...seen]
+  } catch {
+    return []
+  }
 }
 
 export function callWithGroup(owner: unknown, method: string, groupId: number): boolean {
@@ -191,16 +230,8 @@ export function describeGameApi(
     lines.push('monster actor: none on this map')
   }
 
-  try {
-    const buttons = [...gameWindow.document.querySelectorAll(CLICKABLE)]
-      .filter((element) => isVisible(element))
-      .map((element) => (element.textContent ?? '').trim())
-      .filter((text) => text.length > 0 && text.length < 30)
-      .slice(0, 20)
-    lines.push(`visible labels: ${buttons.join(' | ') || 'none'}`)
-  } catch {
-    lines.push('visible labels: unavailable')
-  }
+  const labels = visibleLabels(gameWindow)
+  lines.push(`visible labels: ${labels.join(' | ') || 'none'}`)
 
   return lines
 }

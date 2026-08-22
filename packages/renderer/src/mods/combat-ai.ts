@@ -313,6 +313,24 @@ export function initCombatAi(
     const settings = callbacks.getSettings()
     const { combo, label } = comboForTurn(settings, turn)
     const stillOurTurn = () => !disposed && turnToken === token
+    let turnPassed = false
+
+    const passTurn = () => {
+      if (turnPassed || !stillOurTurn() || !isFightStarted(gameWindow)) return
+      turnPassed = true
+      finishTurn(gameWindow)
+      log('Turn ended')
+    }
+
+    try {
+      await playCombo()
+    } finally {
+      // Whatever happened above — an early return, an error, a message we did
+      // not expect — the turn is never left hanging.
+      if (settings.endTurnAfterCombo) passTurn()
+    }
+
+    async function playCombo() {
 
     // Acting before the server declares the turn playable is ignored at best,
     // and wedges the fight at worst.
@@ -329,7 +347,6 @@ export function initCombatAi(
 
     if (combo.length === 0) {
       log(`Turn ${turn}: ${label} is empty, passing`)
-      if (settings.endTurnAfterCombo) finishTurn(gameWindow)
       return
     }
 
@@ -392,9 +409,8 @@ export function initCombatAi(
     if (settings.endTurnAfterCombo) {
       // Ending the turn mid-sequence leaves the client waiting forever.
       await waitForIdle()
-      if (!stillOurTurn()) return
-      finishTurn(gameWindow)
-      log('Turn ended')
+      passTurn()
+    }
     }
   }
 
@@ -425,8 +441,15 @@ export function initCombatAi(
     )
   }
 
-  const onTurnEnd = () => {
-    lastTurnOwner = null
+  const onTurnEnd = (...args: unknown[]) => {
+    const fighterId = (args[0] as TurnMessage)?.id
+
+    // Only our own turn ending concerns us. The two emitters each deliver a
+    // copy, and the previous fighter's end can land after our start — taking
+    // that as "the turn changed" aborted the run mid-turn, casting nothing and
+    // never passing.
+    if (fighterId !== undefined && !isMyTurn(fighterId)) return
+
     turnPlayable = false
     turnToken += 1
   }

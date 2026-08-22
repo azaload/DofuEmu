@@ -27,7 +27,8 @@ import {
   describeGameApi,
   findAttackButton,
   requestAttack,
-  TAP_METHODS
+  TAP_METHODS,
+  visibleLabels
 } from './attack'
 import { findCellNextTo } from './cells'
 import { closeUiPopups } from './ui-bridge'
@@ -625,26 +626,35 @@ export function createScriptApi(ctx: ScriptRuntimeContext): ScriptApi {
     if (pressButton()) done = true
 
     if (!done) {
+      const tried: string[] = []
+
+      // A call that does not throw has not necessarily done anything, so each
+      // candidate is judged on what follows it, and the search continues.
       for (const owner of attackOwners(gameWindow)) {
         for (const method of TAP_METHODS) {
+          if (done) break
           if (!callWithGroup(owner.value, method, groupId)) continue
-          report(`Attack: tried ${owner.label}.${method}()`)
+          tried.push(`${owner.label}.${method}()`)
 
-          // Give the client a moment to put its button up.
-          for (let attempt = 0; attempt < 4 && !done; attempt++) {
+          for (let attempt = 0; attempt < 3 && !done; attempt++) {
             await wait(150)
             if (pressButton()) done = true
             else if (isInFight(gameWindow)) done = true
           }
-          if (done) break
         }
         if (done) break
       }
+
+      if (tried.length > 0) report(`Attack: tried ${tried.join(', ')}`)
     }
 
     if (!done) {
       const attempts = requestAttack(gameWindow, groupId)
       report(`Attack: falling back to ${attempts.map((attempt) => attempt.strategy).join(', ')}`)
+
+      // Nothing worked: say what is on screen, so the entry point can be found.
+      const labels = visibleLabels(gameWindow)
+      report(`Attack: on screen now — ${labels.join(' | ') || 'nothing readable'}`)
     }
 
     try {

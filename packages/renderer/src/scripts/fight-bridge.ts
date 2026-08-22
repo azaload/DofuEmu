@@ -351,13 +351,16 @@ export function findPositionCell(
       return a.cost < b.cost
     }
 
+    // Lining up comes first when asked for: a line spell that cannot be cast
+    // makes the safest cell worthless.
+    if (preferLineUp && a.aligned !== b.aligned) return a.aligned
+
     if (keepDistance && a.distanceToClosestEnemy !== b.distanceToClosestEnemy) {
       return a.distanceToClosestEnemy > b.distanceToClosestEnemy
     }
     if (!keepDistance && a.distanceToTarget !== b.distanceToTarget) {
       return a.distanceToTarget < b.distanceToTarget
     }
-    if (preferLineUp && a.aligned !== b.aligned) return a.aligned
     return a.cost < b.cost
   }
 
@@ -371,14 +374,13 @@ export function findPositionCell(
   // Never give up a castable position, and never move for nothing.
   if (startInRange && !best.inRange) return null
   if (!startInRange && !best.inRange && best.distanceToTarget >= startDistance) return null
-  if (
-    startInRange &&
-    best.inRange &&
-    best.distanceToClosestEnemy <= startEnemyDistance &&
-    (!preferLineUp || best.aligned === startAligned)
-  ) {
-    return null
-  }
+  // Already able to cast: only move for something the cast needs — lining up,
+  // or backing away from the enemies. Walking closer for its own sake spends
+  // points and invites melee.
+  const gainsAlignment = preferLineUp && best.aligned && !startAligned
+  const gainsDistance = keepDistance && best.distanceToClosestEnemy > startEnemyDistance
+
+  if (startInRange && best.inRange && !gainsAlignment && !gainsDistance) return null
 
   return best
 }

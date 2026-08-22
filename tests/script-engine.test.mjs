@@ -157,6 +157,15 @@ function createFakeGameWindow() {
       }
     },
     gui: {
+      // Swallows every argument and does nothing, like the minified build.
+      // Present but useless, like the minified build. They throw when a test
+      // does not want them, so the API treats them as absent.
+      openContextualMenu: () => {
+        if (!state.noopAttackMethods) throw new Error('not available')
+      },
+      selectActor: () => {
+        if (!state.noopAttackMethods) throw new Error('not available')
+      },
       isConnected: () => true,
       playerData: {
         characterBaseInformations: { id: 7, name: 'Tester', level: 42 },
@@ -574,6 +583,38 @@ async function testAttackFallsBackToProtocol(ScriptRunner) {
   )
   assert.ok(logs.some((line) => line.includes('started true')), 'the fight still starts')
   console.log('ok - attack falls back to the protocol')
+}
+
+async function testAttackKeepsProbingAndReports(ScriptRunner) {
+  const { logs, state } = await run(
+    ScriptRunner,
+    `
+      const group = api.monsters().find((g) => g.id === -2)
+      api.log('started', await api.attack(group, { approach: false, timeout: 1500 }))
+    `,
+    {},
+    (state) => {
+      // A method that swallows anything without doing a thing, like a minified
+      // client, and no button anywhere.
+      state.attackButtonVisible = false
+      state.noopAttackMethods = true
+    }
+  )
+
+  assert.ok(
+    logs.some((line) => line.includes('gui.openContextualMenu()')),
+    'the no-op method is reported as tried'
+  )
+  assert.ok(
+    logs.some((line) => /tried .*,/.test(line)),
+    'the search continues past it instead of stopping at the first call'
+  )
+  assert.ok(
+    logs.some((line) => line.includes('on screen now')),
+    'what is on screen is reported when nothing works'
+  )
+  assert.ok(logs.some((line) => line.includes('started false')), 'the failure is honest')
+  console.log('ok - attack keeps probing and reports')
 }
 
 async function testAttackApproach(ScriptRunner) {
@@ -1140,6 +1181,74 @@ async function testTackleAwareness() {
   console.log('ok - tackle awareness')
 }
 
+async function testTurnAlwaysPassed() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Bolt', range: 5 }],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1,
+    preferLineUp: true,
+    positioning: 'keep-distance',
+    tackleAware: true
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 322
+  state.fighters[2].data.disposition.cellId = 322
+
+  // The two emitters each deliver the previous fighter's turn end, and it can
+  // land after our turn started. That must not abort our turn.
+  state.startTurn(7)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  await new Promise((resolve) => setTimeout(resolve, 700))
+
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
+    'a stale turn end from another fighter does not cancel our turn'
+  )
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameFightTurnFinishMessage'),
+    'the turn is passed'
+  )
+
+  // Even when the combo cannot be played, the turn is never left hanging.
+  state.sent.length = 0
+  combatSettings.combo = []
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameFightTurnFinishMessage'),
+    'an empty combo still passes the turn'
+  )
+
+  dispose()
+  console.log('ok - the turn is always passed')
+}
+
 async function testTurnSynchronisation() {
   await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
   const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
@@ -1433,6 +1542,7 @@ async function main() {
   await testMonsterHunt(ScriptRunner)
   await testAttackUsesTheGameFlow(ScriptRunner)
   await testAttackFallsBackToProtocol(ScriptRunner)
+  await testAttackKeepsProbingAndReports(ScriptRunner)
   await testAttackApproach(ScriptRunner)
   await testClosePopups(ScriptRunner)
   await testTurnCombos()
@@ -1441,6 +1551,7 @@ async function main() {
   await testRangeAndShortWalk()
   await testKitingAndSingleMove()
   await testTackleAwareness()
+  await testTurnAlwaysPassed()
   await testTurnSynchronisation()
   await testMovementDiscovery(ScriptRunner)
   await testMovementReportsNoEntryPoint(ScriptRunner)
