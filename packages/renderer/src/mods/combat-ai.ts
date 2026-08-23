@@ -29,7 +29,7 @@ import {
 } from '@/scripts/fight-bridge'
 import { requestMoveToCell } from '@/scripts/game-bridge'
 import { reachableCells } from '@/scripts/cells'
-import { planSpellTurn } from '@/scripts/spell-planner'
+import { planTurn as planSpellTurn } from '@/scripts/spell-planner'
 import type { DofusWindow } from '@/types/dofus-window'
 
 /**
@@ -608,28 +608,51 @@ export function initCombatAi(
   const castFromSpellbook = async (
     settings: CombatSettings,
     turn: number,
+    rules: ReturnType<typeof deriveChallengeRules>,
     stillOurTurn: () => boolean
   ): Promise<number> => {
     const me = getMyFighter(gameWindow)
-    const actionPoints = me?.ap ?? 0
-    if (actionPoints <= 0) return 0
+    if (!me || me.cellId === null) return 0
+
+    const held = settings.tackleAware && tacklingEnemies(getEnemies(gameWindow), me.cellId).length > 0
 
     const plan = planSpellTurn(gameWindow, {
-      elements: settings.elements ?? [],
       turn,
+      actionPoints: me.ap ?? 0,
+      movementPoints: me.mp ?? 0,
+      elements: settings.elements ?? [],
       lastCastTurn,
-      castsThisTurn: new Map(),
-      actionPoints
+      canMove: settings.approachEnemies && !held && !rules.noMove,
+      keepDistance: settings.positioning === 'keep-distance'
     })
 
-    if (plan.length === 0) {
+    if (!plan) {
+      log('Nothing to plan from the spellbook')
+      return 0
+    }
+
+    if (plan.actions.length === 0) {
       log('No spell worth casting from here')
       return 0
     }
 
     let cast = 0
-    for (const action of plan) {
+
+    // Moves and casts are played in the order the plan gives them: the points
+    // can go before the first spell, between two of them, or nowhere.
+    for (const action of plan.actions) {
       if (!stillOurTurn() || !isFightStarted(gameWindow)) break
+
+      if (action.type === 'move') {
+        log(`Moving to cell ${action.cellId} (${action.cost} MP) ${action.reason}`)
+        if (sendFightMove(gameWindow, action.path)) {
+          const outcome = await waitForMove(action.cellId)
+          await waitForIdle()
+          if (outcome === 'no-move') log('The move was refused, casting from here')
+          await humanSleep(0)
+        }
+        continue
+      }
 
       try {
         castSpell(gameWindow, action.spellId, action.cellId)
@@ -709,7 +732,7 @@ export function initCombatAi(
       if (outcome === 'no-cast') {
         log('The model only moved: casting the combo on top')
         if (settings.spellMode === 'auto') {
-      const cast = await castFromSpellbook(settings, turn, stillOurTurn)
+      const cast = await castFromSpellbook(settings, turn, rules, stillOurTurn)
       if (cast === 0) await castCombo(settings, combo, rules, stillOurTurn)
     } else {
       await castCombo(settings, combo, rules, stillOurTurn)
@@ -721,11 +744,11 @@ export function initCombatAi(
     await breakMeleeWithPush(settings, combo)
     if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
-    if (!rules.noMove) await positionForTurn(settings, combo)
+    if (!rules.noMove && settings.spellMode !== 'auto') await positionForTurn(settings, combo)
     if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
     if (settings.spellMode === 'auto') {
-      const cast = await castFromSpellbook(settings, turn, stillOurTurn)
+      const cast = await castFromSpellbook(settings, turn, rules, stillOurTurn)
       if (cast === 0) await castCombo(settings, combo, rules, stillOurTurn)
     } else {
       await castCombo(settings, combo, rules, stillOurTurn)

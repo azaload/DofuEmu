@@ -235,33 +235,52 @@ for nothing.
 
 **Spells** decides what the built-in AI casts: *The combo I configured*, or *Choose from my
 spells* (the default). In the second mode it reads the character's spellbook from the game
-and plans the turn itself.
+and plans the whole turn itself — where to stand, what to throw, and in which order.
 
-For every spell it knows the numbers the game gives it:
+### What it reads from each spell
 
-| Read from the spell | Used for |
-|---------------------|----------|
+| Read | Used for |
+|------|----------|
 | Action point cost | chaining casts until the points run out |
-| Range and minimum range | which cells it may be aimed at |
-| Straight line only | a spell that must be thrown along an axis is only aimed there |
-| Line of sight required | a blocked line rules the cell out — for that spell only |
-| Area shape and size | what a cast actually touches |
-| Cooldown, casts per turn | when a spell is available again |
-| Element | the filter below |
+| Range, minimum range | which cells the spell may be aimed at |
+| Straight line only, diagonal only | a spell that must be thrown along an axis is only aimed there |
+| Line of sight required | a blocked line rules the cell out, for that spell alone |
+| Free cell / occupied cell required | a spell that must land on someone is never thrown at empty ground, and the reverse |
+| Area shape, size and minimum size | what a cast really covers, hollow areas included |
+| Cooldown, casts per turn, casts per target | when a spell is available again, and on whom |
+| Effects | damage per element, healing, boosts, pushes, summons |
 
-**A cast is aimed at a cell, not at a fighter.** That is what lets an area spell — *Flèche
-de Barrage* and its zone — catch two monsters at once, or reach one it could not target
-directly. Every reachable cell is scored by what its area lands on, and the cast that
-touches the most enemies wins, the cheapest one breaking a tie.
+Shapes are read as the game gives them — point, circle, square, line, perpendicular bar,
+cross, diagonal cross, ring, whole map. A shape letter the client uses and this code does
+not know falls back to a circle, which over-estimates rather than misses.
 
-Boosts come first while they are off cooldown: *Maîtrise de l'arc* is recast the moment its
-interval has passed, since a boost held up all fight is worth more than one extra hit.
+### How a turn is chosen
 
-**Elements** ticks which damage the AI may use — fire, earth, water, air, neutral. A spell
-whose element the client does not expose is never filtered out, so a gap in that reading
-cannot silently disable a spell.
+**A cast is aimed at a cell, never at a fighter.** That is what lets an area spell catch two
+monsters at once or reach one it may not target directly — the case in the screenshots where
+*Flèche de Barrage* covers a group.
 
-If nothing is worth casting, the configured combo is played instead, so the turn is never
+At every step the AI compares two things: the best spell it can cast where it stands, and
+what a step sideways would unlock. It then does whichever is worth more, and repeats. So the
+movement points can be spent before the first spell, between two of them, or not at all —
+whatever the turn is worth the most.
+
+A cast is scored on what it actually achieves:
+
+- damage counted **only up to what the target has left**, so two spells are never both spent
+  on a monster the first already kills;
+- a heavy bonus when a cast finishes an enemy off;
+- allies caught in the area cost several times the damage they take, and the caster costs
+  more still;
+- healing counts only the life actually missing;
+- boosts are worth holding: they are recast the moment their cooldown allows, which is what
+  keeps a mastery up all fight;
+- walking is charged a little, so a move has to earn its points.
+
+**Elements** ticks which damage the AI may use. A spell whose element the client does not
+expose is never filtered out, so a gap in that reading cannot silently disable a spell.
+
+If nothing is worth casting, the configured combo is played instead, so a turn is never
 empty.
 
 ## Spreading the casts

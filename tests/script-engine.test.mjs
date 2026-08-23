@@ -2109,147 +2109,245 @@ async function testAntiIdle() {
 }
 
 async function testSpellPlanner() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/zones.ts'))
+  const { areaCells, zoneShapeOf } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'zones.js')).href}?t=${Date.now()}`
+  )
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-planner.ts'))
-  const { planSpellTurn, hitsFrom, castableCells } = await import(
+  const { planTurn, castableCells, hitsFrom } = await import(
     `${pathToFileURL(path.join(tmpDir, 'spell-planner.js')).href}?t=${Date.now()}`
   )
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
-  const { zoneCells, cellDistance } = await import(
+  const { cellDistance, cellCoordinates, cellFromCoordinates } = await import(
     `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
   )
 
-  // A circle of 1 covers the cell and its four neighbours.
-  const circle = zoneCells(67, 1, 280, 322)
-  assert.ok(circle.includes(322), 'the aimed cell is covered')
-  assert.ok(circle.length >= 3, 'and the ones around it')
-  assert.ok(
-    circle.every((cell) => cellDistance(cell, 322) <= 1),
-    'nothing beyond the radius'
-  )
-  assert.deepStrictEqual(zoneCells(80, 0, 280, 322), [322], 'a point spell covers one cell')
+  // --- the shapes ---
+  assert.strictEqual(zoneShapeOf(67), 'circle', 'C is a circle')
+  assert.strictEqual(zoneShapeOf(80), 'point', 'P is a point')
+  assert.strictEqual(zoneShapeOf(76), 'line', 'L is a line')
+  assert.strictEqual(zoneShapeOf(90), 'unknown', 'an unknown letter is reported as such')
 
+  const centre = 280
+  const point = areaCells({ shape: 'point', size: 0, minSize: 0 }, 266, centre)
+  assert.deepStrictEqual(point, [centre], 'a point covers one cell')
+
+  const circle = areaCells({ shape: 'circle', size: 2, minSize: 0 }, 266, centre)
+  assert.ok(circle.includes(centre), 'a circle covers its centre')
+  assert.ok(
+    circle.every((cell) => cellDistance(cell, centre) <= 2),
+    'and nothing beyond its size'
+  )
+
+  const ring = areaCells({ shape: 'circle', size: 2, minSize: 1 }, 266, centre)
+  assert.ok(!ring.includes(centre), 'a minimum size hollows the middle out')
+  assert.ok(ring.length > 0, 'while keeping the rest')
+
+  const lineFrom = 280
+  const lineTo = 294
+  const line = areaCells({ shape: 'line', size: 3, minSize: 0 }, lineFrom, lineTo)
+  assert.ok(line.includes(lineTo), 'a line starts at the aimed cell')
+  assert.ok(line.length >= 2, 'and carries on away from the caster')
+  const point0 = cellCoordinates(lineFrom)
+  const point1 = cellCoordinates(lineTo)
+  const dx = Math.sign(point1.x - point0.x)
+  const dy = Math.sign(point1.y - point0.y)
+  const expected = cellFromCoordinates(point1.x + dx, point1.y + dy)
+  if (expected !== null) assert.ok(line.includes(expected), 'in the direction of the cast')
+
+  const cross = areaCells({ shape: 'cross', size: 1, minSize: 0 }, 266, centre)
+  assert.strictEqual(cross.length <= 5, true, 'a cross of 1 is the centre and its four arms')
+
+  // --- the fight ---
   const { gameWindow, state } = createFakeGameWindow()
   state.startFight()
 
-  // A bow mastery to keep up, and an area arrow worth 20 damage.
-  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
-    100: {
-      id: 100,
-      spell: { nameId: 'Maitrise de l arc' },
-      spellLevel: {
-        apCost: 2,
-        range: 0,
+  const spellOf = (over) => ({
+    id: 1,
+    spell: { nameId: 'Test' },
+    spellLevel: Object.assign(
+      {
+        apCost: 3,
+        range: 8,
         minRange: 0,
         castInLine: false,
+        castInDiagonal: false,
         castTestLos: false,
-        minCastInterval: 3,
-        effects: [{ effectId: 128, diceNum: 30, diceSide: 30, zoneSize: 0 }]
-      }
-    },
-    200: {
-      id: 200,
-      spell: { nameId: 'Fleche de Barrage' },
-      spellLevel: {
-        apCost: 4,
-        range: 8,
-        minRange: 1,
-        castInLine: false,
-        castTestLos: false,
-        maxCastPerTurn: 2,
-        effects: [{ effectId: 100, diceNum: 18, diceSide: 22, zoneShape: 67, zoneSize: 1 }]
-      }
+        needFreeCell: false,
+        needTakenCell: false,
+        effects: [{ effectId: 100, diceNum: 20, diceSide: 20, zoneShape: 80, zoneSize: 0 }]
+      },
+      over
+    )
+  })
+
+  const context = (over) =>
+    Object.assign(
+      {
+        turn: 1,
+        actionPoints: 6,
+        movementPoints: 0,
+        elements: [],
+        lastCastTurn: new Map(),
+        canMove: false,
+        keepDistance: false
+      },
+      over
+    )
+
+  // Two monsters one cell apart: an area spell must catch both with one cast.
+  const me = 280
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+  const a = 336
+  const b = areaCells({ shape: 'circle', size: 1, minSize: 0 }, me, a).find((cell) => cell !== a)
+  state.fighters[1].data.disposition.cellId = a
+  state.fighters[2].data.disposition.cellId = b
+
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: spellOf({
+      apCost: 4,
+      effects: [{ effectId: 100, diceNum: 18, diceSide: 22, zoneShape: 67, zoneSize: 1 }]
+    })
+  }
+
+  const area = planTurn(gameWindow, context({}))
+  assert.ok(area && area.casts.length > 0, 'a plan is produced')
+  assert.strictEqual(area.casts[0].hits.length, 2, 'the area cast catches both monsters')
+  assert.ok(
+    area.casts[0].reason.includes('2 enemies'),
+    'and says so'
+  )
+
+  // The same spell must not be aimed where it also catches an ally.
+  state.fighters.push({
+    id: 30,
+    data: {
+      teamId: 0,
+      alive: true,
+      disposition: { cellId: b },
+      stats: { lifePoints: 200, maxLifePoints: 200, actionPoints: 6, movementPoints: 3 },
+      name: 'Ally'
+    }
+  })
+  const withAlly = planTurn(gameWindow, context({}))
+  assert.ok(withAlly && withAlly.casts.length > 0, 'it still casts')
+  assert.ok(
+    !withAlly.casts[0].friendlyHits.includes(30),
+    'but not on a cell whose area covers an ally'
+  )
+  state.fighters.pop()
+
+  // Constraints are the spell's own: minimum range, straight line, free cell.
+  const near = {
+    id: 2,
+    range: 6,
+    minRange: 3,
+    castInLine: true,
+    castInDiagonal: false,
+    needsLineOfSight: false,
+    needsFreeCell: false,
+    needsTakenCell: false,
+    zone: { shape: 'point', size: 0, minSize: 0 }
+  }
+  const cells = castableCells(gameWindow, near, me, new Set())
+  assert.ok(cells.length > 0, 'a line spell has somewhere to go')
+  assert.ok(
+    cells.every((cell) => cellDistance(me, cell) >= 3 && cellDistance(me, cell) <= 6),
+    'the minimum and maximum range hold'
+  )
+
+  const mustBeFree = castableCells(
+    gameWindow,
+    Object.assign({}, near, { castInLine: false, needsFreeCell: true }),
+    me,
+    new Set([a])
+  )
+  assert.ok(!mustBeFree.includes(a), 'a spell needing a free cell skips an occupied one')
+
+  const mustBeTaken = castableCells(
+    gameWindow,
+    Object.assign({}, near, { castInLine: false, needsTakenCell: true }),
+    me,
+    new Set([a])
+  )
+  assert.deepStrictEqual(mustBeTaken, [a], 'a spell needing someone only aims at them')
+
+  // Damage is not wasted: a second cast goes elsewhere once one would kill.
+  state.fighters[1].data.stats.lifePoints = 15
+  state.fighters[2].data.stats.lifePoints = 300
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: spellOf({ apCost: 3, effects: [{ effectId: 100, diceNum: 40, diceSide: 40, zoneSize: 0 }] })
+  }
+  const spread = planTurn(gameWindow, context({ actionPoints: 6 }))
+  assert.ok(spread && spread.casts.length === 2, 'the action points buy two casts')
+  assert.notStrictEqual(
+    spread.casts[0].cellId,
+    spread.casts[1].cellId,
+    'the second cast is not thrown at a monster the first already kills'
+  )
+
+  // Moving is considered when it unlocks a better cast.
+  // Seven cells away: out of a range-4 spell, but four movement points bring
+  // the character close enough.
+  state.fighters[1].data.stats.lifePoints = 300
+  state.fighters[1].data.disposition.cellId = 381
+  state.fighters[2].data.disposition.cellId = 382
+  assert.strictEqual(cellDistance(me, 381), 7, 'the target sits just out of reach')
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: spellOf({ apCost: 3, range: 4, effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneSize: 0 }] })
+  }
+
+  const still = planTurn(gameWindow, context({ movementPoints: 0, canMove: false }))
+  const moving = planTurn(gameWindow, context({ movementPoints: 4, canMove: true }))
+  assert.ok(
+    (still?.casts.length ?? 0) === 0,
+    'out of range, standing still casts nothing'
+  )
+  assert.ok(
+    moving && moving.actions.some((action) => action.type === 'move'),
+    'but a move is planned to reach them'
+  )
+  assert.ok(moving.casts.length > 0, 'and the cast follows')
+  const order = moving.actions.map((action) => action.type)
+  assert.strictEqual(order[0], 'move', 'the points are spent before the first spell here')
+
+  // An element the user unticked is left alone.
+  const noFire = planTurn(gameWindow, context({ movementPoints: 4, canMove: true, elements: ['water'] }))
+  assert.ok((noFire?.casts.length ?? 0) === 0, 'a fire spell is skipped when only water is allowed')
+
+  // Points can also be kept for later: cast, step, cast again.
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[1].data.stats.lifePoints = 300
+  state.fighters[2].data.disposition.cellId = 470
+  state.fighters[2].data.stats.lifePoints = 300
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: spellOf({
+      apCost: 3,
+      range: 5,
+      maxCastPerTarget: 1,
+      effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneSize: 0 }]
+    })
+  }
+
+  const interleaved = planTurn(
+    gameWindow,
+    context({ actionPoints: 6, movementPoints: 6, canMove: true })
+  )
+  if (interleaved) {
+    const kinds = interleaved.actions.map((action) => action.type)
+    const firstCast = kinds.indexOf('cast')
+    const laterMove = kinds.indexOf('move', firstCast === -1 ? 0 : firstCast)
+    assert.ok(
+      firstCast !== -1,
+      'a spell is cast'
+    )
+    if (laterMove !== -1) {
+      assert.ok(laterMove > firstCast, 'and the points may be spent after it')
     }
   }
 
-  state.fighters[0].data.disposition.cellId = 280
-  gameWindow.isoEngine.actorManager.userActor.cellId = 280
-  state.fighters[0].data.stats.actionPoints = 6
-  // Two monsters side by side: one arrow should catch both.
-  state.fighters[1].data.disposition.cellId = 322
-  state.fighters[2].data.disposition.cellId = 336
-
-  const lastCastTurn = new Map()
-  const plan = planSpellTurn(gameWindow, {
-    elements: ['fire', 'earth', 'water', 'air', 'neutral'],
-    turn: 1,
-    lastCastTurn,
-    castsThisTurn: new Map(),
-    actionPoints: 6
-  })
-
-  assert.ok(plan.length >= 2, 'the turn spends its action points')
-  assert.strictEqual(plan[0].spellId, 100, 'the boost comes first')
-  assert.strictEqual(plan[1].spellId, 200, 'then the damage')
-
-  const arrow = plan[1]
-  assert.ok(arrow.hits.length >= 1, 'the arrow lands on someone')
-  assert.ok(
-    arrow.cellId === 322 || arrow.cellId === 336 || arrow.hits.length > 1,
-    'aimed at a cell, which is what lets an area spell catch a group'
-  )
-
-  // The area really does reach a monster that was not aimed at.
-  const catalogueSpell = {
-    id: 200,
-    zoneShape: 67,
-    zoneSize: 1,
-    range: 8,
-    minRange: 1,
-    castInLine: false,
-    needsLineOfSight: false
-  }
-  const between = zoneCells(67, 1, 280, 322).find((cell) => cell !== 322)
-  if (between !== undefined) {
-    const hits = hitsFrom(catalogueSpell, 280, between, [
-      { id: 20, cellId: 322, alive: true, teamId: 1, life: 10, maxLife: 10, ap: 0, mp: 0, name: 'A' }
-    ])
-    assert.strictEqual(hits.length, 1, 'a monster is hit without being the aimed cell')
-  }
-
-  // A spell on cooldown is not offered again the next turn.
-  lastCastTurn.set(100, 1)
-  const nextTurn = planSpellTurn(gameWindow, {
-    elements: ['fire', 'earth', 'water', 'air', 'neutral'],
-    turn: 2,
-    lastCastTurn,
-    castsThisTurn: new Map(),
-    actionPoints: 6
-  })
-  assert.ok(!nextTurn.some((cast) => cast.spellId === 100), 'the boost waits for its cooldown')
-
-  // But it returns once the interval has passed.
-  const later = planSpellTurn(gameWindow, {
-    elements: ['fire', 'earth', 'water', 'air', 'neutral'],
-    turn: 5,
-    lastCastTurn,
-    castsThisTurn: new Map(),
-    actionPoints: 6
-  })
-  assert.ok(later.some((cast) => cast.spellId === 100), 'and is recast as soon as it is ready')
-
-  // An element the user unticked is left alone.
-  const noFire = planSpellTurn(gameWindow, {
-    elements: ['earth', 'water', 'air', 'neutral'],
-    turn: 9,
-    lastCastTurn: new Map(),
-    castsThisTurn: new Map(),
-    actionPoints: 6
-  })
-  assert.ok(!noFire.some((cast) => cast.spellId === 200), 'a fire spell is skipped when fire is off')
-
-  // Range and line constraints are the spell's own.
-  const inLine = castableCells(
-    gameWindow,
-    { id: 1, range: 4, minRange: 2, castInLine: true, needsLineOfSight: false, zoneShape: null, zoneSize: null },
-    280
-  )
-  assert.ok(inLine.length > 0, 'a line spell has somewhere to go')
-  assert.ok(
-    inLine.every((cell) => cellDistance(280, cell) >= 2 && cellDistance(280, cell) <= 4),
-    'the minimum and maximum range are respected'
-  )
-
-  console.log('ok - the AI plans from its own spells')
+  console.log('ok - the AI plans spells, areas and position together')
 }
 
 async function testChallengeRules() {

@@ -1,77 +1,93 @@
 import type { CombatElement } from '@dofemu/shared'
 import type { DofusWindow } from '@/types/dofus-window'
+import { zoneShapeOf, type ZoneDescription } from './zones'
 
 /**
- * The character's spells, as the game describes them.
+ * The character's spells, with everything a turn needs to be planned.
  *
- * Everything a turn needs to be planned without being told: cost, range, the
- * shape of the area, whether it must be thrown in a straight line, whether it
- * needs to see its target, and how often it may be cast.
- *
- * Fields the build does not expose come back null, and the planner treats a
- * null as "no constraint" rather than guessing.
+ * Every constraint the game puts on a cast is read here — cost, range and
+ * whether it is boostable, straight line, line of sight, free or occupied
+ * cell, cooldown, casts per turn and per target — along with what each effect
+ * does and the area it covers. A field the build does not expose comes back
+ * null, and null means "no constraint" rather than a guess.
  */
 
 type Dict = Record<string, unknown>
 
+export type EffectKind = 'damage' | 'heal' | 'boost' | 'push' | 'pull' | 'summon' | 'other'
+
 export interface SpellEffect {
   effectId: number | null
-  /** Average of the dice, when the effect rolls any. */
+  /** Average of the dice, or the flat value. */
   average: number
-  zoneShape: number | string | null
-  zoneSize: number | null
+  kind: EffectKind
   element: CombatElement | null
-  /** Damage, or a boost the character puts on itself. */
-  kind: 'damage' | 'heal' | 'boost' | 'other'
+  zone: ZoneDescription
+  /** Effects that only fire later in the fight are worth less now. */
+  delay: number
 }
 
 export interface SpellDetails {
   id: number
   name: string | null
   level: number | null
+
   apCost: number | null
   range: number
   minRange: number
-  /** Only along a grid axis. */
+  rangeBoostable: boolean
+
   castInLine: boolean
-  /** Needs a clear line to its target. */
+  castInDiagonal: boolean
   needsLineOfSight: boolean
-  /** Turns to wait between two casts. */
-  cooldown: number | null
+  needsFreeCell: boolean
+  needsTakenCell: boolean
+
+  /** Turns between two casts. 0 means every turn. */
+  cooldown: number
   maxCastsPerTurn: number | null
   maxCastsPerTarget: number | null
-  zoneShape: number | string | null
-  zoneSize: number | null
-  /** Damage this spell is worth, averaged over its effects. */
+
+  /** Area of the spell's main effect. */
+  zone: ZoneDescription
+  effects: SpellEffect[]
+
+  /** Damage the spell is worth on one target, averaged. */
   damage: number
-  /** What the spell is for, decided by its effects. */
-  kind: 'damage' | 'heal' | 'boost' | 'other'
+  /** Life it gives back. */
+  heal: number
+  kind: EffectKind
   elements: CombatElement[]
+  pushes: boolean
 }
 
 /**
  * Effect ids that carry an element, as far as they are known.
  *
  * An id missing here yields no element, and a spell with no element is never
- * filtered out — a wrong table must not silently disable a spell.
+ * filtered out — a gap in this table must not silently disable a spell.
  */
 const DAMAGE_EFFECTS: Record<number, CombatElement> = {
+  91: 'water',
+  92: 'earth',
+  93: 'air',
+  94: 'fire',
+  95: 'neutral',
   96: 'earth',
   97: 'earth',
   98: 'water',
   99: 'air',
   100: 'fire',
   101: 'neutral',
-  91: 'water',
-  92: 'earth',
-  93: 'air',
-  94: 'fire',
-  95: 'neutral'
+  82: 'neutral'
 }
 
-const HEAL_EFFECTS = new Set([108, 81])
+const HEAL_EFFECTS = new Set([81, 108])
+const PUSH_EFFECTS = new Set([5, 6])
+const PULL_EFFECTS = new Set([7, 8])
+const SUMMON_EFFECTS = new Set([181, 185])
 const BOOST_EFFECTS = new Set([
-  111, 112, 115, 117, 118, 119, 120, 123, 124, 125, 126, 128, 138, 178, 182
+  111, 112, 115, 117, 118, 119, 120, 122, 123, 124, 125, 126, 127, 128, 138, 178, 182, 265
 ])
 
 function asDict(value: unknown): Dict | null {
@@ -86,32 +102,39 @@ function asBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback
 }
 
+function kindOf(effectId: number | null, element: CombatElement | null): EffectKind {
+  if (element !== null) return 'damage'
+  if (effectId === null) return 'other'
+  if (HEAL_EFFECTS.has(effectId)) return 'heal'
+  if (PUSH_EFFECTS.has(effectId)) return 'push'
+  if (PULL_EFFECTS.has(effectId)) return 'pull'
+  if (SUMMON_EFFECTS.has(effectId)) return 'summon'
+  if (BOOST_EFFECTS.has(effectId)) return 'boost'
+  return 'other'
+}
+
 function readEffect(raw: unknown): SpellEffect | null {
   const dict = asDict(raw)
   if (!dict) return null
 
-  const effectId = asNumber(dict.effectId) ?? asNumber(dict.effectUid) ?? null
+  const effectId = asNumber(dict.effectId) ?? asNumber(dict.effectType) ?? null
   const min = asNumber(dict.diceNum) ?? asNumber(dict.value) ?? 0
-  const max = asNumber(dict.diceSide) ?? min
+  const max = asNumber(dict.diceSide) ?? 0
   const average = max > min ? (min + max) / 2 : min
 
   const element = effectId !== null ? (DAMAGE_EFFECTS[effectId] ?? null) : null
-  const kind: SpellEffect['kind'] =
-    element !== null
-      ? 'damage'
-      : effectId !== null && HEAL_EFFECTS.has(effectId)
-        ? 'heal'
-        : effectId !== null && BOOST_EFFECTS.has(effectId)
-          ? 'boost'
-          : 'other'
 
   return {
     effectId,
     average,
-    zoneShape: (dict.zoneShape as number | string | undefined) ?? null,
-    zoneSize: asNumber(dict.zoneSize),
+    kind: kindOf(effectId, element),
     element,
-    kind
+    zone: {
+      shape: zoneShapeOf((dict.zoneShape as number | string | undefined) ?? null),
+      size: asNumber(dict.zoneSize) ?? 0,
+      minSize: asNumber(dict.zoneMinSize) ?? 0
+    },
+    delay: asNumber(dict.delay) ?? 0
   }
 }
 
@@ -124,6 +147,18 @@ function readLevel(spell: Dict): Dict | null {
   )
 }
 
+function readName(dict: Dict, spell: Dict | null): string | null {
+  if (typeof dict.name === 'string' && dict.name.trim()) return dict.name
+  if (typeof spell?.nameId === 'string' && spell.nameId.trim()) return spell.nameId
+  if (typeof dict.getName === 'function') {
+    try {
+      const called = (dict.getName as () => unknown)()
+      if (typeof called === 'string' && called.trim()) return called
+    } catch {}
+  }
+  return null
+}
+
 /** Everything the character can cast, with the numbers a plan needs. */
 export function readSpellCatalogue(gameWindow: DofusWindow): SpellDetails[] {
   const playerData = asDict(asDict(gameWindow.gui)?.playerData)
@@ -131,9 +166,9 @@ export function readSpellCatalogue(gameWindow: DofusWindow): SpellDetails[] {
     asDict(asDict(asDict(playerData?.characters)?.mainCharacter)?.spellData) ??
     asDict(playerData?.spellData)
 
-  const containers = [spellData?.spells, spellData?.spellsBySpellId, spellData?.spellList]
   let entries: unknown[] = []
-  for (const container of containers) {
+  for (const key of ['spells', 'spellsBySpellId', 'spellList']) {
+    const container = spellData?.[key]
     if (!container || typeof container !== 'object') continue
     const list = Array.isArray(container) ? container : Object.values(container)
     if (list.length > 0) {
@@ -152,50 +187,58 @@ export function readSpellCatalogue(gameWindow: DofusWindow): SpellDetails[] {
     const id = asNumber(dict.id) ?? asNumber(dict.spellId) ?? asNumber(spell?.id)
     if (id === null) continue
 
-    const levelData = readLevel(dict)
-    const effectSource = levelData?.effects ?? dict.effects
+    const level = readLevel(dict)
+    const effectSource = level?.effects ?? dict.effects
     const effects = (Array.isArray(effectSource) ? effectSource : [])
       .map(readEffect)
       .filter((effect): effect is SpellEffect => effect !== null)
 
     const damage = effects
-      .filter((effect) => effect.kind === 'damage')
+      .filter((effect) => effect.kind === 'damage' && effect.delay === 0)
+      .reduce((total, effect) => total + effect.average, 0)
+    const heal = effects
+      .filter((effect) => effect.kind === 'heal')
       .reduce((total, effect) => total + effect.average, 0)
 
-    const kind: SpellDetails['kind'] = damage > 0
-      ? 'damage'
-      : effects.some((effect) => effect.kind === 'heal')
-        ? 'heal'
-        : effects.some((effect) => effect.kind === 'boost')
-          ? 'boost'
-          : 'other'
+    const kind: EffectKind =
+      damage > 0
+        ? 'damage'
+        : heal > 0
+          ? 'heal'
+          : (effects.find((effect) => effect.kind !== 'other')?.kind ?? 'other')
 
-    const zoned = effects.find((effect) => (effect.zoneSize ?? 0) > 0)
-
-    let name = typeof dict.name === 'string' ? dict.name : null
-    if (!name && typeof spell?.nameId === 'string') name = spell.nameId
-    if (!name && typeof dict.getName === 'function') {
-      try {
-        const called = (dict.getName as () => unknown)()
-        if (typeof called === 'string') name = called
-      } catch {}
-    }
+    // The area is the widest one among the effects that matter.
+    const zone = effects
+      .filter((effect) => effect.kind === 'damage' || effect.kind === 'heal')
+      .reduce<ZoneDescription>(
+        (widest, effect) => (effect.zone.size > widest.size ? effect.zone : widest),
+        { shape: 'point', size: 0, minSize: 0 }
+      )
 
     catalogue.push({
       id,
-      name,
-      level: asNumber(levelData?.grade) ?? asNumber(dict.level),
-      apCost: asNumber(levelData?.apCost) ?? asNumber(dict.apCost),
-      range: asNumber(levelData?.range) ?? asNumber(dict.range) ?? 1,
-      minRange: asNumber(levelData?.minRange) ?? asNumber(dict.minRange) ?? 0,
-      castInLine: asBoolean(levelData?.castInLine, false),
-      needsLineOfSight: asBoolean(levelData?.castTestLos, true),
-      cooldown: asNumber(levelData?.minCastInterval),
-      maxCastsPerTurn: asNumber(levelData?.maxCastPerTurn),
-      maxCastsPerTarget: asNumber(levelData?.maxCastPerTarget),
-      zoneShape: zoned?.zoneShape ?? null,
-      zoneSize: zoned?.zoneSize ?? null,
+      name: readName(dict, spell),
+      level: asNumber(level?.grade) ?? asNumber(dict.level),
+
+      apCost: asNumber(level?.apCost) ?? asNumber(dict.apCost),
+      range: asNumber(level?.range) ?? asNumber(dict.range) ?? 1,
+      minRange: asNumber(level?.minRange) ?? asNumber(dict.minRange) ?? 0,
+      rangeBoostable: asBoolean(level?.rangeCanBeBoosted, false),
+
+      castInLine: asBoolean(level?.castInLine, false),
+      castInDiagonal: asBoolean(level?.castInDiagonal, false),
+      needsLineOfSight: asBoolean(level?.castTestLos, true),
+      needsFreeCell: asBoolean(level?.needFreeCell, false),
+      needsTakenCell: asBoolean(level?.needTakenCell, false),
+
+      cooldown: asNumber(level?.minCastInterval) ?? 0,
+      maxCastsPerTurn: asNumber(level?.maxCastPerTurn),
+      maxCastsPerTarget: asNumber(level?.maxCastPerTarget),
+
+      zone,
+      effects,
       damage,
+      heal,
       kind,
       elements: [
         ...new Set(
@@ -203,7 +246,8 @@ export function readSpellCatalogue(gameWindow: DofusWindow): SpellDetails[] {
             .map((effect) => effect.element)
             .filter((element): element is CombatElement => element !== null)
         )
-      ]
+      ],
+      pushes: effects.some((effect) => effect.kind === 'push')
     })
   }
 

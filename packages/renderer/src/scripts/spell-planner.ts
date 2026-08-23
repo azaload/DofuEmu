@@ -1,209 +1,460 @@
 import type { CombatElement } from '@dofemu/shared'
 import type { DofusWindow } from '@/types/dofus-window'
-import { areCellsAligned, cellDistance, hasLineOfSight, zoneCells } from './cells'
-import { getEnemies, getMyFighter, type Fighter } from './fight-bridge'
+import {
+  areCellsAligned,
+  cellCoordinates,
+  cellDistance,
+  hasLineOfSight,
+  isCellWalkable,
+  reachableCells,
+  CELL_COUNT
+} from './cells'
+import { getAllies, getEnemies, getFighters, getMyFighter, type Fighter } from './fight-bridge'
 import { readSpellCatalogue, type SpellDetails } from './spell-catalogue'
+import { areaCells } from './zones'
 
 /**
- * Chooses what to cast, from the character's own spells.
+ * Decides the whole turn: where to stand, and what to cast from there.
  *
- * A cast is aimed at a cell, not at a fighter: that is what lets an area spell
- * catch two monsters at once, or reach one it may not target directly. Every
- * candidate is checked against the spell's own numbers — cost, range, minimum
- * range, straight line, line of sight — and scored by what it actually hits.
+ * A cast is aimed at a cell, never at a fighter, which is what lets an area
+ * spell catch several monsters at once or reach one it may not target
+ * directly. Positions and casts are weighed together, since a step sideways
+ * often unlocks a far better cast than the best one available where the
+ * character stands.
  */
 
 export interface PlannedCast {
   spellId: number
   name: string | null
   cellId: number
-  /** Fighter ids the cast lands on. */
+  /** Fighter ids the area lands on. */
   hits: number[]
+  /** Allies, or ourselves, caught in the same area. */
+  friendlyHits: number[]
   apCost: number
+  value: number
   reason: string
 }
 
-export interface SpellPlanOptions {
-  /** Elements the character is allowed to use. */
-  elements: CombatElement[]
-  /** Turns already played, to know what came off cooldown. */
-  turn: number
-  /** Spell id to the turn it was last cast on. */
-  lastCastTurn: Map<number, number>
-  /** Casts already made this turn, by spell id. */
-  castsThisTurn: Map<number, number>
-  /** Action points left. */
-  actionPoints: number
+export interface PlannedMove {
+  type: 'move'
+  cellId: number
+  path: number[]
+  cost: number
+  reason: string
 }
 
-const BUFF_PRIORITY = 1000
+export interface PlannedSpell extends PlannedCast {
+  type: 'cast'
+}
+
+export type PlannedAction = PlannedMove | PlannedSpell
+
+export interface TurnPlan {
+  /** Moves and casts, in the order they should be played. */
+  actions: PlannedAction[]
+  casts: PlannedCast[]
+  value: number
+}
+
+export interface PlanContext {
+  turn: number
+  actionPoints: number
+  movementPoints: number
+  elements: CombatElement[]
+  /** Spell id to the turn it was last cast on. */
+  lastCastTurn: Map<number, number>
+  /** Moving is off the table: held in contact, or a challenge forbids it. */
+  canMove: boolean
+  /** Prefer standing away from the enemies once the casting is decided. */
+  keepDistance: boolean
+}
+
+/** What one point of damage is worth against everything else. */
+const KILL_BONUS = 400
+const ALLY_PENALTY = 3
+const SELF_PENALTY = 6
+const BUFF_VALUE = 120
+const HEAL_VALUE = 2
+const MOVE_COST_PENALTY = 0.5
+const DISTANCE_BONUS = 4
+/** Casts examined per position; more than this buys nothing in practice. */
+const MAX_CASTS_PER_TURN = 6
+
+interface SimState {
+  actionPoints: number
+  /** Life we expect each enemy to have left, so a target is not overkilled. */
+  life: Map<number, number>
+  castsThisTurn: Map<number, number>
+  castsPerTarget: Map<string, number>
+}
 
 function elementAllowed(spell: SpellDetails, allowed: CombatElement[]): boolean {
-  // A spell whose element we cannot read is never filtered out.
+  // A spell whose element the client does not expose is never filtered out.
   if (spell.elements.length === 0) return true
+  if (allowed.length === 0) return true
   return spell.elements.some((element) => allowed.includes(element))
 }
 
-function offCooldown(spell: SpellDetails, options: SpellPlanOptions): boolean {
-  const last = options.lastCastTurn.get(spell.id)
+function offCooldown(spell: SpellDetails, context: PlanContext): boolean {
+  const last = context.lastCastTurn.get(spell.id)
   if (last === undefined) return true
-  const cooldown = spell.cooldown ?? 0
-  return options.turn - last > cooldown
+  return context.turn - last > spell.cooldown
 }
 
-function castsLeft(spell: SpellDetails, options: SpellPlanOptions): boolean {
-  const already = options.castsThisTurn.get(spell.id) ?? 0
-  const max = spell.maxCastsPerTurn ?? Number.MAX_SAFE_INTEGER
-  return already < max
+function castsLeft(spell: SpellDetails, state: SimState): boolean {
+  const already = state.castsThisTurn.get(spell.id) ?? 0
+  return already < (spell.maxCastsPerTurn ?? Number.MAX_SAFE_INTEGER)
 }
 
-function affordable(spell: SpellDetails, options: SpellPlanOptions): boolean {
-  return (spell.apCost ?? 0) <= options.actionPoints
+function targetCastsLeft(spell: SpellDetails, state: SimState, fighterId: number): boolean {
+  const key = `${spell.id}:${fighterId}`
+  const already = state.castsPerTarget.get(key) ?? 0
+  return already < (spell.maxCastsPerTarget ?? Number.MAX_SAFE_INTEGER)
 }
 
-export function usableSpells(
-  gameWindow: DofusWindow,
-  options: SpellPlanOptions
-): SpellDetails[] {
-  return readSpellCatalogue(gameWindow).filter(
-    (spell) =>
-      elementAllowed(spell, options.elements) &&
-      offCooldown(spell, options) &&
-      castsLeft(spell, options) &&
-      affordable(spell, options)
-  )
-}
-
-/** Cells a spell may be aimed at from `from`, given its own constraints. */
+/** Cells a spell may legally be aimed at, from `from`. */
 export function castableCells(
   gameWindow: DofusWindow,
   spell: SpellDetails,
-  from: number
+  from: number,
+  occupied: Set<number>
 ): number[] {
   const cells: number[] = []
+  const origin = cellCoordinates(from)
 
-  for (let cellId = 0; cellId < 560; cellId++) {
+  for (let cellId = 0; cellId < CELL_COUNT; cellId++) {
     const distance = cellDistance(from, cellId)
     if (distance > spell.range || distance < spell.minRange) continue
+
     if (spell.castInLine && !areCellsAligned(from, cellId)) continue
+    if (spell.castInDiagonal) {
+      const point = cellCoordinates(cellId)
+      if (Math.abs(point.x - origin.x) !== Math.abs(point.y - origin.y)) continue
+    }
+
+    if (spell.needsFreeCell && occupied.has(cellId)) continue
+    if (spell.needsTakenCell && !occupied.has(cellId)) continue
+    if (!spell.needsTakenCell && !isCellWalkable(gameWindow, cellId) && !occupied.has(cellId)) {
+      // An obstacle can still be aimed at by an area spell, but never by a
+      // spell that must land on someone.
+      if (spell.zone.size === 0) continue
+    }
+
     if (spell.needsLineOfSight && !hasLineOfSight(gameWindow, from, cellId)) continue
+
     cells.push(cellId)
   }
 
   return cells
 }
 
-/** Fighters an area spell lands on when aimed at `cellId`. */
+/** Fighters an area lands on when the spell is aimed at `cellId` from `from`. */
 export function hitsFrom(
   spell: SpellDetails,
   from: number,
   cellId: number,
   fighters: Fighter[]
 ): Fighter[] {
-  const covered = zoneCells(spell.zoneShape, spell.zoneSize, from, cellId)
+  const covered = areaCells(spell.zone, from, cellId)
   return fighters.filter((fighter) => fighter.cellId !== null && covered.includes(fighter.cellId))
 }
 
 /**
- * The best cast available right now, or null when nothing is worth it.
+ * What a cast is worth from `from`, or null when it is not worth casting.
  *
- * Buffs come first while they are off cooldown — a boost held up all fight is
- * worth more than one more hit — then the cast that reaches the most enemies,
- * and between equals the one that spends the fewest action points.
+ * Damage counts only up to what the target has left, so two spells are never
+ * both spent on a monster one would already kill; allies and the caster in the
+ * area cost more than they bring.
  */
-export function bestCast(
+function valueOfCast(
   gameWindow: DofusWindow,
-  options: SpellPlanOptions
+  spell: SpellDetails,
+  from: number,
+  cellId: number,
+  enemies: Fighter[],
+  friends: Fighter[],
+  state: SimState
 ): PlannedCast | null {
-  const me = getMyFighter(gameWindow)
-  if (!me || me.cellId === null) return null
+  const apCost = spell.apCost ?? 0
+  if (apCost > state.actionPoints) return null
 
-  const from = me.cellId
-  const enemies = getEnemies(gameWindow)
-  const spells = usableSpells(gameWindow, options)
+  const hits = hitsFrom(spell, from, cellId, enemies)
+  const friendlyHits = hitsFrom(spell, from, cellId, friends)
 
-  let best: (PlannedCast & { score: number }) | null = null
+  if (spell.kind === 'damage') {
+    if (hits.length === 0) return null
+    if (!hits.some((enemy) => targetCastsLeft(spell, state, enemy.id))) return null
 
-  for (const spell of spells) {
-    const apCost = spell.apCost ?? 0
+    // A monster the plan has already killed is worth nothing more: counting it
+    // again would spend a second spell on a corpse.
+    const alive = hits.filter((enemy) => (state.life.get(enemy.id) ?? enemy.life ?? 1) > 0)
+    if (alive.length === 0) return null
 
-    // A boost or a heal on ourselves: no target to find.
-    if (spell.kind === 'boost' || spell.kind === 'heal') {
-      const score = BUFF_PRIORITY - apCost
-      if (!best || score > best.score) {
-        best = {
-          spellId: spell.id,
-          name: spell.name,
-          cellId: from,
-          hits: [me.id],
-          apCost,
-          reason: spell.kind === 'boost' ? 'keeping the boost up' : 'healing',
-          score
-        }
-      }
-      continue
+    let value = 0
+    for (const enemy of alive) {
+      const left = state.life.get(enemy.id) ?? enemy.life ?? spell.damage
+      value += Math.min(spell.damage, left)
+      if (spell.damage >= left) value += KILL_BONUS
     }
 
-    if (spell.kind !== 'damage' || enemies.length === 0) continue
+    value -= friendlyHits.length * spell.damage * ALLY_PENALTY
+    if (friendlyHits.some((friend) => friend.cellId === from)) value -= spell.damage * SELF_PENALTY
 
-    for (const cellId of castableCells(gameWindow, spell, from)) {
-      const hits = hitsFrom(spell, from, cellId, enemies)
-      if (hits.length === 0) continue
+    if (value <= 0) return null
 
-      // What the cast is worth: everything it touches, per action point.
-      const value = hits.length * Math.max(1, spell.damage)
-      const score = value * 10 - apCost
-
-      if (!best || score > best.score) {
-        best = {
-          spellId: spell.id,
-          name: spell.name,
-          cellId,
-          hits: hits.map((fighter) => fighter.id),
-          apCost,
-          reason:
-            hits.length > 1
-              ? `${hits.length} enemies in the area`
-              : `${hits[0].name ?? hits[0].id}`,
-          score
-        }
-      }
+    return {
+      spellId: spell.id,
+      name: spell.name,
+      cellId,
+      hits: alive.map((enemy) => enemy.id),
+      friendlyHits: friendlyHits.map((friend) => friend.id),
+      apCost,
+      value,
+      reason:
+        alive.length > 1
+          ? `${alive.length} enemies in the area`
+          : (alive[0].name ?? `fighter ${alive[0].id}`)
     }
   }
 
-  if (!best) return null
-  const { score: _score, ...cast } = best
-  return cast
+  if (spell.kind === 'heal') {
+    const wounded = friendlyHits.filter(
+      (friend) => friend.life !== null && friend.maxLife !== null && friend.life < friend.maxLife
+    )
+    if (wounded.length === 0) return null
+
+    const value = wounded.reduce((total, friend) => {
+      const missing = (friend.maxLife ?? 0) - (friend.life ?? 0)
+      return total + Math.min(spell.heal, missing) * HEAL_VALUE
+    }, 0)
+
+    return {
+      spellId: spell.id,
+      name: spell.name,
+      cellId,
+      hits: [],
+      friendlyHits: wounded.map((friend) => friend.id),
+      apCost,
+      value,
+      reason: `healing ${wounded.length}`
+    }
+  }
+
+  // Boosts, summons and the rest: worth casting on ourselves once they are off
+  // cooldown, and worth more than a small hit since they last the fight.
+  if (cellId !== from) return null
+  return {
+    spellId: spell.id,
+    name: spell.name,
+    cellId: from,
+    hits: [],
+    friendlyHits: [],
+    apCost,
+    value: BUFF_VALUE - apCost,
+    reason: spell.kind === 'boost' ? 'keeping the boost up' : spell.kind
+  }
 }
 
-/**
- * The whole turn: casts chained until the action points run out or nothing
- * useful is left. The state is advanced between them, so a spell limited to
- * one cast a turn is not chosen twice.
- */
-export function planSpellTurn(
+/** The best sequence of casts from one position, within the action points. */
+function planCastsFrom(
   gameWindow: DofusWindow,
-  options: SpellPlanOptions,
-  maxCasts = 8
-): PlannedCast[] {
-  const plan: PlannedCast[] = []
-  const state: SpellPlanOptions = {
-    ...options,
-    castsThisTurn: new Map(options.castsThisTurn),
-    lastCastTurn: new Map(options.lastCastTurn)
+  from: number,
+  spells: SpellDetails[],
+  enemies: Fighter[],
+  friends: Fighter[],
+  occupied: Set<number>,
+  context: PlanContext
+): { casts: PlannedCast[]; value: number } {
+  const state: SimState = {
+    actionPoints: context.actionPoints,
+    life: new Map(enemies.map((enemy) => [enemy.id, enemy.life ?? 0])),
+    castsThisTurn: new Map(),
+    castsPerTarget: new Map()
   }
 
-  for (let step = 0; step < maxCasts; step++) {
-    const cast = bestCast(gameWindow, state)
-    if (!cast) break
+  const casts: PlannedCast[] = []
+  let total = 0
 
-    plan.push(cast)
-    state.actionPoints -= cast.apCost
-    state.castsThisTurn.set(cast.spellId, (state.castsThisTurn.get(cast.spellId) ?? 0) + 1)
-    state.lastCastTurn.set(cast.spellId, state.turn)
+  for (let step = 0; step < MAX_CASTS_PER_TURN; step++) {
+    let best: PlannedCast | null = null
+
+    for (const spell of spells) {
+      if (!castsLeft(spell, state)) continue
+      if ((spell.apCost ?? 0) > state.actionPoints) continue
+
+      for (const cellId of castableCells(gameWindow, spell, from, occupied)) {
+        const candidate = valueOfCast(gameWindow, spell, from, cellId, enemies, friends, state)
+        if (!candidate) continue
+        if (!best || candidate.value > best.value) best = candidate
+      }
+    }
+
+    if (!best) break
+
+    casts.push(best)
+    total += best.value
+    state.actionPoints -= best.apCost
+    state.castsThisTurn.set(best.spellId, (state.castsThisTurn.get(best.spellId) ?? 0) + 1)
+
+    const spell = spells.find((candidate) => candidate.id === best.spellId)
+    for (const hit of best.hits) {
+      state.castsPerTarget.set(
+        `${best.spellId}:${hit}`,
+        (state.castsPerTarget.get(`${best.spellId}:${hit}`) ?? 0) + 1
+      )
+      state.life.set(hit, Math.max(0, (state.life.get(hit) ?? 0) - (spell?.damage ?? 0)))
+    }
 
     if (state.actionPoints <= 0) break
   }
 
-  return plan
+  return { casts, value: total }
+}
+
+/** The best single cast from a position, given the state so far. */
+function bestCastFrom(
+  gameWindow: DofusWindow,
+  from: number,
+  spells: SpellDetails[],
+  enemies: Fighter[],
+  friends: Fighter[],
+  occupied: Set<number>,
+  state: SimState
+): PlannedCast | null {
+  let best: PlannedCast | null = null
+
+  for (const spell of spells) {
+    if (!castsLeft(spell, state)) continue
+    if ((spell.apCost ?? 0) > state.actionPoints) continue
+
+    for (const cellId of castableCells(gameWindow, spell, from, occupied)) {
+      const candidate = valueOfCast(gameWindow, spell, from, cellId, enemies, friends, state)
+      if (!candidate) continue
+      if (!best || candidate.value > best.value) best = candidate
+    }
+  }
+
+  return best
+}
+
+/**
+ * The turn, as a sequence of moves and casts.
+ *
+ * At every step the character either casts the best spell available where it
+ * stands, or walks to a cell that unlocks a better one — so the movement
+ * points can be spent at the start of the turn, between two casts, or not at
+ * all, whichever is worth the most. Walking is charged a little, so a move has
+ * to earn its points.
+ */
+export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPlan | null {
+  const me = getMyFighter(gameWindow)
+  if (!me || me.cellId === null) return null
+
+  const enemies = getEnemies(gameWindow).filter((enemy) => enemy.cellId !== null)
+  const allies = getAllies(gameWindow)
+  const friends = [me, ...allies]
+
+  const spells = readSpellCatalogue(gameWindow).filter(
+    (spell) => elementAllowed(spell, context.elements) && offCooldown(spell, context)
+  )
+  if (spells.length === 0) return null
+
+  const occupied = new Set(
+    getFighters(gameWindow)
+      .filter((fighter) => fighter.alive && fighter.cellId !== null)
+      .map((fighter) => fighter.cellId as number)
+  )
+
+  const state: SimState = {
+    actionPoints: context.actionPoints,
+    life: new Map(enemies.map((enemy) => [enemy.id, enemy.life ?? 0])),
+    castsThisTurn: new Map(),
+    castsPerTarget: new Map()
+  }
+
+  const actions: PlannedAction[] = []
+  const casts: PlannedCast[] = []
+  let position = me.cellId
+  let movementPoints = context.canMove ? context.movementPoints : 0
+  let total = 0
+
+  const distanceToEnemies = (cellId: number) =>
+    enemies.reduce(
+      (closest, enemy) => Math.min(closest, cellDistance(cellId, enemy.cellId as number)),
+      Number.MAX_SAFE_INTEGER
+    )
+
+  const safetyOf = (cellId: number) => {
+    if (!context.keepDistance) return 0
+    const distance = distanceToEnemies(cellId)
+    return distance === Number.MAX_SAFE_INTEGER ? 0 : distance * DISTANCE_BONUS
+  }
+
+  for (let step = 0; step < MAX_CASTS_PER_TURN * 2; step++) {
+    const occupiedHere = new Set(occupied)
+    occupiedHere.delete(me.cellId)
+    occupiedHere.add(position)
+
+    const here = bestCastFrom(gameWindow, position, spells, enemies, friends, occupiedHere, state)
+
+    // What a step sideways would buy, casts and safety together.
+    let move: { cellId: number; path: number[]; cost: number; gain: number; cast: PlannedCast | null } | null = null
+
+    if (movementPoints > 0) {
+      const blocked = new Set([...occupied].filter((cellId) => cellId !== position))
+      const currentValue = (here?.value ?? 0) + safetyOf(position)
+
+      for (const entry of reachableCells(gameWindow, position, movementPoints, blocked).values()) {
+        if (entry.cellId === position) continue
+
+        const occupiedThere = new Set(occupied)
+        occupiedThere.delete(me.cellId)
+        occupiedThere.add(entry.cellId)
+
+        const cast = bestCastFrom(gameWindow, entry.cellId, spells, enemies, friends, occupiedThere, state)
+        const gain =
+          (cast?.value ?? 0) + safetyOf(entry.cellId) - currentValue - entry.cost * MOVE_COST_PENALTY
+
+        if (gain > 0 && (!move || gain > move.gain)) {
+          move = { cellId: entry.cellId, path: entry.path, cost: entry.cost, gain, cast }
+        }
+      }
+    }
+
+    if (move) {
+      actions.push({
+        type: 'move',
+        cellId: move.cellId,
+        path: move.path,
+        cost: move.cost,
+        reason: move.cast
+          ? `to cast ${move.cast.name ?? move.cast.spellId} on ${move.cast.reason}`
+          : `${distanceToEnemies(move.cellId)} cell(s) from the closest enemy`
+      })
+      position = move.cellId
+      movementPoints -= move.cost
+      total += move.gain
+      continue
+    }
+
+    if (!here) break
+
+    actions.push({ type: 'cast', ...here })
+    casts.push(here)
+    total += here.value
+    state.actionPoints -= here.apCost
+    state.castsThisTurn.set(here.spellId, (state.castsThisTurn.get(here.spellId) ?? 0) + 1)
+
+    const spell = spells.find((candidate) => candidate.id === here.spellId)
+    for (const hit of here.hits) {
+      const key = `${here.spellId}:${hit}`
+      state.castsPerTarget.set(key, (state.castsPerTarget.get(key) ?? 0) + 1)
+      state.life.set(hit, Math.max(0, (state.life.get(hit) ?? 0) - (spell?.damage ?? 0)))
+    }
+
+    if (state.actionPoints <= 0) break
+  }
+
+  return { actions, casts, value: total }
 }
