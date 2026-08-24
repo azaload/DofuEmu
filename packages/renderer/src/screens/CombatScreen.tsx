@@ -458,8 +458,13 @@ export function CombatScreen() {
             options={SPELL_MODE_OPTIONS}
           />
         </Row>
+        {combat.spellMode === 'auto' && (combat.elements ?? []).length === 0 && (
+          <div style={{ fontSize: 11, color: colors.danger, padding: '4px 0' }}>
+            No element is ticked, so every damage spell is allowed.
+          </div>
+        )}
         {combat.spellMode === 'auto' && (
-          <Row label="Elements" desc="Which damage the AI may use">
+          <Row label="Elements" desc="Which damage the AI may use — untick nothing to allow all">
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end', maxWidth: 260 }}>
               {ELEMENTS.map((element) => {
                 const enabled = (combat.elements ?? []).includes(element)
@@ -532,6 +537,7 @@ export function CombatScreen() {
             </Row>
           </>
         )}
+        {combat.spellMode === 'combo' && (
         <Row label="Target" desc="Which enemy the combo is cast on">
           <Select
             value={combat.targetStrategy}
@@ -539,6 +545,7 @@ export function CombatScreen() {
             options={TARGET_OPTIONS}
           />
         </Row>
+        )}
         <Row label="Ready up automatically" desc="Send ready when a fight starts">
           <Toggle checked={combat.autoReady} onChange={(v) => setCombatSettings({ autoReady: v })} />
         </Row>
@@ -568,7 +575,7 @@ export function CombatScreen() {
             />
           </Row>
         )}
-        {combat.approachEnemies && (
+        {combat.approachEnemies && combat.spellMode === 'combo' && (
           <Row label="Line up with the target" desc="Prefer cells sharing a row or column with the enemy">
             <Toggle
               checked={combat.preferLineUp}
@@ -576,7 +583,7 @@ export function CombatScreen() {
             />
           </Row>
         )}
-        {combat.approachEnemies && (
+        {combat.spellMode === 'combo' && (
           <Row label="Fallback range" desc="Cast range assumed when the game does not report the spell's">
             <div style={{ width: 90 }}>
               <TextInput
@@ -587,15 +594,17 @@ export function CombatScreen() {
             </div>
           </Row>
         )}
-        <Row
-          label="Spread the casts"
-          desc="One cast per enemy in range, instead of emptying the combo on one"
-        >
-          <Toggle
-            checked={combat.spreadCasts}
-            onChange={(v) => setCombatSettings({ spreadCasts: v })}
-          />
-        </Row>
+        {combat.spellMode === 'combo' && (
+          <Row
+            label="Spread the casts"
+            desc="One cast per enemy in range, instead of emptying the combo on one"
+          >
+            <Toggle
+              checked={combat.spreadCasts}
+              onChange={(v) => setCombatSettings({ spreadCasts: v })}
+            />
+          </Row>
+        )}
         <Row label="Close end screens" desc="Dismiss the fight results and level-up windows">
           <Toggle
             checked={combat.closeEndScreens}
@@ -651,7 +660,7 @@ export function CombatScreen() {
         </Row>
       </Section>
 
-      <ComboEditor />
+      {useSettingsStore.getState().combat.spellMode === 'combo' && <ComboEditor />}
       <CombatLog />
 
       <div style={{ fontSize: 10, color: colors.textDesc, lineHeight: 1.5, padding: '8px 0 4px' }}>

@@ -576,6 +576,19 @@ export function initCombatAi(
         if (!stillOurTurn() || !isFightStarted(gameWindow)) return
         if (target.cellId === null) continue
 
+        // The combo is a fixed list, so it can name a target the spell cannot
+        // possibly reach. Casting anyway wastes the turn and reads as a bug.
+        const here = getMyFighter(gameWindow)?.cellId ?? null
+        if (here !== null) {
+          const distance = cellDistance(here, target.cellId)
+          if (distance > range) {
+            log(
+              `Skipping ${spell.name || spell.id}: ${target.name ?? target.id} is ${distance} cell(s) away, range ${range}`
+            )
+            continue
+          }
+        }
+
         try {
           castSpell(gameWindow, spell.id, target.cellId)
           const me = getMyFighter(gameWindow)
@@ -611,46 +624,61 @@ export function initCombatAi(
     rules: ReturnType<typeof deriveChallengeRules>,
     stillOurTurn: () => boolean
   ): Promise<number> => {
-    const me = getMyFighter(gameWindow)
-    if (!me || me.cellId === null) return 0
-
-    const held = settings.tackleAware && tacklingEnemies(getEnemies(gameWindow), me.cellId).length > 0
-
-    const plan = planSpellTurn(gameWindow, {
-      turn,
-      actionPoints: me.ap ?? 0,
-      movementPoints: me.mp ?? 0,
-      elements: settings.elements ?? [],
-      lastCastTurn,
-      canMove: settings.approachEnemies && !held && !rules.noMove,
-      keepDistance: settings.positioning === 'keep-distance'
-    })
-
-    if (!plan) {
-      log('Nothing to plan from the spellbook')
-      return 0
-    }
-
-    if (plan.actions.length === 0) {
-      log('No spell worth casting from here')
-      return 0
-    }
-
     let cast = 0
+    let reported = false
 
-    // Moves and casts are played in the order the plan gives them: the points
-    // can go before the first spell, between two of them, or nowhere.
-    for (const action of plan.actions) {
+    // The plan is redone after every action, from the points the game really
+    // reports: a boost that grants AP or MP mid-turn is then used, and so is
+    // anything the fight changed while we were acting.
+    for (let step = 0; step < 12; step++) {
       if (!stillOurTurn() || !isFightStarted(gameWindow)) break
+
+      const me = getMyFighter(gameWindow)
+      if (!me || me.cellId === null) break
+
+      const actionPoints = me.ap ?? 0
+      const movementPoints = me.mp ?? 0
+      if (actionPoints <= 0 && movementPoints <= 0) break
+
+      const held = settings.tackleAware && tacklingEnemies(getEnemies(gameWindow), me.cellId).length > 0
+
+      const plan = planSpellTurn(gameWindow, {
+        turn,
+        actionPoints,
+        movementPoints,
+        elements: settings.elements ?? [],
+        lastCastTurn,
+        canMove: settings.approachEnemies && !held && !rules.noMove,
+        keepDistance: settings.positioning === 'keep-distance',
+        onlyTargetId: rules.focusTargetId,
+        singleTarget: rules.singleTarget,
+        avoidMelee: rules.avoidMelee
+      })
+
+      if (!plan) {
+        log('The fight state could not be read: falling back to the combo')
+        break
+      }
+
+      const action = plan.actions[0]
+      if (!action) {
+        // Never a silent nothing: the reason is what makes this fixable.
+        if (!reported && plan.diagnostic && cast === 0) log(`No plan — ${plan.diagnostic}`)
+        reported = true
+        break
+      }
 
       if (action.type === 'move') {
         log(`Moving to cell ${action.cellId} (${action.cost} MP) ${action.reason}`)
-        if (sendFightMove(gameWindow, action.path)) {
-          const outcome = await waitForMove(action.cellId)
-          await waitForIdle()
-          if (outcome === 'no-move') log('The move was refused, casting from here')
-          await humanSleep(0)
+        if (!sendFightMove(gameWindow, action.path)) break
+
+        const outcome = await waitForMove(action.cellId)
+        await waitForIdle()
+        if (outcome === 'no-move') {
+          log('The move was refused, casting from here')
+          break
         }
+        await humanSleep(0)
         continue
       }
 

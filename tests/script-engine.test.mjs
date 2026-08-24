@@ -1026,9 +1026,14 @@ async function testRangeAndShortWalk() {
     logs.some((line) => line.includes('Stopped on cell 294')),
     'a walk cut short by an obstacle is reported'
   )
+  // The walk stopped short, so the melee spell can no longer reach: the cast is
+  // skipped and said out loud, rather than thrown at nothing.
+  const castAfterwards = state.sent.some(
+    (message) => message.name === 'GameActionFightCastRequestMessage'
+  )
   assert.ok(
-    state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
-    'the spell is still cast afterwards'
+    castAfterwards || logs.some((line) => line.includes('Skipping')),
+    'either the spell reaches, or the AI says why it does not'
   )
 
   state.walkLimit = null
@@ -2346,6 +2351,129 @@ async function testSpellPlanner() {
       assert.ok(laterMove > firstCast, 'and the points may be spent after it')
     }
   }
+
+  // --- what the fight forbids, and why nothing was planned ---
+
+  // A challenge naming one enemy rules out an area that also catches another.
+  state.fighters[1].data.disposition.cellId = a
+  state.fighters[1].data.stats.lifePoints = 300
+  state.fighters[2].data.disposition.cellId = b
+  state.fighters[2].data.stats.lifePoints = 300
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: spellOf({
+      apCost: 4,
+      effects: [{ effectId: 100, diceNum: 20, diceSide: 20, zoneShape: 67, zoneSize: 1 }]
+    })
+  }
+
+  const focused = planTurn(gameWindow, context({ onlyTargetId: 20 }))
+  for (const cast of focused?.casts ?? []) {
+    assert.deepStrictEqual(cast.hits, [20], 'only the named enemy is ever touched')
+  }
+
+  const single = planTurn(gameWindow, context({ singleTarget: true }))
+  for (const cast of single?.casts ?? []) {
+    assert.strictEqual(cast.hits.length, 1, 'a single-target challenge forbids catching two')
+  }
+
+  // A boost is not worth casting on the turn everything dies.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: spellOf({ apCost: 2, effects: [{ effectId: 128, diceNum: 30, diceSide: 30, zoneSize: 0 }] }),
+    2: spellOf({ apCost: 3, effects: [{ effectId: 100, diceNum: 400, diceSide: 400, zoneSize: 0 }] })
+  }
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells[2].id = 2
+
+  state.fighters[1].data.stats.lifePoints = 50
+  state.fighters[2].data.stats.lifePoints = 50
+  const finishing = planTurn(gameWindow, context({ actionPoints: 6 }))
+  assert.ok(
+    !(finishing?.casts ?? []).some((cast) => cast.spellId === 1),
+    'the boost is skipped when the fight ends this turn'
+  )
+
+  state.fighters[1].data.stats.lifePoints = 5000
+  state.fighters[2].data.stats.lifePoints = 5000
+  const lasting = planTurn(gameWindow, context({ actionPoints: 6 }))
+  assert.ok(
+    (lasting?.casts ?? []).some((cast) => cast.spellId === 1),
+    'but kept up in a fight that will last'
+  )
+
+  // Nothing planned always says why. Only a fire spell here, so asking for
+  // water leaves nothing at all.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    2: Object.assign(spellOf({ apCost: 3 }), { id: 2 })
+  }
+  const filteredOut = planTurn(gameWindow, context({ elements: ['water'] }))
+  assert.ok(
+    filteredOut?.diagnostic?.includes('filtered out by the chosen elements'),
+    `the element filter explains itself, got ${filteredOut?.diagnostic}`
+  )
+
+  const broke = planTurn(gameWindow, context({ actionPoints: 1 }))
+  assert.ok(
+    broke?.diagnostic?.includes('action point'),
+    `an unaffordable turn explains itself, got ${broke?.diagnostic}`
+  )
+
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {}
+  const noBook = planTurn(gameWindow, context({}))
+  assert.ok(
+    noBook?.diagnostic?.includes('spellbook'),
+    `an unreadable spellbook explains itself, got ${noBook?.diagnostic}`
+  )
+
+  // --- statistics and resistances decide which spell hits hardest ---
+  gameWindow.gui.playerData.characters.mainCharacter.characteristics = {
+    strength: { base: 100, additional: 0, objectsAndMountBonus: 200, alignGiftBonus: 0, contextModif: 0 },
+    intelligence: { base: 50, additional: 0, objectsAndMountBonus: 0, alignGiftBonus: 0, contextModif: 0 },
+    chance: { base: 0 },
+    agility: { base: 0 },
+    damagesBonusPercent: { base: 0 },
+    allDamagesBonus: { base: 0 }
+  }
+
+  // Same base damage, one earth and one fire.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    10: Object.assign(
+      spellOf({ apCost: 3, effects: [{ effectId: 96, diceNum: 20, diceSide: 20, zoneSize: 0 }] }),
+      { id: 10 }
+    ),
+    11: Object.assign(
+      spellOf({ apCost: 3, effects: [{ effectId: 100, diceNum: 20, diceSide: 20, zoneSize: 0 }] }),
+      { id: 11 }
+    )
+  }
+
+  // One monster alone, resisting earth heavily.
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[1].data.stats.lifePoints = 5000
+  state.fighters[1].data.stats.earthElementResistPercent = { base: 80 }
+  state.fighters[1].data.stats.fireElementResistPercent = { base: 0 }
+  state.fighters[2].data.alive = false
+
+  const versusEarthResist = planTurn(gameWindow, context({ actionPoints: 3 }))
+  assert.strictEqual(
+    versusEarthResist?.casts[0]?.spellId,
+    11,
+    'against an earth-resistant monster the fire spell is chosen, despite the bigger strength'
+  )
+
+  // Flip the resistances and the choice must follow.
+  state.fighters[1].data.stats.earthElementResistPercent = { base: 0 }
+  state.fighters[1].data.stats.fireElementResistPercent = { base: 90 }
+
+  const versusFireResist = planTurn(gameWindow, context({ actionPoints: 3 }))
+  assert.strictEqual(
+    versusFireResist?.casts[0]?.spellId,
+    10,
+    'and the earth spell when fire is the resisted one'
+  )
+
+  state.fighters[2].data.alive = true
+  delete state.fighters[1].data.stats.earthElementResistPercent
+  delete state.fighters[1].data.stats.fireElementResistPercent
+  delete gameWindow.gui.playerData.characters.mainCharacter.characteristics
 
   console.log('ok - the AI plans spells, areas and position together')
 }

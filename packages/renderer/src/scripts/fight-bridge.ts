@@ -30,6 +30,8 @@ export interface Fighter {
   ap: number | null
   mp: number | null
   name: string | null
+  /** Raw stats block, where the resistances live. */
+  stats: unknown
 }
 
 export interface SpellInfo {
@@ -104,7 +106,8 @@ function toFighter(raw: unknown): Fighter | null {
     maxLife: asNumber(stats?.maxLifePoints) ?? asNumber(stats?.lifePointsMax),
     ap: asNumber(stats?.actionPoints),
     mp: asNumber(stats?.movementPoints),
-    name: asString(data.name) ?? asString(dict.name)
+    name: asString(data.name) ?? asString(dict.name),
+    stats
   }
 }
 

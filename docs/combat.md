@@ -265,6 +265,19 @@ what a step sideways would unlock. It then does whichever is worth more, and rep
 movement points can be spent before the first spell, between two of them, or not at all —
 whatever the turn is worth the most.
 
+### Statistics and resistances
+
+A spell's printed damage is only a starting point. The AI reads the character's own
+characteristics — strength, intelligence, chance, agility, the percentage bonus and the flat
+ones — and each monster's **resistances**, then works out what a spell would really take off
+**that** target: base × (1 + stat% + damage%) + flat, minus the target's percentage
+resistance, minus its flat reduction.
+
+So the choice follows the monster: the fire spell against something that resists earth, the
+earth one against something that resists fire, even when the character's strength is far
+higher. Anything the client does not expose counts as zero, which leaves the printed value
+untouched rather than inventing a bonus.
+
 A cast is scored on what it actually achieves:
 
 - damage counted **only up to what the target has left**, so two spells are never both spent
@@ -273,15 +286,27 @@ A cast is scored on what it actually achieves:
 - allies caught in the area cost several times the damage they take, and the caster costs
   more still;
 - healing counts only the life actually missing;
-- boosts are worth holding: they are recast the moment their cooldown allows, which is what
-  keeps a mastery up all fight;
+- boosts come **before** the attacks while their cooldown allows and enough action points
+  remain to still hit — a mastery lasting several turns is worth more than one extra cast —
+  and are skipped entirely on the turn everything is going to die anyway;
 - walking is charged a little, so a move has to earn its points.
 
 **Elements** ticks which damage the AI may use. A spell whose element the client does not
 expose is never filtered out, so a gap in that reading cannot silently disable a spell.
 
-If nothing is worth casting, the configured combo is played instead, so a turn is never
-empty.
+The plan is redone **after every action**, from the points the game really reports. A boost
+that grants action or movement points mid-turn is therefore used, and a fight that changes
+under the AI — a monster dying, a push, new gear between fights — is taken into account
+without any setting to adjust.
+
+Challenges are enforced here too: a challenge naming one enemy makes every area landing on a
+second one illegal, not merely discouraged, and one asking for a single target the same.
+
+When nothing can be planned, the reason is written to the activity log — the spellbook could
+not be read, every spell is filtered out by the chosen elements, everything is on cooldown,
+no spell fits the action points left, or no cell brings an enemy in reach. The configured
+combo is then played as a fallback, and a cast it aims further than the spell can reach is
+skipped and reported rather than thrown at nothing.
 
 ## Spreading the casts
 
