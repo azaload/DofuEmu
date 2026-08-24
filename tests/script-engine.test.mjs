@@ -2354,7 +2354,8 @@ async function testSpellPlanner() {
 
   // --- what the fight forbids, and why nothing was planned ---
 
-  // A challenge naming one enemy rules out an area that also catches another.
+  // Challenges are read and reported, but never enforced: holding one is not
+  // worth losing a fight or dragging it out.
   state.fighters[1].data.disposition.cellId = a
   state.fighters[1].data.stats.lifePoints = 300
   state.fighters[2].data.disposition.cellId = b
@@ -2366,15 +2367,11 @@ async function testSpellPlanner() {
     })
   }
 
-  const focused = planTurn(gameWindow, context({ onlyTargetId: 20 }))
-  for (const cast of focused?.casts ?? []) {
-    assert.deepStrictEqual(cast.hits, [20], 'only the named enemy is ever touched')
-  }
-
-  const single = planTurn(gameWindow, context({ singleTarget: true }))
-  for (const cast of single?.casts ?? []) {
-    assert.strictEqual(cast.hits.length, 1, 'a single-target challenge forbids catching two')
-  }
+  const unconstrained = planTurn(gameWindow, context({}))
+  assert.ok(
+    (unconstrained?.casts ?? []).some((cast) => cast.hits.length === 2),
+    'the best area cast is still chosen, challenge or not'
+  )
 
   // A boost is not worth casting on the turn everything dies.
   gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
@@ -2512,7 +2509,8 @@ async function testChallengeRules() {
     'an unrelated challenge constrains nothing'
   )
 
-  // And the plan is held to them, whatever the model asked for.
+  // The rules are still derived, for the model to read and for the log, but
+  // nothing is trimmed on their account.
   const state = {
     turn: 1,
     me: { id: 7, name: 'me', cellId: 280, life: 100, maxLife: 100, ap: 6, mp: 3, tackledBy: [], canMove: true },
@@ -2527,26 +2525,20 @@ async function testChallengeRules() {
     challengeRules: { noMove: true, singleTarget: true, avoidMelee: false, focusTargetId: 21 }
   }
 
-  const { actions, rejected } = validatePlan(
+  const { actions } = validatePlan(
     {
       actions: [
         { type: 'move', cellId: 266 },
-        { type: 'cast', spellId: 161, targetId: 20 },
-        { type: 'cast', spellId: 161, targetId: 21 }
+        { type: 'cast', spellId: 161, targetId: 1 },
+        { type: 'cast', spellId: 161, targetId: 2 }
       ]
     },
     state
   )
 
-  assert.deepStrictEqual(
-    actions,
-    [{ type: 'cast', spellId: 161, targetId: 21 }],
-    'only the cast the challenges allow survives'
-  )
-  assert.ok(rejected.some((line) => line.includes('forbids moving')), 'the move is refused')
-  assert.ok(rejected.some((line) => line.includes('names another target')), 'the wrong target is refused')
+  assert.strictEqual(actions.length, 3, 'a challenge no longer trims what the model asked for')
 
-  console.log('ok - challenges constrain the turn')
+  console.log('ok - challenges are read, not enforced')
 }
 
 async function testTurnPlanValidation() {

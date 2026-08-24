@@ -71,12 +71,6 @@ export interface PlanContext {
   canMove: boolean
   /** Prefer standing away from the enemies once the casting is decided. */
   keepDistance: boolean
-  /** Only this fighter may be hit, and never two at once. */
-  onlyTargetId?: number | null
-  /** A challenge forbids touching more than one enemy in the turn. */
-  singleTarget?: boolean
-  /** A challenge asks us not to end the turn next to an enemy. */
-  avoidMelee?: boolean
 }
 
 /** What one point of damage is worth against everything else. */
@@ -200,18 +194,6 @@ function valueOfCast(
 
   if (spell.kind === 'damage') {
     if (hits.length === 0) return null
-
-    // A challenge that names one enemy, or allows a single target, is broken
-    // by an area landing on a second one — so those cells are not options.
-    if (context.onlyTargetId != null) {
-      if (hits.some((enemy) => enemy.id !== context.onlyTargetId)) return null
-      if (!hits.some((enemy) => enemy.id === context.onlyTargetId)) return null
-    }
-    if (context.singleTarget) {
-      if (hits.length > 1) return null
-      const already = [...state.hitThisTurn]
-      if (already.length > 0 && !already.includes(hits[0].id)) return null
-    }
     if (!hits.some((enemy) => targetCastsLeft(spell, state, enemy.id))) return null
 
     // A monster the plan has already killed is worth nothing more: counting it

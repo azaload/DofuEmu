@@ -38,8 +38,6 @@ export function validatePlan(plan: TurnPlan, state: FightState): ValidationResul
   const actions: TurnAction[] = []
   const rejected: string[] = []
   let moved = false
-  const rules = state.challengeRules
-  const hit = new Set<number>()
 
   for (const action of plan.actions ?? []) {
     if (!action || typeof action !== 'object') {
@@ -48,10 +46,6 @@ export function validatePlan(plan: TurnPlan, state: FightState): ValidationResul
     }
 
     if (action.type === 'move') {
-      if (rules?.noMove) {
-        rejected.push(`move to ${action.cellId}: a challenge forbids moving`)
-        continue
-      }
       if (state.me.canMove === false) {
         rejected.push(`move to ${action.cellId}: held in contact, moving is tackled`)
         continue
@@ -111,16 +105,6 @@ export function validatePlan(plan: TurnPlan, state: FightState): ValidationResul
         enemy = reachable
       }
 
-      if (rules?.focusTargetId && enemy.id !== rules.focusTargetId) {
-        rejected.push(`cast ${action.spellId} on ${enemy.id}: a challenge names another target`)
-        continue
-      }
-      if (rules?.singleTarget && hit.size > 0 && !hit.has(enemy.id)) {
-        rejected.push(`cast ${action.spellId} on ${enemy.id}: a challenge allows one target only`)
-        continue
-      }
-
-      hit.add(enemy.id)
       actions.push({ type: 'cast', spellId: spell.id, targetId: enemy.id })
       continue
     }

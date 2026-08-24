@@ -553,15 +553,10 @@ export function initCombatAi(
       // enemy in reach this plays the combo as written.
       const reachable = targetsInRange(gameWindow, range, settings.targetStrategy)
 
-      // A challenge naming one enemy, or asking for a single target, overrides
-      // spreading the casts.
-      const focused = rules.focusTargetId
-        ? reachable.filter((enemy) => enemy.id === rules.focusTargetId)
-        : reachable
-      const allowed = rules.singleTarget || rules.focusTargetId ? focused.slice(0, 1) : focused
+      const allowed = reachable
 
       const targets =
-        settings.spreadCasts && !rules.singleTarget && !rules.focusTargetId && allowed.length > 1
+        settings.spreadCasts && allowed.length > 1
           ? allowed
           : [allowed[0] ?? pickTarget(gameWindow, settings.targetStrategy)].filter(
               (fighter): fighter is NonNullable<typeof fighter> => !!fighter
@@ -648,11 +643,8 @@ export function initCombatAi(
         movementPoints,
         elements: settings.elements ?? [],
         lastCastTurn,
-        canMove: settings.approachEnemies && !held && !rules.noMove,
-        keepDistance: settings.positioning === 'keep-distance',
-        onlyTargetId: rules.focusTargetId,
-        singleTarget: rules.singleTarget,
-        avoidMelee: rules.avoidMelee
+        canMove: settings.approachEnemies && !held,
+        keepDistance: settings.positioning === 'keep-distance'
       })
 
       if (!plan) {
@@ -751,8 +743,9 @@ export function initCombatAi(
     log(`Turn ${turn}: playing the ${label}`)
     await humanSleep(settings.turnStartDelayMs)
 
+    // Challenges are reported, never enforced: holding one is not worth losing
+    // a fight or dragging it out.
     const rules = deriveChallengeRules(withChallengeTexts())
-    if (rules.noMove) log('A challenge forbids moving: casting from here')
 
     if (settings.brain === 'ollama') {
       const outcome = await playWithModel(settings, combo, turn, stillOurTurn)
@@ -772,7 +765,7 @@ export function initCombatAi(
     await breakMeleeWithPush(settings, combo)
     if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
-    if (!rules.noMove && settings.spellMode !== 'auto') await positionForTurn(settings, combo)
+    if (settings.spellMode !== 'auto') await positionForTurn(settings, combo)
     if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
     if (settings.spellMode === 'auto') {

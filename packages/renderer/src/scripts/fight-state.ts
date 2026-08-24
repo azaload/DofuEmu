@@ -256,12 +256,12 @@ export function buildFightState(
       ap: me?.ap ?? null,
       mp: me?.mp ?? null,
       tackledBy,
-      canMove: !held && !rules.noMove && (me?.mp ?? 0) > 0
+      canMove: !held && (me?.mp ?? 0) > 0
     },
     spells,
     enemies: enemies.map((enemy, index) => describe(gameWindow, from, enemy, index)),
     allies: allies.map((ally, index) => describe(gameWindow, from, ally, index)),
-    cells: rules.noMove ? [] : cells,
+    cells,
     challenges,
     challengeRules: rules
   }

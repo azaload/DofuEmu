@@ -132,26 +132,13 @@ that stalls.
 
 ### Challenges
 
-Challenges change what a good turn is, so they are captured from the fight itself — the
-`ChallengeInfoMessage` the server sends, and the wording shown in the challenge panel, which
-is what actually says what is asked.
+Challenges are read from the fight and named in the activity log, but they **do not
+constrain the AI**. Holding a challenge is worth nothing if it costs the fight or drags it
+out, and a fragile character pays that price quickly.
 
-Three constraints are read from that wording, in French or English, and **enforced** rather
-than suggested:
-
-| Wording | Effect |
-|---------|--------|
-| *ne pas se déplacer*, *statique*, *do not move* | no move is planned, and none is accepted from the model |
-| *un seul ennemi*, *une seule cible*, *single target*, *focus* | a single enemy is hit for the turn, spreading is turned off |
-| a challenge naming a fighter | only that fighter is attacked |
-| *corps à corps*, *melee*, *adjacent* | passed on as "do not end the turn next to an enemy" |
-
-Anything else is passed to the model verbatim — name, description and the fighter it points
-at — with **Play the challenges** telling it to hold them even at the cost of damage. That
-is where a model earns its place: it reads a challenge no keyword covers.
-
-The active challenges are named in the activity log at the start of each turn, so you can
-see what the AI is working with.
+The wording still reaches the local model when **Play the challenges** is on, so it may
+favour them when it is cheap to do so — but nothing is forbidden on their account, and the
+built-in rules ignore them entirely.
 
 ### Honest limits
 
@@ -298,9 +285,6 @@ The plan is redone **after every action**, from the points the game really repor
 that grants action or movement points mid-turn is therefore used, and a fight that changes
 under the AI — a monster dying, a push, new gear between fights — is taken into account
 without any setting to adjust.
-
-Challenges are enforced here too: a challenge naming one enemy makes every area landing on a
-second one illegal, not merely discouraged, and one asking for a single target the same.
 
 When nothing can be planned, the reason is written to the activity log — the spellbook could
 not be read, every spell is filtered out by the chosen elements, everything is on cooldown,
