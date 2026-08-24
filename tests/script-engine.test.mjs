@@ -726,7 +726,10 @@ async function testTurnCombos() {
   state.startTurn(7)
   await new Promise((resolve) => setTimeout(resolve, 150))
   assert.deepStrictEqual(spellsCast(), [100, 101], 'turn 1 plays its own combo')
-  assert.ok(logs.some((line) => line.includes('Turn 1: playing the turn 1 combo')), 'the combo used is logged')
+  assert.ok(
+    logs.some((line) => line.includes('Turn 1: manual mode, playing the turn 1 combo')),
+    'the combo used is logged, and named as the manual mode it is'
+  )
 
   state.sent.length = 0
   state.startTurn(20)

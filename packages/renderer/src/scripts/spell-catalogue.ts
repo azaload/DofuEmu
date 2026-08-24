@@ -108,7 +108,7 @@ function asDict(value: unknown): Dict | null {
  * fighter rather than from the sheet is what makes the boost count: the
  * fighter's statistics carry what the fight has applied, the sheet does not.
  */
-function readRangeBonus(gameWindow: DofusWindow): number {
+export function readRangeBonus(gameWindow: DofusWindow): number {
   const gui = asDict(gameWindow.gui)
   const playerData = asDict(gui?.playerData)
   const myId = asNumber(asDict(playerData?.characterBaseInformations)?.id)

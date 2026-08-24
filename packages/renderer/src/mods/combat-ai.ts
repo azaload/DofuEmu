@@ -30,6 +30,7 @@ import {
 import { requestMoveToCell } from '@/scripts/game-bridge'
 import { reachableCells } from '@/scripts/cells'
 import { planTurn as planSpellTurn } from '@/scripts/spell-planner'
+import { readRangeBonus, readSpellCatalogue } from '@/scripts/spell-catalogue'
 import type { DofusWindow } from '@/types/dofus-window'
 
 /**
@@ -751,7 +752,11 @@ export function initCombatAi(
       return
     }
 
-    log(`Turn ${turn}: playing the ${label}`)
+    log(
+      settings.spellMode === 'auto'
+        ? `Turn ${turn}: planning from the spellbook`
+        : `Turn ${turn}: manual mode, playing the ${label}`
+    )
     await humanSleep(settings.turnStartDelayMs)
 
     // Challenges are reported, never enforced: holding one is not worth losing
@@ -972,6 +977,38 @@ export function initCombatAi(
     }
   }
 
+  /**
+   * One line at the start of a fight saying what is about to play.
+   *
+   * The manual combo casts exactly what the settings list and nothing else —
+   * no ranges, no areas, no damage comparison — so a log that does not say
+   * which mode is running turns every question about a fight into a guess.
+   */
+  const describeSetup = (settings: CombatSettings) => {
+    if (settings.spellMode !== 'auto') {
+      log(
+        'Fight: manual combo mode — the spellbook planner is off ' +
+          '(set Spells to "AI chooses" for ranges, areas and damage)'
+      )
+      return
+    }
+
+    try {
+      const catalogue = readSpellCatalogue(gameWindow)
+      const usable = catalogue.filter(
+        (spell) => spell.kind === 'damage' || spell.kind === 'heal' || spell.kind === 'boost'
+      )
+      log(
+        `Fight: automatic mode, ${settings.brain} brain, Portée +${readRangeBonus(gameWindow)}, ` +
+          `${catalogue.length} spell(s) read, ${usable.length} usable`
+      )
+    } catch (err) {
+      log(
+        `Fight: automatic mode, spellbook unreadable (${err instanceof Error ? err.message : String(err)})`
+      )
+    }
+  }
+
   const onFightStart = () => {
     myTurn = 0
     lastTurnOwner = null
@@ -984,7 +1021,10 @@ export function initCombatAi(
     // The placement cells arrive with the preparation phase, which can come
     // before this message: clearing them here would throw them away.
     const settings = callbacks.getSettings()
-    if (disposed || !settings.enabled || !settings.autoReady) return
+    if (disposed || !settings.enabled) return
+
+    describeSetup(settings)
+    if (!settings.autoReady) return
 
     // Take a place first, then press ready. Pressing it the instant the fight
     // opens leaves the client showing "waiting for...", and reads as a machine.

@@ -224,6 +224,11 @@ for nothing.
 spells* (the default). In the second mode it reads the character's spellbook from the game
 and plans the whole turn itself — where to stand, what to throw, and in which order.
 
+Which mode is running is written to the activity log when a fight opens — `Fight: automatic
+mode, rules brain, Portée +2, 14 spell(s) read, 9 usable`, or a line saying the manual combo
+is on and the planner is off. A turn then names its mode too, so a log always says whether
+the spells cast were chosen or configured.
+
 ### What it reads from each spell
 
 | Read | Used for |

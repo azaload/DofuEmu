@@ -458,6 +458,12 @@ export function CombatScreen() {
             options={SPELL_MODE_OPTIONS}
           />
         </Row>
+        {combat.spellMode === 'combo' && (
+          <div style={{ fontSize: 11, color: colors.textFaint, padding: '4px 0' }}>
+            The combo is cast as written. Ranges, areas, damage and the Portée are only
+            weighed in "AI chooses".
+          </div>
+        )}
         {combat.spellMode === 'auto' && (combat.elements ?? []).length === 0 && (
           <div style={{ fontSize: 11, color: colors.danger, padding: '4px 0' }}>
             No element is ticked, so every damage spell is allowed.
