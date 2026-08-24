@@ -3142,6 +3142,133 @@ async function testSightBlockedByFighters() {
   console.log('ok - fighters block the line of sight')
 }
 
+/**
+ * The character's Portée, and the buff that raises it mid-turn.
+ *
+ * A spell's printed range is only its base. Everything flagged boostable
+ * reaches as far as the range characteristic takes it, and a bow mastery
+ * raises that characteristic for a couple of turns — which is the whole point
+ * of casting it before shooting rather than after.
+ */
+async function testRangeAndItsBoost() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-catalogue.ts'))
+  const { readSpellCatalogue } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'spell-catalogue.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-planner.ts'))
+  const { planTurn } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'spell-planner.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellFromCoordinates, cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const arrow = (over) => ({
+    spell: { nameId: 'Arrow' },
+    spellLevel: Object.assign(
+      {
+        apCost: 3,
+        range: 5,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 100, diceNum: 20, diceSide: 20, zoneSize: 0 }]
+      },
+      over
+    )
+  })
+
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: { id: 1, ...arrow({ rangeCanBeBoosted: true }) },
+    2: { id: 2, ...arrow({ rangeCanBeBoosted: false }) }
+  }
+
+  // Three points of Portée from gear, worn by the fighter in the fight.
+  state.fighters[0].data.stats.range = 3
+
+  const catalogue = readSpellCatalogue(gameWindow)
+  assert.strictEqual(catalogue.find((spell) => spell.id === 1).range, 8, 'a boostable spell takes the Portée')
+  assert.strictEqual(catalogue.find((spell) => spell.id === 2).range, 5, 'a fixed one does not')
+
+  // Only the boostable arrow reaches: it is the one that must be cast.
+  const me = cellFromCoordinates(10, 10)
+  const enemy = cellFromCoordinates(17, 10)
+  assert.strictEqual(cellDistance(me, enemy), 7, 'the target sits between the two ranges')
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+  state.fighters[1].data.disposition.cellId = enemy
+  state.fighters[2].data.disposition.cellId = cellFromCoordinates(18, 10)
+
+  const context = (over) =>
+    Object.assign(
+      {
+        turn: 1,
+        actionPoints: 6,
+        movementPoints: 0,
+        elements: [],
+        lastCastTurn: new Map(),
+        canMove: false,
+        keepDistance: false
+      },
+      over
+    )
+
+  const reach = planTurn(gameWindow, context({}))
+  assert.ok(reach.casts.length > 0, 'the Portée puts the target in range')
+  assert.ok(
+    reach.casts.every((cast) => cast.spellId === 1),
+    'and only the spell that takes it is cast'
+  )
+
+  // Now the buff: without Portée from gear, a mastery grants it for the turn.
+  state.fighters[0].data.stats.range = 0
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: {
+      id: 1,
+      spell: { nameId: 'Bow Mastery' },
+      spellLevel: {
+        apCost: 2,
+        range: 0,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        minCastInterval: 3,
+        effects: [{ effectId: 117, diceNum: 3, diceSide: 3, zoneSize: 0 }]
+      }
+    },
+    2: { id: 2, ...arrow({ rangeCanBeBoosted: true, apCost: 3 }) }
+  }
+
+  const buffed = readSpellCatalogue(gameWindow)
+  assert.strictEqual(buffed.find((spell) => spell.id === 1).rangeBoost, 3, 'the mastery is read as Portée')
+  assert.strictEqual(buffed.find((spell) => spell.id === 2).range, 5, 'the arrow is still short on its own')
+
+  const plan = planTurn(gameWindow, context({ actionPoints: 8 }))
+  assert.ok(plan.casts.length >= 2, 'the buff is not the whole turn')
+  assert.strictEqual(plan.casts[0].spellId, 1, 'it comes first')
+  assert.ok(
+    plan.casts.slice(1).some((cast) => cast.spellId === 2 && cast.hits.length > 0),
+    'and the range it grants is used to shoot in the same turn'
+  )
+
+  // A buff that opens nothing must not be cast in place of an attack.
+  const closeUp = cellFromCoordinates(13, 10)
+  state.fighters[1].data.disposition.cellId = closeUp
+  const near = planTurn(gameWindow, context({ actionPoints: 3 }))
+  assert.ok(
+    near.casts.every((cast) => cast.spellId === 2),
+    'with a single attack affordable, the points go to the attack'
+  )
+
+  console.log('ok - range, its characteristic and the buff that raises it')
+}
+
 async function testChallengeRules() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-state.ts'))
   const { deriveChallengeRules } = await import(
@@ -3476,6 +3603,7 @@ async function main() {
   await testActionPointBudget()
   await testUtilitySpellsAreNotBuffs()
   await testSightBlockedByFighters()
+  await testRangeAndItsBoost()
   await testChallengeRules()
   await testTurnPlanValidation()
   await testConnectionCheck()

@@ -102,6 +102,8 @@ interface SimState {
   fightEndsThisTurn: boolean
   /** Cheapest attack available, so a buff never eats the points to hit with. */
   cheapestAttackCost: number
+  /** Range granted by a buff cast earlier in the turn being planned. */
+  rangeBonus: number
 }
 
 function elementAllowed(spell: SpellDetails, allowed: CombatElement[]): boolean {
@@ -133,7 +135,9 @@ export function castableCells(
   gameWindow: DofusWindow,
   spell: SpellDetails,
   from: number,
-  occupied: Set<number>
+  occupied: Set<number>,
+  /** Range a buff cast earlier in the same turn has already granted. */
+  rangeBonus = 0
 ): number[] {
   // Fighters block sight; the cell we aim at is the exception, since that is
   // where the target itself stands.
@@ -141,10 +145,11 @@ export function castableCells(
   blockers.delete(from)
   const cells: number[] = []
   const origin = cellCoordinates(from)
+  const range = spell.range + (spell.rangeBoostable ? rangeBonus : 0)
 
   for (let cellId = 0; cellId < CELL_COUNT; cellId++) {
     const distance = cellDistance(from, cellId)
-    if (distance > spell.range || distance < spell.minRange) continue
+    if (distance > range || distance < spell.minRange) continue
 
     if (spell.castInLine && !areCellsAligned(from, cellId)) continue
     if (spell.castInDiagonal) {
@@ -327,7 +332,7 @@ function candidateCasts(
 
   for (const spell of usable) {
     let bestForSpell: PlannedCast | null = null
-    for (const cellId of castableCells(gameWindow, spell, from, occupied)) {
+    for (const cellId of castableCells(gameWindow, spell, from, occupied, state.rangeBonus)) {
       const candidate = valueOfCast(gameWindow, spell, from, cellId, enemies, friends, state, context)
       if (!candidate) continue
       if (!bestForSpell || candidate.value > bestForSpell.value) bestForSpell = candidate
@@ -357,6 +362,11 @@ function afterCast(
   next.castsThisTurn.set(cast.spellId, (next.castsThisTurn.get(cast.spellId) ?? 0) + 1)
 
   const spell = spells.find((candidate) => candidate.id === cast.spellId)
+
+  // A range buff changes what the rest of the turn can reach, which is the
+  // whole reason to cast it before attacking rather than after.
+  if (spell && spell.rangeBoost > 0) next.rangeBonus = state.rangeBonus + spell.rangeBoost
+
   for (const hit of cast.hits) {
     const key = `${cast.spellId}:${hit}`
     next.castsPerTarget.set(key, (next.castsPerTarget.get(key) ?? 0) + 1)
@@ -495,7 +505,7 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
 
   const profile = readDamageProfile(gameWindow)
 
-  const state: SimState = {
+  let state: SimState = {
     profile,
     actionPoints: context.actionPoints,
     life: new Map(enemies.map((enemy) => [enemy.id, enemy.life ?? 0])),
@@ -503,6 +513,7 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
     castsPerTarget: new Map(),
     hitThisTurn: new Set(),
     fightEndsThisTurn: totalLife > 0 && bestDamage * castsAfforded >= totalLife,
+    rangeBonus: 0,
     cheapestAttackCost: Math.min(
       ...affordable.filter((spell) => spell.kind === 'damage').map((spell) => spell.apCost ?? 0),
       Number.MAX_SAFE_INTEGER
@@ -615,12 +626,10 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
     casts.push(next)
     total += next.value
 
-    const advanced = afterCast(state, next, spells, enemies)
-    state.actionPoints = advanced.actionPoints
-    state.life = advanced.life
-    state.castsThisTurn = advanced.castsThisTurn
-    state.castsPerTarget = advanced.castsPerTarget
-    state.hitThisTurn = advanced.hitThisTurn
+    // The whole state moves on, not a hand-picked list of its fields: a
+    // copy that forgets one — the range a buff has just granted — makes the
+    // turn plan the next cast as if the buff had never been played.
+    state = afterCast(state, next, spells, enemies)
 
     if (state.actionPoints <= 0) break
   }
@@ -632,6 +641,10 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
     diagnostic:
       actions.length === 0
         ? 'no cell brings an enemy within reach of a spell that is worth casting' +
+          ` (closest enemy ${distanceToEnemies(position)} cell(s) away, longest range ${Math.max(
+            ...affordable.map((spell) => spell.range),
+            0
+          )})` +
           (unreadable.length > 0
             ? ` (${unreadable.length} spell(s) left out, effects not recognised: ${unreadable
                 .map((spell) => spell.name ?? spell.id)

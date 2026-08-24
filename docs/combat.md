@@ -230,12 +230,18 @@ and plans the whole turn itself — where to stand, what to throw, and in which 
 |------|----------|
 | Action point cost | chaining casts until the points run out |
 | Range, minimum range | which cells the spell may be aimed at |
+| Range boostable | whether the character's Portée adds to that range |
 | Straight line only, diagonal only | a spell that must be thrown along an axis is only aimed there |
 | Line of sight required | a blocked line rules the cell out, for that spell alone |
 | Free cell / occupied cell required | a spell that must land on someone is never thrown at empty ground, and the reverse |
 | Area shape, size and minimum size | what a cast really covers, hollow areas included |
 | Cooldown, casts per turn, casts per target | when a spell is available again, and on whom |
 | Effects | damage per element, healing, boosts, pushes, summons |
+
+A spell's printed range is only its base. Everything the game flags **boostable** reaches
+as far as the character's **Portée** takes it, gear and fight buffs included, so a bow
+mastery that grants range is worth casting before shooting rather than after: the plan
+knows what the buff opens up and uses it in the same turn.
 
 Shapes are read as the game gives them — point, circle, square, line, perpendicular bar,
 cross, diagonal cross, ring, whole map. A shape letter the client uses and this code does
@@ -280,6 +286,8 @@ A cast is scored on what it actually achieves:
 - boosts come **before** the attacks while their cooldown allows and enough action points
   remain to still hit — a mastery lasting several turns is worth more than one extra cast —
   and are skipped entirely on the turn everything is going to die anyway;
+- a boost that grants range is followed, within the same plan, by the casts it puts in
+  reach — a buffed turn is planned as one move, not as a buff and then a shrug;
 - walking is charged a little, so a move has to earn its points.
 
 **Elements** ticks which damage the AI may use. A spell whose element the client does not

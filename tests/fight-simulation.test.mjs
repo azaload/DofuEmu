@@ -38,6 +38,9 @@ async function bundleModule(entry) {
 }
 
 /** A fight the planner can read and this file can referee. */
+/** How long a range buff holds, as a bow mastery does. */
+const BUFF_TURNS = 2
+
 function createWorld(options) {
   const {
     myCell,
@@ -77,7 +80,8 @@ function createWorld(options) {
         lifePoints: entity.life,
         maxLifePoints: entity.maxLife ?? entity.life,
         actionPoints: entity.ap ?? 0,
-        movementPoints: entity.mp ?? 0
+        movementPoints: entity.mp ?? 0,
+        range: entity.rangeBonus ?? 0
       },
       name: entity.name ?? 'Tester'
     }
@@ -160,10 +164,13 @@ function applyPlan(world, plan, geometry, catalogue) {
       continue
     }
 
+    // The catalogue was read unbuffed: a boostable spell reaches as far as
+    // the character's current Portée, which a buff may have raised this turn.
+    const range = spell.range + (spell.rangeBoostable ? (world.me.rangeBonus ?? 0) : 0)
     const distance = cellDistance(world.me.cellId, action.cellId)
-    if (distance > spell.range || distance < spell.minRange) {
+    if (distance > range || distance < spell.minRange) {
       world.violations.push(
-        `turn ${world.turn}: cast ${spell.name} at ${distance} cells, range ${spell.minRange}-${spell.range}`
+        `turn ${world.turn}: cast ${spell.name} at ${distance} cells, range ${spell.minRange}-${range}`
       )
       continue
     }
@@ -175,6 +182,11 @@ function applyPlan(world, plan, geometry, catalogue) {
 
     apLeft -= action.apCost
     world.castsThisTurn.push(action)
+
+    if (spell.rangeBoost > 0) {
+      world.me.rangeBonus = spell.rangeBoost
+      world.me.rangeBoostUntil = world.turn + BUFF_TURNS
+    }
 
     for (const hit of action.hits) {
       const monster = world.monsters.find((candidate) => candidate.id === hit)
@@ -238,6 +250,7 @@ async function playFight(world, planTurn, geometry, catalogue, options = {}) {
 
   for (let turn = 1; turn <= turns; turn++) {
     world.turn = turn
+    if (turn > (world.me.rangeBoostUntil ?? 0)) world.me.rangeBonus = 0
     if (world.monsters.every((monster) => !monster.alive)) break
 
     const plan = planTurn(world.gameWindow, {
@@ -430,6 +443,135 @@ async function main() {
 
     assert.deepStrictEqual(world.violations, [], 'a wall is never walked through or shot past')
     console.log('ok - obstacles are respected for a whole fight')
+  }
+
+  // --- out of reach at the start of the fight ---
+  // Seven cells away with a six-cell bow: the turn must close the gap, never
+  // back away "to keep its distance" from a fight it cannot start.
+  {
+    const world = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 8,
+      movementPoints: 3,
+      monsters: [
+        { cellId: cellFromCoordinates(17, 10), life: 300, behaviour: 'static' },
+        { cellId: cellFromCoordinates(18, 10), life: 300, behaviour: 'static' }
+      ],
+      spells: {
+        1: {
+          id: 1,
+          spell: { nameId: 'Mastery' },
+          spellLevel: level({ apCost: 2, range: 0, minCastInterval: 3, effects: [{ effectId: 128, diceNum: 30, diceSide: 30, zoneSize: 0 }] })
+        },
+        2: {
+          id: 2,
+          spell: { nameId: 'Barrage' },
+          spellLevel: level({
+            apCost: 4,
+            range: 6,
+            minRange: 1,
+            effects: [{ effectId: 100, diceNum: 30, diceSide: 40, zoneShape: 67, zoneSize: 1 }]
+          })
+        },
+        3: {
+          id: 3,
+          spell: { nameId: 'Concentration' },
+          spellLevel: level({ apCost: 3, range: 4, effects: [{ effectId: 96, diceNum: 22, diceSide: 28, zoneSize: 0 }] })
+        }
+      }
+    })
+
+    const catalogue = readSpellCatalogue(world.gameWindow)
+    const history = await playFight(world, planTurn, geometry, catalogue, { turns: 6 })
+
+    assert.deepStrictEqual(world.violations, [], 'nothing illegal while closing the gap')
+
+    const startDistance = cellDistance(cellFromCoordinates(10, 10), cellFromCoordinates(17, 10))
+    const afterFirst = cellDistance(history[0].to, cellFromCoordinates(17, 10))
+    assert.ok(
+      afterFirst < startDistance,
+      `the first turn closes in (${startDistance} to ${afterFirst} cells)`
+    )
+
+    // And the area spell is the one used on a pair standing together.
+    const areaCasts = history.reduce((total, entry) => total + entry.casts, 0)
+    assert.ok(areaCasts > 0, 'the fight is actually fought')
+    assert.ok(
+      world.monsters.some((monster) => !monster.alive),
+      'and the pair starts falling'
+    )
+    console.log('ok - a fight out of reach is closed, not fled')
+  }
+
+  // --- a range buff must open the turn it is cast in ---
+  // The reported bug: turn one cast the bow mastery and then stopped, because
+  // the range it grants was dropped from the plan as soon as it was applied.
+  {
+    const world = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 8,
+      movementPoints: 0,
+      monsters: [
+        { cellId: cellFromCoordinates(18, 10), life: 150, behaviour: 'static', name: 'Piou Bleu' },
+        { cellId: cellFromCoordinates(19, 10), life: 150, behaviour: 'static', name: 'Piou Vert' }
+      ],
+      spells: {
+        1: {
+          id: 1,
+          spell: { nameId: 'Maitrise de l Arc' },
+          spellLevel: level({
+            apCost: 2,
+            range: 0,
+            minCastInterval: 3,
+            effects: [{ effectId: 117, diceNum: 2, diceSide: 2, zoneSize: 0 }]
+          })
+        },
+        2: {
+          id: 2,
+          spell: { nameId: 'Fleche de Barrage' },
+          spellLevel: level({
+            apCost: 4,
+            range: 6,
+            minRange: 1,
+            rangeCanBeBoosted: true,
+            effects: [{ effectId: 100, diceNum: 30, diceSide: 40, zoneShape: 67, zoneSize: 1 }]
+          })
+        },
+        3: {
+          id: 3,
+          spell: { nameId: 'Fleche de Concentration' },
+          spellLevel: level({
+            apCost: 3,
+            range: 4,
+            rangeCanBeBoosted: true,
+            effects: [{ effectId: 96, diceNum: 20, diceSide: 26, zoneSize: 0 }]
+          })
+        }
+      }
+    })
+
+    const catalogue = readSpellCatalogue(world.gameWindow)
+    const barrage = catalogue.find((spell) => spell.id === 2)
+    const mastery = catalogue.find((spell) => spell.id === 1)
+    assert.strictEqual(mastery.rangeBoost, 2, 'the mastery is read as a range buff')
+    assert.ok(barrage.rangeBoostable, 'and the bow spell takes it')
+
+    const history = await playFight(world, planTurn, geometry, catalogue, { turns: 8 })
+
+    assert.deepStrictEqual(world.violations, [], 'nothing illegal while the buff is up')
+    assert.ok(
+      history[0].casts >= 2,
+      `the buff opens the turn instead of ending it (${history[0].casts} cast(s) on turn 1)`
+    )
+    assert.ok(
+      history[1].casts >= 2,
+      `and the turn after spends its points on the hardest hitter (${history[1].casts} cast(s))`
+    )
+    assert.ok(
+      world.monsters.every((monster) => !monster.alive),
+      'and the pair goes down'
+    )
+    console.log('ok - a range buff is followed by the attack it makes possible')
   }
 
   // --- no action points at all ---

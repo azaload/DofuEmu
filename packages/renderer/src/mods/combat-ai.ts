@@ -763,12 +763,7 @@ export function initCombatAi(
       if (outcome === 'played') return
       if (outcome === 'no-cast') {
         log('The model only moved: casting the combo on top')
-        if (settings.spellMode === 'auto') {
-      const cast = await castFromSpellbook(settings, turn, rules, stillOurTurn)
-      if (cast === 0) await castCombo(settings, combo, rules, stillOurTurn)
-    } else {
-      await castCombo(settings, combo, rules, stillOurTurn)
-    }
+        await castForTurn(settings, combo, label, turn, rules, stillOurTurn)
         return
       }
     }
@@ -779,12 +774,7 @@ export function initCombatAi(
     if (settings.spellMode !== 'auto') await positionForTurn(settings, combo)
     if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
-    if (settings.spellMode === 'auto') {
-      const cast = await castFromSpellbook(settings, turn, rules, stillOurTurn)
-      if (cast === 0) await castCombo(settings, combo, rules, stillOurTurn)
-    } else {
-      await castCombo(settings, combo, rules, stillOurTurn)
-    }
+    await castForTurn(settings, combo, label, turn, rules, stillOurTurn)
 
     if (!stillOurTurn()) return
     if (settings.endTurnAfterCombo) {
@@ -793,6 +783,33 @@ export function initCombatAi(
       passTurn()
     }
     }
+  }
+
+  /**
+   * Casts the turn, automatic mode first.
+   *
+   * The combo is only a fallback there, and saying which one ran matters: a
+   * log that always announces the combo hides the fact that the spellbook
+   * planner found nothing and why.
+   */
+  const castForTurn = async (
+    settings: CombatSettings,
+    combo: CombatSpell[],
+    label: string,
+    turn: number,
+    rules: ReturnType<typeof deriveChallengeRules>,
+    stillOurTurn: () => boolean
+  ): Promise<void> => {
+    if (settings.spellMode !== 'auto') {
+      await castCombo(settings, combo, rules, stillOurTurn)
+      return
+    }
+
+    const cast = await castFromSpellbook(settings, turn, rules, stillOurTurn)
+    if (cast > 0 || combo.length === 0) return
+
+    log(`Falling back to the ${label}`)
+    await castCombo(settings, combo, rules, stillOurTurn)
   }
 
   const onTurnStart = (...args: unknown[]) => {

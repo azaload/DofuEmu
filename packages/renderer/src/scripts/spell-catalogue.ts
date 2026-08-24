@@ -43,6 +43,9 @@ export interface SpellDetails {
   needsFreeCell: boolean
   needsTakenCell: boolean
 
+  /** Range this spell grants while its boost is up, 0 when it grants none. */
+  rangeBoost: number
+
   /** Turns between two casts. 0 means every turn. */
   cooldown: number
   maxCastsPerTurn: number | null
@@ -86,12 +89,57 @@ const HEAL_EFFECTS = new Set([81, 108])
 const PUSH_EFFECTS = new Set([5, 6])
 const PULL_EFFECTS = new Set([7, 8])
 const SUMMON_EFFECTS = new Set([181, 185])
+/** Boosts that widen the range of every boostable spell — "Portée". */
+const RANGE_EFFECTS = new Set([117])
 const BOOST_EFFECTS = new Set([
   111, 112, 115, 117, 118, 119, 120, 122, 123, 124, 125, 126, 127, 128, 138, 178, 182, 265
 ])
 
 function asDict(value: unknown): Dict | null {
   return value && typeof value === 'object' ? (value as Dict) : null
+}
+
+/**
+ * The character's Portée, gear and buffs included.
+ *
+ * A spell's own range is only its base: the range characteristic adds to
+ * every spell flagged boostable, and that characteristic moves during the
+ * fight — a bow mastery raises it for a couple of turns. Reading it from the
+ * fighter rather than from the sheet is what makes the boost count: the
+ * fighter's statistics carry what the fight has applied, the sheet does not.
+ */
+function readRangeBonus(gameWindow: DofusWindow): number {
+  const gui = asDict(gameWindow.gui)
+  const playerData = asDict(gui?.playerData)
+  const myId = asNumber(asDict(playerData?.characterBaseInformations)?.id)
+
+  const fighters = asDict(gui?.fightManager)?.fighters
+  const list = Array.isArray(fighters) ? fighters : Object.values(asDict(fighters) ?? {})
+  const mine = list
+    .map((fighter) => asDict(fighter))
+    .find((fighter) => fighter !== null && asNumber(fighter.id) === myId)
+
+  const inFight = characteristic(asDict(asDict(mine?.data)?.stats), 'range')
+  if (inFight !== null) return inFight
+
+  const sheet =
+    asDict(asDict(asDict(playerData?.characters)?.mainCharacter)?.characteristics) ??
+    asDict(playerData?.characteristics)
+
+  return characteristic(sheet, 'range') ?? 0
+}
+
+/** A characteristic is spread over base, gear and buffs: they all count. */
+function characteristic(source: Dict | null, name: string): number | null {
+  const raw = source?.[name]
+  if (typeof raw === 'number') return raw
+
+  const dict = asDict(raw)
+  if (!dict) return null
+
+  return ['base', 'additional', 'objectsAndMountBonus', 'alignGiftBonus', 'contextModif']
+    .map((key) => (typeof dict[key] === 'number' ? (dict[key] as number) : 0))
+    .reduce((total, value) => total + value, 0)
 }
 
 function asNumber(value: unknown): number | null {
@@ -178,6 +226,7 @@ export function readSpellCatalogue(gameWindow: DofusWindow): SpellDetails[] {
   }
 
   const catalogue: SpellDetails[] = []
+  const rangeBonus = readRangeBonus(gameWindow)
 
   for (const raw of entries) {
     const dict = asDict(raw)
@@ -224,7 +273,11 @@ export function readSpellCatalogue(gameWindow: DofusWindow): SpellDetails[] {
       level: asNumber(level?.grade) ?? asNumber(dict.level),
 
       apCost: asNumber(level?.apCost) ?? asNumber(dict.apCost),
-      range: asNumber(level?.range) ?? asNumber(dict.range) ?? 1,
+      // Boostable spells reach as far as the character's Portée takes them,
+      // which is what makes a range buff worth casting before an attack.
+      range:
+        (asNumber(level?.range) ?? asNumber(dict.range) ?? 1) +
+        (asBoolean(level?.rangeCanBeBoosted, false) ? rangeBonus : 0),
       minRange: asNumber(level?.minRange) ?? asNumber(dict.minRange) ?? 0,
       rangeBoostable: asBoolean(level?.rangeCanBeBoosted, false),
 
@@ -233,6 +286,10 @@ export function readSpellCatalogue(gameWindow: DofusWindow): SpellDetails[] {
       needsLineOfSight: asBoolean(level?.castTestLos, true),
       needsFreeCell: asBoolean(level?.needFreeCell, false),
       needsTakenCell: asBoolean(level?.needTakenCell, false),
+
+      rangeBoost: effects
+        .filter((effect) => effect.effectId !== null && RANGE_EFFECTS.has(effect.effectId))
+        .reduce((total, effect) => total + effect.average, 0),
 
       cooldown: asNumber(level?.minCastInterval) ?? 0,
       maxCastsPerTurn: asNumber(level?.maxCastPerTurn),
