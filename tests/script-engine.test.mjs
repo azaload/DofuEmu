@@ -2335,22 +2335,41 @@ async function testSpellPlanner() {
     })
   }
 
+  // One monster in reach, another only after walking, and a spell that may
+  // hit each of them once: the turn has to cast, walk, then cast again.
+  // The two monsters are far enough apart that no single cell reaches both,
+  // so the only way to hit them in one turn is to cast, walk, cast again.
+  const inReach = 336
+  const far = cellFromCoordinates(10, 1)
+  state.fighters[1].data.disposition.cellId = inReach
+  state.fighters[1].data.stats.lifePoints = 9000
+  state.fighters[2].data.disposition.cellId = far
+  state.fighters[2].data.stats.lifePoints = 9000
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: spellOf({
+      apCost: 3,
+      range: 5,
+      maxCastPerTarget: 1,
+      effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneSize: 0 }]
+    })
+  }
+
   const interleaved = planTurn(
     gameWindow,
-    context({ actionPoints: 6, movementPoints: 6, canMove: true })
+    context({ actionPoints: 6, movementPoints: 4, canMove: true })
   )
-  if (interleaved) {
-    const kinds = interleaved.actions.map((action) => action.type)
-    const firstCast = kinds.indexOf('cast')
-    const laterMove = kinds.indexOf('move', firstCast === -1 ? 0 : firstCast)
-    assert.ok(
-      firstCast !== -1,
-      'a spell is cast'
-    )
-    if (laterMove !== -1) {
-      assert.ok(laterMove > firstCast, 'and the points may be spent after it')
-    }
-  }
+  const kinds = (interleaved?.actions ?? []).map((action) => action.type)
+  const firstCast = kinds.indexOf('cast')
+  assert.notStrictEqual(firstCast, -1, 'the monster already in reach is hit')
+  assert.ok(
+    kinds.indexOf('move', firstCast) > firstCast,
+    `the points are then spent to reach the other one (${kinds.join(', ')})`
+  )
+  assert.strictEqual(
+    kinds.filter((kind) => kind === 'cast').length,
+    2,
+    'and both monsters are hit in the same turn'
+  )
 
   // --- what the fight forbids, and why nothing was planned ---
 
@@ -2729,6 +2748,181 @@ async function testSpellPlannerEdgeCases() {
 
   state.fighters[2].data.alive = true
   console.log('ok - spell planner edge cases')
+}
+
+async function testTurnOptimality() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-planner.ts'))
+  const { planTurn } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'spell-planner.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellFromCoordinates, cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const me = 280
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+
+  const level = (over) =>
+    Object.assign(
+      {
+        apCost: 3,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false
+      },
+      over
+    )
+
+  const spell = (id, name, over) => ({
+    id,
+    spell: { nameId: name },
+    spellLevel: level(over)
+  })
+
+  const spells = (map) => {
+    gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = map
+  }
+
+  const plan = (over) =>
+    planTurn(
+      gameWindow,
+      Object.assign(
+        {
+          turn: 1,
+          actionPoints: 6,
+          movementPoints: 0,
+          elements: [],
+          lastCastTurn: new Map(),
+          canMove: false,
+          keepDistance: false
+        },
+        over
+      )
+    )
+
+  const damage = (plan) =>
+    (plan?.casts ?? []).reduce((total, cast) => total + cast.value, 0)
+
+  // --- points spent where they are worth the most ---
+  // Four points: one big cast is worth forty, two small ones sixty together.
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[1].data.stats.lifePoints = 9000
+  state.fighters[2].data.alive = false
+
+  spells({
+    1: spell(1, 'Big', { apCost: 4, effects: [{ effectId: 100, diceNum: 40, diceSide: 40, zoneSize: 0 }] }),
+    2: spell(2, 'Small', { apCost: 2, effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneSize: 0 }] })
+  })
+
+  const efficient = plan({ actionPoints: 4 })
+  const smallCasts = (efficient?.casts ?? []).filter((cast) => cast.spellId === 2).length
+  assert.strictEqual(smallCasts, 2, 'the two cheap casts are preferred to the single big one')
+  assert.ok(damage(efficient) >= 60, `and the turn is worth more (${damage(efficient)})`)
+
+  // And the big one wins when the cheap one cannot be repeated: thirty once
+  // is worth less than forty.
+  spells({
+    1: spell(1, 'Big', { apCost: 4, effects: [{ effectId: 100, diceNum: 40, diceSide: 40, zoneSize: 0 }] }),
+    2: spell(2, 'Small', {
+      apCost: 2,
+      maxCastPerTurn: 1,
+      effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneSize: 0 }]
+    })
+  })
+
+  const capped = plan({ actionPoints: 4 })
+  assert.strictEqual(
+    capped?.casts[0]?.spellId,
+    1,
+    'a cheap spell limited to one cast no longer beats the big one'
+  )
+
+  // --- finishing a monster off ---
+  state.fighters[2].data.alive = true
+  state.fighters[2].data.disposition.cellId = 350
+  state.fighters[1].data.stats.lifePoints = 9000
+  state.fighters[2].data.stats.lifePoints = 20
+
+  spells({
+    1: spell(1, 'Arrow', { apCost: 3, effects: [{ effectId: 100, diceNum: 25, diceSide: 25, zoneSize: 0 }] })
+  })
+
+  const finisher = plan({ actionPoints: 3 })
+  assert.deepStrictEqual(
+    finisher?.casts[0]?.hits,
+    [21],
+    'the monster that can be finished off is the one hit'
+  )
+
+  // --- an area on two beats a stronger single hit ---
+  const pair = cellFromCoordinates(12, 10)
+  const beside = cellFromCoordinates(13, 10)
+  state.fighters[1].data.disposition.cellId = pair
+  state.fighters[2].data.disposition.cellId = beside
+  state.fighters[1].data.stats.lifePoints = 9000
+  state.fighters[2].data.stats.lifePoints = 9000
+  assert.strictEqual(cellDistance(pair, beside), 1, 'the two monsters stand side by side')
+
+  spells({
+    1: spell(1, 'Single', { apCost: 3, effects: [{ effectId: 100, diceNum: 45, diceSide: 45, zoneSize: 0 }] }),
+    2: spell(2, 'Area', {
+      apCost: 3,
+      effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneShape: 67, zoneSize: 1 }]
+    })
+  })
+
+  const grouped = plan({ actionPoints: 3 })
+  assert.strictEqual(grouped?.casts[0]?.spellId, 2, 'the area is chosen: sixty over forty-five')
+  assert.strictEqual(grouped?.casts[0]?.hits.length, 2, 'and it lands on both')
+
+  // --- stepping back to be able to cast at all ---
+  // A minimum range of three, with the monster in contact: the only way to
+  // cast is to walk away first.
+  const contact = cellFromCoordinates(11, 10)
+  state.fighters[1].data.disposition.cellId = contact
+  state.fighters[2].data.alive = false
+  spells({
+    1: spell(1, 'Long bow', {
+      apCost: 3,
+      minRange: 3,
+      range: 8,
+      effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneSize: 0 }]
+    })
+  })
+
+  const stuck = plan({ actionPoints: 3, movementPoints: 0, canMove: false })
+  assert.strictEqual((stuck?.casts ?? []).length, 0, 'in contact, the long bow cannot be cast')
+
+  const backing = plan({ actionPoints: 3, movementPoints: 3, canMove: true })
+  assert.ok(
+    backing?.actions[0]?.type === 'move',
+    'so the turn opens by stepping away'
+  )
+  assert.ok((backing?.casts ?? []).length > 0, 'and the shot follows')
+
+  // --- nothing is wasted on a monster already dead in the plan ---
+  state.fighters[2].data.alive = true
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[2].data.disposition.cellId = 350
+  state.fighters[1].data.stats.lifePoints = 10
+  state.fighters[2].data.stats.lifePoints = 9000
+  spells({
+    1: spell(1, 'Arrow', { apCost: 3, effects: [{ effectId: 100, diceNum: 50, diceSide: 50, zoneSize: 0 }] })
+  })
+
+  const spread = plan({ actionPoints: 6 })
+  const targets = (spread?.casts ?? []).map((cast) => cast.hits.join(','))
+  assert.strictEqual(targets.length, 2, 'both casts are used')
+  assert.notStrictEqual(targets[0], targets[1], 'the second goes elsewhere once the first kills')
+
+  console.log('ok - the turn is planned as a whole, not cast by cast')
 }
 
 async function testActionPointBudget() {
@@ -3278,6 +3472,7 @@ async function main() {
   await testAntiIdle()
   await testSpellPlanner()
   await testSpellPlannerEdgeCases()
+  await testTurnOptimality()
   await testActionPointBudget()
   await testUtilitySpellsAreNotBuffs()
   await testSightBlockedByFighters()

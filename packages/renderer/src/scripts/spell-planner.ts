@@ -83,6 +83,8 @@ const MOVE_COST_PENALTY = 0.5
 const DISTANCE_BONUS = 4
 /** Casts examined per position; more than this buys nothing in practice. */
 const MAX_CASTS_PER_TURN = 6
+/** Casts tried at each step of the sequence search. */
+const BRANCHES = 3
 
 interface SimState {
   /** The character's own damage statistics, read once per plan. */
@@ -295,8 +297,8 @@ function valueOfCast(
   }
 }
 
-/** The best single cast from a position, given the state so far. */
-function bestCastFrom(
+/** Every cast worth considering from a position, best value first. */
+function candidateCasts(
   gameWindow: DofusWindow,
   from: number,
   spells: SpellDetails[],
@@ -304,29 +306,117 @@ function bestCastFrom(
   friends: Fighter[],
   occupied: Set<number>,
   state: SimState,
-  context: PlanContext
-): PlannedCast | null {
+  context: PlanContext,
+  limit: number
+): PlannedCast[] {
   const usable = spells.filter(
     (spell) => castsLeft(spell, state) && (spell.apCost ?? 0) <= state.actionPoints
   )
 
-  // A boost lasts several turns, so it is worth more than any single hit — as
-  // long as enough action points are left afterwards to still attack. Scoring
-  // it against one cast would always lose to a big damage spell.
+  // A boost lasts several turns, so it comes before any single hit — as long
+  // as enough action points are left afterwards to still attack.
   for (const spell of usable) {
     if (spell.kind !== 'boost') continue
     const candidate = valueOfCast(gameWindow, spell, from, from, enemies, friends, state, context)
-    if (candidate) return candidate
+    if (candidate) return [candidate]
   }
 
-  let best: PlannedCast | null = null
+  const found: PlannedCast[] = []
 
   for (const spell of usable) {
+    let bestForSpell: PlannedCast | null = null
     for (const cellId of castableCells(gameWindow, spell, from, occupied)) {
       const candidate = valueOfCast(gameWindow, spell, from, cellId, enemies, friends, state, context)
       if (!candidate) continue
-      if (!best || candidate.value > best.value) best = candidate
+      if (!bestForSpell || candidate.value > bestForSpell.value) bestForSpell = candidate
     }
+    if (bestForSpell) found.push(bestForSpell)
+  }
+
+  return found.sort((a, b) => b.value - a.value).slice(0, limit)
+}
+
+/** Applies a cast to a copy of the state, as the turn would. */
+function afterCast(
+  state: SimState,
+  cast: PlannedCast,
+  spells: SpellDetails[],
+  enemies: Fighter[]
+): SimState {
+  const next: SimState = {
+    ...state,
+    life: new Map(state.life),
+    castsThisTurn: new Map(state.castsThisTurn),
+    castsPerTarget: new Map(state.castsPerTarget),
+    hitThisTurn: new Set(state.hitThisTurn),
+    actionPoints: state.actionPoints - cast.apCost
+  }
+
+  next.castsThisTurn.set(cast.spellId, (next.castsThisTurn.get(cast.spellId) ?? 0) + 1)
+
+  const spell = spells.find((candidate) => candidate.id === cast.spellId)
+  for (const hit of cast.hits) {
+    const key = `${cast.spellId}:${hit}`
+    next.castsPerTarget.set(key, (next.castsPerTarget.get(key) ?? 0) + 1)
+    const enemy = enemies.find((candidate) => candidate.id === hit)
+    const dealt = spell && enemy ? damageAgainst(spell, enemy, next.profile) : (spell?.damage ?? 0)
+    next.life.set(hit, Math.max(0, (next.life.get(hit) ?? 0) - dealt))
+    next.hitThisTurn.add(hit)
+  }
+
+  return next
+}
+
+/**
+ * The best run of casts from a position, not merely the best next one.
+ *
+ * Picking the highest-value cast each time wastes points: with four of them, a
+ * four-point spell worth forty is chosen over two two-point spells worth sixty
+ * together. So a few sequences are played out and the best total wins.
+ */
+function bestSequenceFrom(
+  gameWindow: DofusWindow,
+  from: number,
+  spells: SpellDetails[],
+  enemies: Fighter[],
+  friends: Fighter[],
+  occupied: Set<number>,
+  state: SimState,
+  context: PlanContext,
+  depth = 4
+): { casts: PlannedCast[]; value: number } {
+  if (depth <= 0 || state.actionPoints <= 0) return { casts: [], value: 0 }
+
+  const candidates = candidateCasts(
+    gameWindow,
+    from,
+    spells,
+    enemies,
+    friends,
+    occupied,
+    state,
+    context,
+    BRANCHES
+  )
+  if (candidates.length === 0) return { casts: [], value: 0 }
+
+  let best: { casts: PlannedCast[]; value: number } = { casts: [], value: 0 }
+
+  for (const candidate of candidates) {
+    const rest = bestSequenceFrom(
+      gameWindow,
+      from,
+      spells,
+      enemies,
+      friends,
+      occupied,
+      afterCast(state, candidate, spells, enemies),
+      context,
+      depth - 1
+    )
+
+    const total = candidate.value + rest.value
+    if (total > best.value) best = { casts: [candidate, ...rest.casts], value: total }
   }
 
   return best
@@ -440,14 +530,26 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
     occupiedHere.delete(me.cellId)
     occupiedHere.add(position)
 
-    const here = bestCastFrom(gameWindow, position, spells, enemies, friends, occupiedHere, state, context)
+    // What the rest of the turn is worth from here, not just the next cast.
+    const here = bestSequenceFrom(
+      gameWindow,
+      position,
+      spells,
+      enemies,
+      friends,
+      occupiedHere,
+      state,
+      context
+    )
 
     // What a step sideways would buy, casts and safety together.
-    let move: { cellId: number; path: number[]; cost: number; gain: number; cast: PlannedCast | null } | null = null
+    let move:
+      | { cellId: number; path: number[]; cost: number; gain: number; cast: { casts: PlannedCast[]; value: number } }
+      | null = null
 
     if (movementPoints > 0) {
       const blocked = new Set([...occupied].filter((cellId) => cellId !== position))
-      const currentValue = (here?.value ?? 0) + safetyOf(position)
+      const currentValue = here.value + safetyOf(position)
 
       for (const entry of reachableCells(gameWindow, position, movementPoints, blocked).values()) {
         if (entry.cellId === position) continue
@@ -456,9 +558,18 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
         occupiedThere.delete(me.cellId)
         occupiedThere.add(entry.cellId)
 
-        const cast = bestCastFrom(gameWindow, entry.cellId, spells, enemies, friends, occupiedThere, state, context)
+        const cast = bestSequenceFrom(
+          gameWindow,
+          entry.cellId,
+          spells,
+          enemies,
+          friends,
+          occupiedThere,
+          state,
+          context
+        )
         const gain =
-          (cast?.value ?? 0) + safetyOf(entry.cellId) - currentValue - entry.cost * MOVE_COST_PENALTY
+          cast.value + safetyOf(entry.cellId) - currentValue - entry.cost * MOVE_COST_PENALTY
 
         if (gain > 0 && (!move || gain > move.gain)) {
           move = { cellId: entry.cellId, path: entry.path, cost: entry.cost, gain, cast }
@@ -467,13 +578,14 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
     }
 
     if (move) {
+      const opening = move.cast.casts[0]
       actions.push({
         type: 'move',
         cellId: move.cellId,
         path: move.path,
         cost: move.cost,
-        reason: move.cast
-          ? `to cast ${move.cast.name ?? move.cast.spellId} on ${move.cast.reason}`
+        reason: opening
+          ? `to cast ${opening.name ?? opening.spellId} on ${opening.reason}`
           : `${distanceToEnemies(move.cellId)} cell(s) from the closest enemy`
       })
       position = move.cellId
@@ -482,23 +594,19 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
       continue
     }
 
-    if (!here) break
+    const next = here.casts[0]
+    if (!next) break
 
-    actions.push({ type: 'cast', ...here })
-    casts.push(here)
-    total += here.value
-    state.actionPoints -= here.apCost
-    state.castsThisTurn.set(here.spellId, (state.castsThisTurn.get(here.spellId) ?? 0) + 1)
+    actions.push({ type: 'cast', ...next })
+    casts.push(next)
+    total += next.value
 
-    const spell = spells.find((candidate) => candidate.id === here.spellId)
-    for (const hit of here.hits) {
-      const key = `${here.spellId}:${hit}`
-      state.castsPerTarget.set(key, (state.castsPerTarget.get(key) ?? 0) + 1)
-      const enemy = enemies.find((candidate) => candidate.id === hit)
-      const dealt = spell && enemy ? damageAgainst(spell, enemy, state.profile) : (spell?.damage ?? 0)
-      state.life.set(hit, Math.max(0, (state.life.get(hit) ?? 0) - dealt))
-      state.hitThisTurn.add(hit)
-    }
+    const advanced = afterCast(state, next, spells, enemies)
+    state.actionPoints = advanced.actionPoints
+    state.life = advanced.life
+    state.castsThisTurn = advanced.castsThisTurn
+    state.castsPerTarget = advanced.castsPerTarget
+    state.hitThisTurn = advanced.hitThisTurn
 
     if (state.actionPoints <= 0) break
   }

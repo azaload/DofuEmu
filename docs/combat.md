@@ -247,10 +247,14 @@ not know falls back to a circle, which over-estimates rather than misses.
 monsters at once or reach one it may not target directly — the case in the screenshots where
 *Flèche de Barrage* covers a group.
 
-At every step the AI compares two things: the best spell it can cast where it stands, and
-what a step sideways would unlock. It then does whichever is worth more, and repeats. So the
-movement points can be spent before the first spell, between two of them, or not at all —
-whatever the turn is worth the most.
+At every step the AI compares two things: **the best run of casts** it can make where it
+stands, and what a step sideways would unlock. It then does whichever is worth more, and
+repeats. So the movement points can be spent before the first spell, between two of them, or
+not at all — whatever the turn is worth the most.
+
+It weighs runs, not single casts, because the best next cast is often the wrong one: with
+four action points, a four-point spell worth forty loses to two two-point spells worth sixty
+together. A few sequences are played out and the best total wins.
 
 ### Statistics and resistances
 
