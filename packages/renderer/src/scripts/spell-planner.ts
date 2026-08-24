@@ -58,6 +58,8 @@ export interface TurnPlan {
   value: number
   /** Why the plan is empty, when it is. Never a silent nothing. */
   diagnostic: string | null
+  /** Why each spell that was left out stayed out, for the activity log. */
+  leftOut: string[]
 }
 
 export interface PlanContext {
@@ -455,7 +457,8 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
     actions: [],
     casts: [],
     value: 0,
-    diagnostic
+    diagnostic,
+    leftOut: []
   })
 
   const catalogue = readSpellCatalogue(gameWindow)
@@ -634,10 +637,61 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
     if (state.actionPoints <= 0) break
   }
 
+  /**
+   * Why a spell the character owns was not cast this turn.
+   *
+   * A turn that ends with points to spare and the hardest hitter unused is
+   * the hardest thing to explain from a log. Naming the reason — an element
+   * left unticked, a range, a line, effects this code cannot read — turns
+   * that into one line instead of a guess.
+   */
+  const leftOut: string[] = []
+  const castIds = new Set(casts.map((cast) => cast.spellId))
+  const occupiedAtEnd = new Set(occupied)
+  occupiedAtEnd.delete(me.cellId)
+  occupiedAtEnd.add(position)
+
+  for (const spell of catalogue) {
+    if (castIds.has(spell.id)) continue
+    const name = spell.name ?? `spell ${spell.id}`
+    const cost = spell.apCost ?? 0
+
+    if (!elementAllowed(spell, context.elements)) {
+      leftOut.push(`${name}: ${spell.elements.join('/')} not ticked in Elements`)
+      continue
+    }
+    if (!offCooldown(spell, context)) {
+      leftOut.push(`${name}: on cooldown`)
+      continue
+    }
+    if (spell.kind !== 'damage' && spell.kind !== 'heal' && spell.kind !== 'boost') {
+      leftOut.push(`${name}: effects not recognised`)
+      continue
+    }
+    if (cost > state.actionPoints) {
+      leftOut.push(`${name}: costs ${cost} AP, ${state.actionPoints} left`)
+      continue
+    }
+    if (spell.kind === 'damage') {
+      const reachable = castableCells(gameWindow, spell, position, occupiedAtEnd, state.rangeBonus)
+      const hitting = reachable.some((cellId) => hitsFrom(spell, position, cellId, enemies).length > 0)
+      if (!hitting) {
+        const closest = distanceToEnemies(position)
+        leftOut.push(
+          `${name}: nothing in its ${spell.minRange}-${spell.range + (spell.rangeBoostable ? state.rangeBonus : 0)}` +
+            `${spell.castInLine ? ' straight-line' : ''} reach (closest enemy ${closest})`
+        )
+        continue
+      }
+    }
+    leftOut.push(`${name}: worth less than what was cast`)
+  }
+
   return {
     actions,
     casts,
     value: total,
+    leftOut,
     diagnostic:
       actions.length === 0
         ? 'no cell brings an enemy within reach of a spell that is worth casting' +

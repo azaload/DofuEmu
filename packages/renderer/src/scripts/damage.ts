@@ -44,7 +44,8 @@ function characteristic(source: Dict | null, name: string): number {
   const dict = asDict(raw)
   if (!dict) return 0
 
-  return ['base', 'additional', 'objectsAndMountBonus', 'alignGiftBonus', 'contextModif']
+  // The protocol spells it "additionnal"; some builds use the English one.
+  return ['base', 'additional', 'additionnal', 'objectsAndMountBonus', 'alignGiftBonus', 'contextModif']
     .map((key) => (typeof dict[key] === 'number' ? (dict[key] as number) : 0))
     .reduce((total, value) => total + value, 0)
 }

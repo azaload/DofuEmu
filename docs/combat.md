@@ -224,6 +224,14 @@ for nothing.
 spells* (the default). In the second mode it reads the character's spellbook from the game
 and plans the whole turn itself — where to stand, what to throw, and in which order.
 
+A fight also reports the statistics behind the choice — `Stats: earth 110, fire 0, water 0,
+air 20` — and which elements are ticked, naming every spell that ticking disables. All
+statistics at zero means the character sheet was not found and every spell then looks
+equally good, which is exactly how a fire arrow ends up cast by an earth character.
+
+A turn that ends with action points to spare says what it left out and why: an element not
+ticked, a cooldown, a range or a straight line missed, effects this code cannot read.
+
 Which mode is running is written to the activity log when a fight opens — `Fight: automatic
 mode, rules brain, Portée +2, 14 spell(s) read, 9 usable`, or a line saying the manual combo
 is on and the planner is off. A turn then names its mode too, so a log always says whether

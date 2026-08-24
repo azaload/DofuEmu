@@ -31,6 +31,7 @@ import { requestMoveToCell } from '@/scripts/game-bridge'
 import { reachableCells } from '@/scripts/cells'
 import { planTurn as planSpellTurn } from '@/scripts/spell-planner'
 import { readRangeBonus, readSpellCatalogue } from '@/scripts/spell-catalogue'
+import { readDamageProfile } from '@/scripts/damage'
 import type { DofusWindow } from '@/types/dofus-window'
 
 /**
@@ -81,6 +82,7 @@ const MAX_APPROACH_STEPS = 2
 const TURN_PLAYABLE_TIMEOUT_MS = 2500
 /** How long to wait for the running animation sequence to finish. */
 const SEQUENCE_TIMEOUT_MS = 2500
+const DUPLICATE_FIGHT_MS = 3000
 const IDLE_POLL_MS = 50
 
 function addListener(
@@ -109,6 +111,8 @@ export function initCombatAi(
   let disposed = false
   /** Fighter whose turn start we last saw, to ignore duplicate emissions. */
   let lastTurnOwner: number | null = null
+  /** Both emitters announce a fight start; the second one is an echo. */
+  let lastFightStartAt = 0
   /** Our own turn number in the current fight, starting at 1. */
   let myTurn = 0
   /**
@@ -662,6 +666,12 @@ export function initCombatAi(
       if (!action) {
         // Never a silent nothing: the reason is what makes this fixable.
         if (!reported && plan.diagnostic && cast === 0) log(`No plan — ${plan.diagnostic}`)
+        // Points left over with spells unused is the case worth explaining:
+        // an element left unticked or a range missed by one costs a whole turn
+        // and looks, from the log alone, exactly like a good turn.
+        if (!reported && actionPoints > 0 && plan.leftOut.length > 0) {
+          log(`${actionPoints} AP left — ${plan.leftOut.slice(0, 4).join('; ')}`)
+        }
         reported = true
         break
       }
@@ -1002,6 +1012,34 @@ export function initCombatAi(
         `Fight: automatic mode, ${settings.brain} brain, Portée +${readRangeBonus(gameWindow)}, ` +
           `${catalogue.length} spell(s) read, ${usable.length} usable`
       )
+
+      // Which characteristic feeds which element decides every choice below.
+      // All zeroes means the sheet was not found, and every spell then looks
+      // equally good — the fire one as much as the earth one.
+      const profile = readDamageProfile(gameWindow)
+      log(
+        `Stats: earth ${profile.stat.earth}, fire ${profile.stat.fire}, water ${profile.stat.water}, ` +
+          `air ${profile.stat.air}, +${profile.damagePercent}% damage`
+      )
+
+      // An element left unticked silently removes every spell that uses it.
+      const ticked = settings.elements ?? []
+      if (ticked.length > 0) {
+        const disabled = usable.filter(
+          (spell) =>
+            spell.kind === 'damage' &&
+            spell.elements.length > 0 &&
+            !spell.elements.some((element) => ticked.includes(element))
+        )
+        log(
+          `Elements ticked: ${ticked.join(', ')}` +
+            (disabled.length > 0
+              ? ` — ${disabled.length} spell(s) disabled by that filter: ${disabled
+                  .map((spell) => spell.name ?? spell.id)
+                  .join(', ')}`
+              : '')
+        )
+      }
     } catch (err) {
       log(
         `Fight: automatic mode, spellbook unreadable (${err instanceof Error ? err.message : String(err)})`
@@ -1010,6 +1048,11 @@ export function initCombatAi(
   }
 
   const onFightStart = () => {
+    // Both emitters deliver this message; acting twice presses ready twice.
+    const now = Date.now()
+    if (now - lastFightStartAt < DUPLICATE_FIGHT_MS) return
+    lastFightStartAt = now
+
     myTurn = 0
     lastTurnOwner = null
     turnPlayable = false

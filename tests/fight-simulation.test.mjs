@@ -37,7 +37,6 @@ async function bundleModule(entry) {
   })
 }
 
-/** A fight the planner can read and this file can referee. */
 /** How long a range buff holds, as a bow mastery does. */
 const BUFF_TURNS = 2
 
@@ -48,7 +47,8 @@ function createWorld(options) {
     movementPoints = 3,
     monsters = [],
     spells = {},
-    walls = new Set()
+    walls = new Set(),
+    characteristics = {}
   } = options
 
   const world = {
@@ -62,6 +62,7 @@ function createWorld(options) {
       maxLife: monster.life ?? 200,
       mp: monster.mp ?? 3,
       behaviour: monster.behaviour ?? 'static',
+      resists: monster.resists ?? {},
       alive: true
     })),
     violations: [],
@@ -81,7 +82,8 @@ function createWorld(options) {
         maxLifePoints: entity.maxLife ?? entity.life,
         actionPoints: entity.ap ?? 0,
         movementPoints: entity.mp ?? 0,
-        range: entity.rangeBonus ?? 0
+        range: entity.rangeBonus ?? 0,
+        ...(entity.resists ?? {})
       },
       name: entity.name ?? 'Tester'
     }
@@ -93,7 +95,7 @@ function createWorld(options) {
       playerData: {
         characterBaseInformations: { id: 7, name: 'Tester' },
         isFighting: true,
-        characters: { mainCharacter: { spellData: { spells } } }
+        characters: { mainCharacter: { spellData: { spells }, characteristics } }
       },
       fightManager: {
         isFightStarted: true,
@@ -126,7 +128,7 @@ function createWorld(options) {
 }
 
 /** Referees a plan the way the game would, and applies what it allows. */
-function applyPlan(world, plan, geometry, catalogue) {
+function applyPlan(world, plan, geometry, catalogue, damage) {
   const { cellDistance, hasLineOfSight } = geometry
   let apLeft = world.me.ap
   let mpLeft = world.me.mp
@@ -194,7 +196,7 @@ function applyPlan(world, plan, geometry, catalogue) {
         world.violations.push(`turn ${world.turn}: cast at a monster that is already dead`)
         continue
       }
-      monster.life -= spell.damage
+      monster.life -= damage(world, spell, monster)
       if (monster.life <= 0) monster.alive = false
     }
   }
@@ -244,7 +246,7 @@ function monstersAct(world, geometry) {
 
 /** Plays a whole fight and returns what happened. */
 async function playFight(world, planTurn, geometry, catalogue, options = {}) {
-  const { turns = 12, keepDistance = true, canMove = true } = options
+  const { turns = 12, keepDistance = true, canMove = true, damage = (_w, spell) => spell.damage } = options
   const lastCastTurn = new Map()
   const history = []
 
@@ -266,7 +268,7 @@ async function playFight(world, planTurn, geometry, catalogue, options = {}) {
     for (const cast of plan?.casts ?? []) lastCastTurn.set(cast.spellId, turn)
 
     const before = world.me.cellId
-    applyPlan(world, plan, geometry, catalogue)
+    applyPlan(world, plan, geometry, catalogue, damage)
     history.push({
       turn,
       from: before,
@@ -313,6 +315,14 @@ async function main() {
   const { readSpellCatalogue } = await import(
     `${pathToFileURL(path.join(tmpDir, 'spell-catalogue.js')).href}?t=${Date.now()}`
   )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/damage.ts'))
+  const { readDamageProfile, damageAgainst } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'damage.js')).href}?t=${Date.now()}`
+  )
+  // The referee hits as hard as the character really does: statistics and the
+  // monster's own resistances, not the spell's printed dice.
+  const hit = (world, spell, monster) =>
+    damageAgainst(spell, { stats: monster.resists ?? {} }, readDamageProfile(world.gameWindow))
 
   const { cellFromCoordinates, cellDistance } = geometry
 
@@ -572,6 +582,199 @@ async function main() {
       'and the pair goes down'
     )
     console.log('ok - a range buff is followed by the attack it makes possible')
+  }
+
+  // --- real conditions: a Crâ against a group of Pious ---
+  // The spells are the ones off the game's own sheets: Barrage 4 AP, range
+  // 1-6, straight line only, perpendicular bar, 26-29 earth; Concentration
+  // 3 AP, range 2-4, boostable, cross, 20-22 earth; the two single-target
+  // arrows in water and air. A strength character must reach for the earth
+  // ones, and for the areas when the birds stand together.
+  const craSpells = () => ({
+    1: {
+      id: 1,
+      spell: { nameId: 'Maîtrise de l Arc' },
+      spellLevel: level({
+        apCost: 2,
+        range: 0,
+        minCastInterval: 3,
+        effects: [{ effectId: 117, diceNum: 2, diceSide: 2, zoneSize: 0 }]
+      })
+    },
+    2: {
+      id: 2,
+      spell: { nameId: 'Flèche de Barrage' },
+      spellLevel: level({
+        apCost: 4,
+        range: 6,
+        minRange: 1,
+        castInLine: true,
+        maxCastPerTurn: 2,
+        effects: [
+          { effectId: 97, diceNum: 26, diceSide: 29, zoneShape: 84, zoneSize: 1 },
+          { effectId: 5, diceNum: 1, zoneShape: 84, zoneSize: 1 }
+        ]
+      })
+    },
+    3: {
+      id: 3,
+      spell: { nameId: 'Flèche de Concentration' },
+      spellLevel: level({
+        apCost: 3,
+        range: 4,
+        minRange: 2,
+        rangeCanBeBoosted: true,
+        maxCastPerTurn: 2,
+        maxCastPerTarget: 1,
+        effects: [
+          { effectId: 97, diceNum: 20, diceSide: 22, zoneShape: 43, zoneSize: 1 },
+          { effectId: 7, diceNum: 1, zoneShape: 43, zoneSize: 1 }
+        ]
+      })
+    },
+    4: {
+      id: 4,
+      spell: { nameId: 'Flèche de Transfusion' },
+      spellLevel: level({
+        apCost: 3,
+        range: 8,
+        rangeCanBeBoosted: true,
+        effects: [
+          { effectId: 98, diceNum: 16, diceSide: 18, zoneSize: 0 },
+          { effectId: 108, diceNum: 8, diceSide: 10, zoneSize: 0 }
+        ]
+      })
+    },
+    5: {
+      id: 5,
+      spell: { nameId: 'Flèche Aveuglante' },
+      spellLevel: level({
+        apCost: 3,
+        range: 7,
+        rangeCanBeBoosted: true,
+        effects: [{ effectId: 99, diceNum: 14, diceSide: 17, zoneSize: 0 }]
+      })
+    }
+  })
+
+  const strengthCra = {
+    strength: { base: 50, additionnal: 100, objectsAndMountBonus: 60 },
+    intelligence: { base: 0 },
+    chance: { base: 0 },
+    agility: { base: 0, objectsAndMountBonus: 20 }
+  }
+
+  const pious = (cells, over = {}) =>
+    cells.map((cellId, index) => ({
+      cellId,
+      life: 55,
+      behaviour: 'static',
+      name: ['Piou Bleu', 'Piou Rouge', 'Piou Jaune'][index] ?? `Piou ${index}`,
+      ...over
+    }))
+
+  {
+    const world = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 8,
+      movementPoints: 3,
+      characteristics: strengthCra,
+      spells: craSpells(),
+      monsters: pious([
+        cellFromCoordinates(14, 10),
+        cellFromCoordinates(15, 10),
+        cellFromCoordinates(15, 11)
+      ])
+    })
+
+    const catalogue = readSpellCatalogue(world.gameWindow)
+    const profile = readDamageProfile(world.gameWindow)
+    const of = (id) => catalogue.find((spell) => spell.id === id)
+    const target = { stats: {} }
+
+    assert.ok(
+      damageAgainst(of(2), target, profile) > damageAgainst(of(5), target, profile),
+      'the earth arrow outdamages the air one on a strength character'
+    )
+    assert.strictEqual(of(2).zone.shape, 'perpendicular', 'Barrage covers a bar')
+    assert.strictEqual(of(3).zone.shape, 'cross', 'Concentration covers a cross')
+
+    const history = await playFight(world, planTurn, geometry, catalogue, { turns: 6, damage: hit })
+    assert.deepStrictEqual(world.violations, [], 'a Piou fight breaks no rule')
+
+    const turnsTaken = history.filter((entry) => entry.casts > 0).length
+    assert.ok(
+      world.monsters.every((monster) => !monster.alive),
+      'the group is wiped out'
+    )
+    assert.ok(turnsTaken <= 2, `and it takes two turns at most (took ${turnsTaken})`)
+    console.log(`ok - three Pious die in ${turnsTaken} turn(s) of earth areas`)
+  }
+
+  // The same birds, resisting earth: the choice must follow the resistance,
+  // not the printed dice.
+  {
+    const world = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 8,
+      movementPoints: 3,
+      characteristics: strengthCra,
+      spells: craSpells(),
+      monsters: pious([cellFromCoordinates(13, 10)], {
+        life: 300,
+        resists: { earthElementResistPercent: 95 }
+      })
+    })
+
+    const catalogue = readSpellCatalogue(world.gameWindow)
+    const plan = planTurn(world.gameWindow, {
+      turn: 1,
+      actionPoints: 8,
+      movementPoints: 3,
+      elements: [],
+      lastCastTurn: new Map(),
+      canMove: true,
+      keepDistance: true
+    })
+
+    assert.ok(plan.casts.length > 0, 'a resistant monster is still fought')
+    assert.ok(
+      plan.casts.every((cast) => cast.spellId !== 2 && cast.spellId !== 3),
+      'but not with the earth spells it shrugs off'
+    )
+    console.log('ok - resistances, not dice, pick the spell')
+  }
+
+  // An element left unticked disables spells; the plan has to say which.
+  {
+    const world = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 8,
+      movementPoints: 3,
+      characteristics: strengthCra,
+      spells: craSpells(),
+      monsters: pious([cellFromCoordinates(14, 10), cellFromCoordinates(15, 10)])
+    })
+
+    const plan = planTurn(world.gameWindow, {
+      turn: 1,
+      actionPoints: 8,
+      movementPoints: 3,
+      elements: ['water', 'air'],
+      lastCastTurn: new Map(),
+      canMove: true,
+      keepDistance: true
+    })
+
+    assert.ok(
+      plan.casts.every((cast) => cast.spellId !== 2 && cast.spellId !== 3),
+      'the unticked element really is filtered out'
+    )
+    assert.ok(
+      plan.leftOut.some((line) => line.includes('Barrage') && line.includes('Elements')),
+      `and the turn says so (${plan.leftOut.join(' | ')})`
+    )
+    console.log('ok - an unticked element is reported, not silently obeyed')
   }
 
   // --- no action points at all ---
