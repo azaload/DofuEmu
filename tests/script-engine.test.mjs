@@ -2475,6 +2475,262 @@ async function testSpellPlanner() {
   console.log('ok - the AI plans spells, areas and position together')
 }
 
+async function testSpellPlannerEdgeCases() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-planner.ts'))
+  const { planTurn, castableCells } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'spell-planner.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/zones.ts'))
+  const { areaCells } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'zones.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellDistance, cellFromCoordinates, cellCoordinates } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/damage.ts'))
+  const { damageAgainst } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'damage.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const me = 280
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+
+  const spellOf = (over) => ({
+    id: 1,
+    spell: { nameId: 'Test' },
+    spellLevel: Object.assign(
+      {
+        apCost: 3,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        needFreeCell: false,
+        needTakenCell: false,
+        effects: [{ effectId: 100, diceNum: 20, diceSide: 20, zoneSize: 0 }]
+      },
+      over
+    )
+  })
+
+  const context = (over) =>
+    Object.assign(
+      {
+        turn: 1,
+        actionPoints: 6,
+        movementPoints: 0,
+        elements: [],
+        lastCastTurn: new Map(),
+        canMove: false,
+        keepDistance: false
+      },
+      over
+    )
+
+  const spells = (map) => {
+    gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = map
+  }
+
+  // --- hitting a monster without aiming at it ---
+  // A minimum range of 2 forbids aiming at the monster in contact, but the
+  // area still reaches it from a cell two steps away.
+  const adjacent = cellFromCoordinates(11, 10)
+  state.fighters[1].data.disposition.cellId = adjacent
+  state.fighters[1].data.stats.lifePoints = 400
+  state.fighters[2].data.alive = false
+  assert.strictEqual(cellDistance(me, adjacent), 1, 'the monster is in contact')
+
+  spells({
+    1: spellOf({
+      minRange: 2,
+      range: 6,
+      effects: [{ effectId: 100, diceNum: 25, diceSide: 25, zoneShape: 67, zoneSize: 1 }]
+    })
+  })
+
+  const indirect = planTurn(gameWindow, context({ actionPoints: 3 }))
+  const first = indirect?.casts[0]
+  assert.ok(first, 'a cast is found even though the monster cannot be aimed at')
+  assert.notStrictEqual(first.cellId, adjacent, 'the monster cell itself is out of the minimum range')
+  assert.deepStrictEqual(first.hits, [20], 'and the area reaches it anyway')
+
+  // --- line of sight, per spell ---
+  const behindWall = cellFromCoordinates(14, 10)
+  gameWindow.isoEngine.mapRenderer.isInLineOfSight = (from, to) => to !== behindWall
+
+  const seeing = castableCells(
+    gameWindow,
+    { id: 1, range: 8, minRange: 0, castInLine: false, castInDiagonal: false, needsLineOfSight: true, needsFreeCell: false, needsTakenCell: false, zone: { shape: 'point', size: 0, minSize: 0 } },
+    me,
+    new Set()
+  )
+  const blind = castableCells(
+    gameWindow,
+    { id: 1, range: 8, minRange: 0, castInLine: false, castInDiagonal: false, needsLineOfSight: false, needsFreeCell: false, needsTakenCell: false, zone: { shape: 'point', size: 0, minSize: 0 } },
+    me,
+    new Set()
+  )
+  assert.ok(!seeing.includes(behindWall), 'a spell that needs sight cannot be aimed behind the wall')
+  assert.ok(blind.includes(behindWall), 'one that does not, can')
+  delete gameWindow.isoEngine.mapRenderer.isInLineOfSight
+
+  // --- diagonal-only casting ---
+  const diagonalOnly = castableCells(
+    gameWindow,
+    { id: 1, range: 6, minRange: 1, castInLine: false, castInDiagonal: true, needsLineOfSight: false, needsFreeCell: false, needsTakenCell: false, zone: { shape: 'point', size: 0, minSize: 0 } },
+    me,
+    new Set()
+  )
+  const origin = cellCoordinates(me)
+  assert.ok(diagonalOnly.length > 0, 'a diagonal spell has somewhere to go')
+  assert.ok(
+    diagonalOnly.every((cell) => {
+      const point = cellCoordinates(cell)
+      return Math.abs(point.x - origin.x) === Math.abs(point.y - origin.y)
+    }),
+    'and only on a diagonal'
+  )
+
+  // --- how often a spell may be cast ---
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[1].data.stats.lifePoints = 5000
+  spells({ 1: spellOf({ apCost: 2, maxCastPerTurn: 1 }) })
+
+  const limited = planTurn(gameWindow, context({ actionPoints: 6 }))
+  assert.strictEqual(
+    (limited?.casts ?? []).filter((cast) => cast.spellId === 1).length,
+    1,
+    'a spell limited to one cast a turn is cast once'
+  )
+
+  // ...and how often on the same monster.
+  state.fighters[2].data.alive = true
+  state.fighters[2].data.disposition.cellId = 350
+  state.fighters[2].data.stats.lifePoints = 5000
+  spells({ 1: spellOf({ apCost: 3, maxCastPerTarget: 1 }) })
+
+  const perTarget = planTurn(gameWindow, context({ actionPoints: 6 }))
+  const touched = (perTarget?.casts ?? []).flatMap((cast) => cast.hits)
+  assert.ok(perTarget && perTarget.casts.length === 2, 'both casts are planned')
+  assert.strictEqual(new Set(touched).size, 2, 'the second one goes to the other monster')
+
+  // --- never stand in our own area ---
+  const nextToMe = cellFromCoordinates(11, 10)
+  state.fighters[1].data.disposition.cellId = nextToMe
+  state.fighters[2].data.alive = false
+  spells({
+    1: spellOf({
+      apCost: 3,
+      minRange: 0,
+      effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneShape: 67, zoneSize: 2 }]
+    })
+  })
+
+  const selfSafe = planTurn(gameWindow, context({ actionPoints: 3 }))
+  for (const cast of selfSafe?.casts ?? []) {
+    assert.ok(
+      !areaCells({ shape: 'circle', size: 2, minSize: 0 }, me, cast.cellId).includes(me),
+      'a cast whose area would cover the caster is avoided'
+    )
+  }
+
+  // --- a boost goes before the attack ---
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[1].data.stats.lifePoints = 5000
+  spells({
+    1: Object.assign(
+      spellOf({ apCost: 2, effects: [{ effectId: 128, diceNum: 40, diceSide: 40, zoneSize: 0 }] }),
+      { id: 1 }
+    ),
+    2: Object.assign(
+      spellOf({ apCost: 4, effects: [{ effectId: 100, diceNum: 60, diceSide: 60, zoneSize: 0 }] }),
+      { id: 2 }
+    )
+  })
+
+  const opener = planTurn(gameWindow, context({ actionPoints: 6 }))
+  assert.strictEqual(opener?.casts[0]?.spellId, 1, 'the boost opens the turn')
+  assert.strictEqual(opener?.casts[1]?.spellId, 2, 'and the attack follows with what is left')
+  assert.strictEqual(
+    opener.casts.filter((cast) => cast.spellId === 1).length,
+    1,
+    'a buff already up is never cast twice in a turn'
+  )
+
+  // With only enough points for one, the attack wins over the boost.
+  const tight = planTurn(gameWindow, context({ actionPoints: 4 }))
+  assert.strictEqual(
+    tight?.casts[0]?.spellId,
+    2,
+    'a boost is not cast when it would leave nothing to attack with'
+  )
+
+  // --- healing only what is wounded ---
+  spells({
+    1: Object.assign(
+      spellOf({ apCost: 2, range: 6, effects: [{ effectId: 108, diceNum: 50, diceSide: 50, zoneSize: 0 }] }),
+      { id: 1 }
+    )
+  })
+  state.fighters[0].data.stats.lifePoints = 500
+  state.fighters[0].data.stats.maxLifePoints = 500
+
+  const healthy = planTurn(gameWindow, context({ actionPoints: 4 }))
+  assert.ok(
+    !(healthy?.casts ?? []).some((cast) => cast.spellId === 1),
+    'a heal is not cast on someone at full life'
+  )
+
+  state.fighters[0].data.stats.lifePoints = 100
+  const wounded = planTurn(gameWindow, context({ actionPoints: 4 }))
+  assert.ok(
+    (wounded?.casts ?? []).some((cast) => cast.spellId === 1),
+    'but it is when life is missing'
+  )
+  state.fighters[0].data.stats.lifePoints = 500
+
+  // --- flat bonuses and flat reduction ---
+  const profile = {
+    stat: { fire: 0, earth: 0, water: 0, air: 0, neutral: 0 },
+    damagePercent: 0,
+    flat: { fire: 10, earth: 0, water: 0, air: 0, neutral: 0 },
+    finalPercent: 0
+  }
+  const spell = {
+    damage: 20,
+    effects: [{ kind: 'damage', element: 'fire', average: 20, delay: 0, effectId: 100, zone: { shape: 'point', size: 0, minSize: 0 } }]
+  }
+  const plain = { id: 1, stats: {} }
+  const armoured = { id: 2, stats: { fireElementReduction: { base: 5 } } }
+  const resistant = { id: 3, stats: { fireElementResistPercent: { base: 50 } } }
+
+  assert.strictEqual(damageAgainst(spell, plain, profile), 30, 'the flat bonus is added')
+  assert.strictEqual(damageAgainst(spell, armoured, profile), 25, 'the flat reduction is taken off')
+  assert.strictEqual(damageAgainst(spell, resistant, profile), 15, 'and the percentage applies first')
+
+  // --- the remaining zone shapes ---
+  const square = areaCells({ shape: 'square', size: 1, minSize: 0 }, me, 336)
+  assert.ok(square.length >= 5, 'a square covers more than a cross of the same size')
+
+  const bar = areaCells({ shape: 'perpendicular', size: 1, minSize: 0 }, me, 336)
+  assert.ok(bar.includes(336), 'a perpendicular bar covers the aimed cell')
+
+  const diagonal = areaCells({ shape: 'diagonal-cross', size: 1, minSize: 0 }, me, 336)
+  assert.ok(diagonal.includes(336), 'so does a diagonal cross')
+
+  const unknown = areaCells({ shape: 'unknown', size: 1, minSize: 0 }, me, 336)
+  assert.ok(unknown.length > 1, 'an unknown shape falls back to a circle rather than a point')
+
+  state.fighters[2].data.alive = true
+  console.log('ok - spell planner edge cases')
+}
+
 async function testChallengeRules() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-state.ts'))
   const { deriveChallengeRules } = await import(
@@ -2804,6 +3060,7 @@ async function main() {
   await testPushBreaksMelee()
   await testAntiIdle()
   await testSpellPlanner()
+  await testSpellPlannerEdgeCases()
   await testChallengeRules()
   await testTurnPlanValidation()
   await testConnectionCheck()

@@ -96,6 +96,8 @@ interface SimState {
   hitThisTurn: Set<number>
   /** Everything alive is expected to die this turn: a boost would be wasted. */
   fightEndsThisTurn: boolean
+  /** Cheapest attack available, so a buff never eats the points to hit with. */
+  cheapestAttackCost: number
 }
 
 function elementAllowed(spell: SpellDetails, allowed: CombatElement[]): boolean {
@@ -264,7 +266,13 @@ function valueOfCast(
   // cooldown, and worth more than a small hit since they last the fight —
   // unless the fight is about to end, where the points buy damage instead.
   if (cellId !== from) return null
-  if (spell.kind === 'boost' && state.fightEndsThisTurn) return null
+  if (spell.kind === 'boost') {
+    // A buff already up this turn gains nothing from being cast again.
+    if ((state.castsThisTurn.get(spell.id) ?? 0) > 0) return null
+    if (state.fightEndsThisTurn) return null
+    // And it must never eat the points the turn needs to actually hit.
+    if (state.actionPoints - apCost < state.cheapestAttackCost) return null
+  }
   return {
     spellId: spell.id,
     name: spell.name,
@@ -295,17 +303,8 @@ function bestCastFrom(
   // A boost lasts several turns, so it is worth more than any single hit — as
   // long as enough action points are left afterwards to still attack. Scoring
   // it against one cast would always lose to a big damage spell.
-  const cheapestAttack = Math.min(
-    ...usable.filter((spell) => spell.kind === 'damage').map((spell) => spell.apCost ?? 0),
-    Number.MAX_SAFE_INTEGER
-  )
-
   for (const spell of usable) {
     if (spell.kind !== 'boost') continue
-    const cost = spell.apCost ?? 0
-    const leftAfter = state.actionPoints - cost
-    if (cheapestAttack !== Number.MAX_SAFE_INTEGER && leftAfter < cheapestAttack) continue
-
     const candidate = valueOfCast(gameWindow, spell, from, from, enemies, friends, state, context)
     if (candidate) return candidate
   }
@@ -397,7 +396,11 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
     castsThisTurn: new Map(),
     castsPerTarget: new Map(),
     hitThisTurn: new Set(),
-    fightEndsThisTurn: totalLife > 0 && bestDamage * castsAfforded >= totalLife
+    fightEndsThisTurn: totalLife > 0 && bestDamage * castsAfforded >= totalLife,
+    cheapestAttackCost: Math.min(
+      ...affordable.filter((spell) => spell.kind === 'damage').map((spell) => spell.apCost ?? 0),
+      Number.MAX_SAFE_INTEGER
+    )
   }
 
   const actions: PlannedAction[] = []
