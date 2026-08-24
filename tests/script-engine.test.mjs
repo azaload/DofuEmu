@@ -2731,6 +2731,223 @@ async function testSpellPlannerEdgeCases() {
   console.log('ok - spell planner edge cases')
 }
 
+async function testActionPointBudget() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-planner.ts'))
+  const { planTurn } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'spell-planner.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[0].data.stats.actionPoints = 8
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[1].data.stats.lifePoints = 9000
+  state.fighters[2].data.disposition.cellId = 350
+  state.fighters[2].data.stats.lifePoints = 9000
+
+  // Three action points a cast, eight available: two casts, never four.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: {
+      id: 1,
+      spell: { nameId: 'Arrow' },
+      spellLevel: {
+        apCost: 3,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 100, diceNum: 20, diceSide: 20, zoneSize: 0 }]
+      }
+    }
+  }
+
+  const plan = planTurn(gameWindow, {
+    turn: 1,
+    actionPoints: 8,
+    movementPoints: 0,
+    elements: [],
+    lastCastTurn: new Map(),
+    canMove: false,
+    keepDistance: false
+  })
+  const planned = (plan?.casts ?? []).reduce((total, cast) => total + cast.apCost, 0)
+  assert.ok(planned <= 8, `the plan stays within the points (${planned})`)
+
+  // And the AI holds to it even when the client never decrements its counter,
+  // which is what had it cast thirteen points' worth of spells out of eight.
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [],
+    turnCombos: [],
+    targetStrategy: 'nearest',
+    autoReady: false,
+    placeBeforeReady: false,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: false,
+    approachEnemies: false,
+    defaultSpellRange: 1,
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    spreadCasts: false,
+    spellMode: 'auto',
+    elements: [],
+    brain: 'rules',
+    ollamaEndpoint: '',
+    ollamaModel: '',
+    ollamaTimeoutMs: 500,
+    preferChallenges: false
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 900))
+
+  const casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.ok(casts.length > 0, 'the turn is played')
+  assert.ok(
+    casts.length <= 2,
+    `at three points a cast, eight points buy two of them, not ${casts.length}`
+  )
+
+  dispose()
+  console.log('ok - the turn stays inside its action points')
+}
+
+async function testUtilitySpellsAreNotBuffs() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-planner.ts'))
+  const { planTurn } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'spell-planner.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[1].data.stats.lifePoints = 9000
+  state.fighters[2].data.alive = false
+
+  const level = (over) =>
+    Object.assign(
+      {
+        apCost: 3,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false
+      },
+      over
+    )
+
+  // A debuff whose effect this code does not know, and a plain attack.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: {
+      id: 1,
+      spell: { nameId: 'Fleche Aveuglante' },
+      spellLevel: level({ apCost: 2, effects: [{ effectId: 9999, diceNum: 5, diceSide: 5, zoneSize: 0 }] })
+    },
+    2: {
+      id: 2,
+      spell: { nameId: 'Fleche de Barrage' },
+      spellLevel: level({ apCost: 4, effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneSize: 0 }] })
+    }
+  }
+
+  const plan = planTurn(gameWindow, {
+    turn: 1,
+    actionPoints: 6,
+    movementPoints: 0,
+    elements: [],
+    lastCastTurn: new Map(),
+    canMove: false,
+    keepDistance: false
+  })
+
+  assert.ok(
+    !(plan?.casts ?? []).some((cast) => cast.spellId === 1),
+    'a spell whose effects are not recognised is never cast as if it were a buff'
+  )
+  assert.ok(
+    (plan?.casts ?? []).some((cast) => cast.spellId === 2),
+    'the real attack is'
+  )
+
+  // Poison still counts, at a discount, rather than being ignored.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    3: {
+      id: 3,
+      spell: { nameId: 'Fleche Empoisonnee' },
+      spellLevel: level({
+        apCost: 3,
+        effects: [{ effectId: 100, diceNum: 40, diceSide: 40, zoneSize: 0, delay: 1 }]
+      })
+    }
+  }
+  const poison = planTurn(gameWindow, {
+    turn: 1,
+    actionPoints: 6,
+    movementPoints: 0,
+    elements: [],
+    lastCastTurn: new Map(),
+    canMove: false,
+    keepDistance: false
+  })
+  assert.ok(
+    (poison?.casts ?? []).some((cast) => cast.spellId === 3),
+    'a damage-over-time spell is still usable'
+  )
+
+  state.fighters[2].data.alive = true
+  console.log('ok - utility spells are not mistaken for buffs')
+}
+
+async function testSightBlockedByFighters() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { hasLineOfSight, cellFromCoordinates } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow } = createFakeGameWindow()
+  const from = cellFromCoordinates(10, 10)
+  const middle = cellFromCoordinates(12, 10)
+  const behind = cellFromCoordinates(14, 10)
+
+  assert.strictEqual(
+    hasLineOfSight(gameWindow, from, behind),
+    true,
+    'an empty line is clear'
+  )
+  assert.strictEqual(
+    hasLineOfSight(gameWindow, from, behind, new Set([middle])),
+    false,
+    'a fighter standing in the way blocks sight, as it does in game'
+  )
+  assert.strictEqual(
+    hasLineOfSight(gameWindow, from, middle, new Set([middle])),
+    true,
+    'but the target itself never blocks its own line'
+  )
+
+  console.log('ok - fighters block the line of sight')
+}
+
 async function testChallengeRules() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-state.ts'))
   const { deriveChallengeRules } = await import(
@@ -3061,6 +3278,9 @@ async function main() {
   await testAntiIdle()
   await testSpellPlanner()
   await testSpellPlannerEdgeCases()
+  await testActionPointBudget()
+  await testUtilitySpellsAreNotBuffs()
+  await testSightBlockedByFighters()
   await testChallengeRules()
   await testTurnPlanValidation()
   await testConnectionCheck()

@@ -131,6 +131,10 @@ export function castableCells(
   from: number,
   occupied: Set<number>
 ): number[] {
+  // Fighters block sight; the cell we aim at is the exception, since that is
+  // where the target itself stands.
+  const blockers = new Set(occupied)
+  blockers.delete(from)
   const cells: number[] = []
   const origin = cellCoordinates(from)
 
@@ -152,7 +156,11 @@ export function castableCells(
       if (spell.zone.size === 0) continue
     }
 
-    if (spell.needsLineOfSight && !hasLineOfSight(gameWindow, from, cellId)) continue
+    if (spell.needsLineOfSight) {
+      const others = new Set(blockers)
+      others.delete(cellId)
+      if (!hasLineOfSight(gameWindow, from, cellId, others)) continue
+    }
 
     cells.push(cellId)
   }
@@ -262,9 +270,11 @@ function valueOfCast(
     }
   }
 
-  // Boosts, summons and the rest: worth casting on ourselves once they are off
-  // cooldown, and worth more than a small hit since they last the fight —
-  // unless the fight is about to end, where the points buy damage instead.
+  // Only a recognised boost is worth spending a turn's points on. Anything
+  // whose effects this code cannot read — a debuff, a state, a trap — is left
+  // alone rather than played as if it were a buff, which is what had utility
+  // arrows cast ahead of the real attacks.
+  if (spell.kind !== 'boost') return null
   if (cellId !== from) return null
   if (spell.kind === 'boost') {
     // A buff already up this turn gains nothing from being cast again.
@@ -367,6 +377,10 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
   }
 
   if (enemies.length === 0) return empty('no enemy left to aim at')
+
+  const unreadable = affordable.filter(
+    (spell) => spell.kind !== 'damage' && spell.kind !== 'heal' && spell.kind !== 'boost'
+  )
 
   const occupied = new Set(
     getFighters(gameWindow)
@@ -495,7 +509,12 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
     value: total,
     diagnostic:
       actions.length === 0
-        ? 'no cell brings an enemy within reach of a spell that is worth casting'
+        ? 'no cell brings an enemy within reach of a spell that is worth casting' +
+          (unreadable.length > 0
+            ? ` (${unreadable.length} spell(s) left out, effects not recognised: ${unreadable
+                .map((spell) => spell.name ?? spell.id)
+                .join(', ')})`
+            : '')
         : null
   }
 }

@@ -193,9 +193,12 @@ export function readSpellCatalogue(gameWindow: DofusWindow): SpellDetails[] {
       .map(readEffect)
       .filter((effect): effect is SpellEffect => effect !== null)
 
+    // Damage that lands later — poison and the like — still counts, at a
+    // discount, so a damage-over-time spell is usable without being preferred
+    // to one that hits now.
     const damage = effects
-      .filter((effect) => effect.kind === 'damage' && effect.delay === 0)
-      .reduce((total, effect) => total + effect.average, 0)
+      .filter((effect) => effect.kind === 'damage')
+      .reduce((total, effect) => total + effect.average * (effect.delay > 0 ? 0.6 : 1), 0)
     const heal = effects
       .filter((effect) => effect.kind === 'heal')
       .reduce((total, effect) => total + effect.average, 0)

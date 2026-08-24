@@ -621,18 +621,23 @@ export function initCombatAi(
   ): Promise<number> => {
     let cast = 0
     let reported = false
+    let spentAp = 0
+    let movementRefused = false
+    const startingAp = getMyFighter(gameWindow)?.ap ?? 0
 
     // The plan is redone after every action, from the points the game really
-    // reports: a boost that grants AP or MP mid-turn is then used, and so is
-    // anything the fight changed while we were acting.
+    // reports — but never above what this turn started with minus what we have
+    // already spent. A client that does not decrement its own counter would
+    // otherwise have us cast until the server refuses everything.
     for (let step = 0; step < 12; step++) {
       if (!stillOurTurn() || !isFightStarted(gameWindow)) break
 
       const me = getMyFighter(gameWindow)
       if (!me || me.cellId === null) break
 
-      const actionPoints = me.ap ?? 0
-      const movementPoints = me.mp ?? 0
+      const budget = Math.max(0, startingAp - spentAp)
+      const actionPoints = Math.min(me.ap ?? 0, budget)
+      const movementPoints = movementRefused ? 0 : (me.mp ?? 0)
       if (actionPoints <= 0 && movementPoints <= 0) break
 
       const held = settings.tackleAware && tacklingEnemies(getEnemies(gameWindow), me.cellId).length > 0
@@ -667,8 +672,11 @@ export function initCombatAi(
         const outcome = await waitForMove(action.cellId)
         await waitForIdle()
         if (outcome === 'no-move') {
+          // Refusing a walk is no reason to give up the turn: the points that
+          // are left still buy spells from where the character stands.
           log('The move was refused, casting from here')
-          break
+          movementRefused = true
+          continue
         }
         await humanSleep(0)
         continue
@@ -678,6 +686,7 @@ export function initCombatAi(
         castSpell(gameWindow, action.spellId, action.cellId)
         lastCastTurn.set(action.spellId, turn)
         cast += 1
+        spentAp += action.apCost
         log(
           `Cast ${action.name || action.spellId} on cell ${action.cellId}: ${action.reason}` +
             (action.apCost > 0 ? ` (${action.apCost} AP)` : '')
@@ -735,7 +744,9 @@ export function initCombatAi(
     await waitForIdle()
     if (!stillOurTurn()) return
 
-    if (combo.length === 0) {
+    // An empty combo is normal in automatic mode: the spellbook is what decides
+    // there. Only the manual mode has nothing to play without one.
+    if (combo.length === 0 && settings.spellMode !== 'auto') {
       log(`Turn ${turn}: ${label} is empty, passing`)
       return
     }

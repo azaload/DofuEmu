@@ -133,9 +133,11 @@ export function damageAgainst(
   let total = 0
 
   for (const effect of spell.effects) {
-    if (effect.kind !== 'damage' || effect.element === null || effect.delay > 0) continue
+    if (effect.kind !== 'damage' || effect.element === null) continue
 
     const element = effect.element
+    // Damage that lands on a later turn is worth less than damage now.
+    const timing = effect.delay > 0 ? 0.6 : 1
     const boosted =
       effect.average * (1 + (profile.stat[element] + profile.damagePercent) / 100) +
       profile.flat[element]
@@ -144,7 +146,7 @@ export function damageAgainst(
     const afterFlat = afterPercent - resistances.flat[element]
     const multiplied = afterFlat * (1 + profile.finalPercent / 100)
 
-    total += Math.max(0, multiplied)
+    total += Math.max(0, multiplied) * timing
   }
 
   // A spell whose elements the client does not expose still hits for something.

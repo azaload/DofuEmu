@@ -176,7 +176,12 @@ export function reachableCells(
  * map marks as blocking sight. The game's own check is used when the build
  * exposes one, since it also knows about fighters standing in the way.
  */
-export function hasLineOfSight(gameWindow: DofusWindow, from: number, to: number): boolean {
+export function hasLineOfSight(
+  gameWindow: DofusWindow,
+  from: number,
+  to: number,
+  blockers: Set<number> = new Set()
+): boolean {
   if (from === to) return true
 
   const mapRenderer = asDict(asDict(gameWindow.isoEngine)?.mapRenderer)
@@ -210,6 +215,8 @@ export function hasLineOfSight(gameWindow: DofusWindow, from: number, to: number
     const cellId = cellFromCoordinates(x, y)
     if (cellId === null) continue
     if (cellId === from || cellId === to) continue
+    // A fighter standing in the way blocks sight just as a wall does.
+    if (blockers.has(cellId)) return false
     if (blocksSight(cellId)) return false
   }
 
