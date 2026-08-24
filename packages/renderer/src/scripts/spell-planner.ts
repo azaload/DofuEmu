@@ -81,6 +81,8 @@ const BUFF_VALUE = 120
 const HEAL_VALUE = 2
 const MOVE_COST_PENALTY = 0.5
 const DISTANCE_BONUS = 4
+/** Weight of getting closer when no cast is possible from anywhere. */
+const APPROACH_WEIGHT = 10
 /** Casts examined per position; more than this buys nothing in practice. */
 const MAX_CASTS_PER_TURN = 6
 /** Casts tried at each step of the sequence search. */
@@ -519,10 +521,22 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
       Number.MAX_SAFE_INTEGER
     )
 
-  const safetyOf = (cellId: number) => {
-    if (!context.keepDistance) return 0
+  /**
+   * What standing on a cell is worth.
+   *
+   * Keeping away only counts when a spell can actually be cast from there.
+   * With nothing in reach, the character must close in instead — otherwise it
+   * backs away from a fight it cannot start and ends up in a corner.
+   */
+  const valueOfPosition = (cellId: number, castValue: number) => {
     const distance = distanceToEnemies(cellId)
-    return distance === Number.MAX_SAFE_INTEGER ? 0 : distance * DISTANCE_BONUS
+    if (distance === Number.MAX_SAFE_INTEGER) return castValue
+
+    if (castValue > 0) {
+      return castValue + (context.keepDistance ? distance * DISTANCE_BONUS : 0)
+    }
+
+    return -distance * APPROACH_WEIGHT
   }
 
   for (let step = 0; step < MAX_CASTS_PER_TURN * 2; step++) {
@@ -549,7 +563,7 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
 
     if (movementPoints > 0) {
       const blocked = new Set([...occupied].filter((cellId) => cellId !== position))
-      const currentValue = here.value + safetyOf(position)
+      const currentValue = valueOfPosition(position, here.value)
 
       for (const entry of reachableCells(gameWindow, position, movementPoints, blocked).values()) {
         if (entry.cellId === position) continue
@@ -569,7 +583,7 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
           context
         )
         const gain =
-          cast.value + safetyOf(entry.cellId) - currentValue - entry.cost * MOVE_COST_PENALTY
+          valueOfPosition(entry.cellId, cast.value) - currentValue - entry.cost * MOVE_COST_PENALTY
 
         if (gain > 0 && (!move || gain > move.gain)) {
           move = { cellId: entry.cellId, path: entry.path, cost: entry.cost, gain, cast }

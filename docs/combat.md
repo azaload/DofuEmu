@@ -364,6 +364,21 @@ See [scripting.md](scripting.md) for the full `api.fight` reference.
 
 ## Tests
 
-`pnpm run test:scripts` covers the controller against a stub game window: ready-up, combo
-order, target selection, passing the turn, ignoring other fighters' turns, and doing
-nothing while disabled.
+`pnpm test` runs three suites. `test:scripts` covers the controller against a stub game
+window: ready-up, combo order, target
+selection, passing the turn, ignoring other fighters' turns, and doing nothing while
+disabled. `test:main` covers the local file server, and `test:fights` plays whole fights
+out.
+
+### Whole fights
+
+`test:fights` runs the planner against monsters that behave differently — one that stands
+still, one that closes in, one that runs faster than the character, a mixed group, a wall in
+the way, and a turn with a single action point. This file plays the part of the server: it
+refuses what the game would refuse and records it, so a turn spending more action points
+than it has, a spell thrown out of range or past a wall, or a character walking through a
+monster fails the run.
+
+It also checks the shape of the fight, not just its legality: the group is worked through,
+the character never walks in circles without casting, and it never backs away from a fight
+it cannot yet reach — which is how it used to end up in a corner.
