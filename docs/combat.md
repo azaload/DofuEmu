@@ -229,6 +229,13 @@ air 20` — and which elements are ticked, naming every spell that ticking disab
 statistics at zero means the character sheet was not found and every spell then looks
 equally good, which is exactly how a fire arrow ends up cast by an earth character.
 
+A cast the server refuses — an obstacle in the way, a state the spell forbids — comes back
+as silence rather than an error. The AI waits for the confirmation, and when none arrives it
+says so, drops that spell on that cell for the rest of the turn and plans something else,
+instead of holding the turn until the clock runs out. Pushes and pulls are part of the plan
+too: a spell that shoves its targets a cell back moves them for every cast that follows, so
+a second area spell is aimed where they now stand rather than where they were.
+
 A turn that ends with action points to spare says what it left out and why: an element not
 ticked, a cooldown, a range or a straight line missed, effects this code cannot read.
 

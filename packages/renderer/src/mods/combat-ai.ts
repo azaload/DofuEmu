@@ -83,6 +83,7 @@ const TURN_PLAYABLE_TIMEOUT_MS = 2500
 /** How long to wait for the running animation sequence to finish. */
 const SEQUENCE_TIMEOUT_MS = 2500
 const DUPLICATE_FIGHT_MS = 3000
+const CAST_CONFIRM_MS = 1500
 const IDLE_POLL_MS = 50
 
 function addListener(
@@ -126,6 +127,10 @@ export function initCombatAi(
   let missedPlayableAnnouncements = 0
   /** Animation sequences in flight; acting during one wedges the client. */
   let sequenceDepth = 0
+  /** Spell ids the server confirmed casting since the last request. */
+  let castsConfirmed = 0
+  /** `spellId:cellId` the server refused this turn: never asked for twice. */
+  let refusedCasts = new Set<string>()
   /** Challenges of the current fight, from its messages and its panel. */
   let challenges: FightChallenge[] = []
   /** Starting cells the placement phase offers. */
@@ -628,6 +633,7 @@ export function initCombatAi(
     let reported = false
     let spentAp = 0
     let movementRefused = false
+    refusedCasts = new Set()
     const startingAp = getMyFighter(gameWindow)?.ap ?? 0
 
     // The plan is redone after every action, from the points the game really
@@ -654,7 +660,8 @@ export function initCombatAi(
         elements: settings.elements ?? [],
         lastCastTurn,
         canMove: settings.approachEnemies && !held,
-        keepDistance: settings.positioning === 'keep-distance'
+        keepDistance: settings.positioning === 'keep-distance',
+        blockedCasts: refusedCasts
       })
 
       if (!plan) {
@@ -693,21 +700,40 @@ export function initCombatAi(
         continue
       }
 
+      const confirmedBefore = castsConfirmed
       try {
         castSpell(gameWindow, action.spellId, action.cellId)
-        lastCastTurn.set(action.spellId, turn)
-        cast += 1
-        spentAp += action.apCost
-        log(
-          `Cast ${action.name || action.spellId} on cell ${action.cellId}: ${action.reason}` +
-            (action.apCost > 0 ? ` (${action.apCost} AP)` : '')
-        )
       } catch (err) {
         log(`Cast failed: ${err instanceof Error ? err.message : String(err)}`)
         break
       }
 
+      // A refused cast — an obstacle in the way, a state the spell forbids —
+      // comes back as silence. Waiting for the confirmation is what tells the
+      // two apart, and what stops a refusal from holding the turn until the
+      // clock runs out.
+      const confirmed = await waitFor(() => castsConfirmed > confirmedBefore, CAST_CONFIRM_MS)
+      if (!confirmed) {
+        refusedCasts.add(`${action.spellId}:${action.cellId}`)
+        log(
+          `The game refused ${action.name || action.spellId} on cell ${action.cellId}` +
+            ' (sight or a state): planning something else'
+        )
+        continue
+      }
+
+      lastCastTurn.set(action.spellId, turn)
+      cast += 1
+      spentAp += action.apCost
+      log(
+        `Cast ${action.name || action.spellId} on cell ${action.cellId}: ${action.reason}` +
+          (action.apCost > 0 ? ` (${action.apCost} AP)` : '')
+      )
+
       await humanSleep(settings.castDelayMs)
+      // The push and pull of a cast move monsters. Letting the animation finish
+      // before planning again is what keeps a second area spell from being
+      // thrown at cells its own first cast has just emptied.
       await waitForIdle()
     }
 
@@ -955,6 +981,18 @@ export function initCombatAi(
     }))
   }
 
+  /**
+   * The server accepted a cast.
+   *
+   * A refusal — an obstacle in the way, a state the spell forbids — is silent
+   * on the wire: nothing comes back at all. Counting what is confirmed is
+   * therefore the only way to notice, and noticing is what keeps a refused
+   * cast from holding the turn until the clock runs out.
+   */
+  const onSpellCast = () => {
+    castsConfirmed += 1
+  }
+
   const onSequenceStart = () => {
     sequenceDepth += 1
   }
@@ -1089,6 +1127,7 @@ export function initCombatAi(
     addListener(source, 'GameFightTurnStartPlayingMessage', onTurnPlaying, cleanups)
     addListener(source, 'ChallengeInfoMessage', onChallengeInfo, cleanups)
     addListener(source, 'GameFightPlacementPossiblePositionsMessage', onPlacementPositions, cleanups)
+    addListener(source, 'GameActionFightSpellCastMessage', onSpellCast, cleanups)
     addListener(source, 'SequenceStartMessage', onSequenceStart, cleanups)
     addListener(source, 'SequenceEndMessage', onSequenceEnd, cleanups)
     addListener(source, 'GameFightStartingMessage', onFightStart, cleanups)

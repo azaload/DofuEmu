@@ -4,6 +4,7 @@ import {
   areCellsAligned,
   cellCoordinates,
   cellDistance,
+  cellFromCoordinates,
   hasLineOfSight,
   isCellWalkable,
   reachableCells,
@@ -64,6 +65,8 @@ export interface TurnPlan {
 
 export interface PlanContext {
   turn: number
+  /** `spellId:cellId` the server has already refused this turn. */
+  blockedCasts?: Set<string>
   actionPoints: number
   movementPoints: number
   elements: CombatElement[]
@@ -209,6 +212,10 @@ function valueOfCast(
 ): PlannedCast | null {
   const apCost = spell.apCost ?? 0
   if (apCost > state.actionPoints) return null
+
+  // Asking a second time for what the server has just refused wastes the turn
+  // on the same answer.
+  if (context.blockedCasts?.has(`${spell.id}:${cellId}`)) return null
 
   const hits = hitsFrom(spell, from, cellId, enemies)
   const friendlyHits = hitsFrom(spell, from, cellId, friends)
@@ -388,6 +395,57 @@ function afterCast(
  * four-point spell worth forty is chosen over two two-point spells worth sixty
  * together. So a few sequences are played out and the best total wins.
  */
+/**
+ * Where the fighters a cast touches end up.
+ *
+ * A spell that pushes empties the cells it just hit, and one that pulls draws
+ * everything towards the cell it was aimed at. Planning the next cast on the
+ * positions the last one left behind is what sends a second area spell into
+ * thin air — and what hides the fact that a pull has just grouped a scattered
+ * pack into one area.
+ */
+function displaceEnemies(
+  gameWindow: DofusWindow,
+  spell: SpellDetails,
+  cast: PlannedCast,
+  from: number,
+  enemies: Fighter[],
+  occupied: Set<number>
+): Fighter[] {
+  const distance = spell.pushDistance > 0 ? spell.pushDistance : spell.pullDistance
+  if (distance <= 0 || cast.hits.length === 0) return enemies
+
+  const pushing = spell.pushDistance > 0
+  const anchor = cellCoordinates(pushing ? from : cast.cellId)
+  const taken = new Set(occupied)
+
+  return enemies.map((enemy) => {
+    if (enemy.cellId === null || !cast.hits.includes(enemy.id)) return enemy
+
+    const here = cellCoordinates(enemy.cellId)
+    const dx = here.x - anchor.x
+    const dy = here.y - anchor.y
+    if (dx === 0 && dy === 0) return enemy
+
+    // One direction, the dominant one, as the game pushes along a line.
+    const stepX = Math.abs(dx) >= Math.abs(dy) ? Math.sign(dx) : 0
+    const stepY = stepX === 0 ? Math.sign(dy) : 0
+    const way = pushing ? 1 : -1
+
+    let cellId = enemy.cellId
+    for (let step = 1; step <= distance; step++) {
+      const next = cellFromCoordinates(here.x + stepX * way * step, here.y + stepY * way * step)
+      // A body or a wall stops the slide, as it does in the game.
+      if (next === null || taken.has(next) || !isCellWalkable(gameWindow, next)) break
+      taken.delete(cellId)
+      cellId = next
+      taken.add(cellId)
+    }
+
+    return cellId === enemy.cellId ? enemy : { ...enemy, cellId }
+  })
+}
+
 function bestSequenceFrom(
   gameWindow: DofusWindow,
   from: number,
@@ -417,11 +475,15 @@ function bestSequenceFrom(
   let best: { casts: PlannedCast[]; value: number } = { casts: [], value: 0 }
 
   for (const candidate of candidates) {
+    const spell = spells.find((entry) => entry.id === candidate.spellId)
+    const moved = spell
+      ? displaceEnemies(gameWindow, spell, candidate, from, enemies, occupied)
+      : enemies
     const rest = bestSequenceFrom(
       gameWindow,
       from,
       spells,
-      enemies,
+      moved,
       friends,
       occupied,
       afterCast(state, candidate, spells, enemies),

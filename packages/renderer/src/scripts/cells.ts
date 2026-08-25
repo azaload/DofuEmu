@@ -202,14 +202,24 @@ export function hasLineOfSight(
   const cells = asDict(asDict(mapRenderer?.map)?.cells)
   const blocksSight = (cellId: number): boolean => {
     const cell = Array.isArray(cells) ? asDict(cells[cellId]) : asDict(cells?.[cellId])
-    const flags = cell?.l
+    if (!cell) return false
+
+    // The build usually says it outright; the flag bit is the fallback.
+    if (typeof cell.los === 'boolean') return !cell.los
+    if (typeof cell.lineOfSight === 'boolean') return !cell.lineOfSight
+
+    const flags = cell.l
     // Bit 2 of the cell flags carries "sight passes through".
     if (typeof flags === 'number') return (flags & 2) === 0
     return false
   }
 
-  for (let step = 1; step < steps; step++) {
-    const ratio = step / steps
+  // Every cell the segment crosses, corners included. Sampling once per step
+  // rounds past the cell a wall actually sits on, which is how a shot ends up
+  // refused for an obstacle the plan never saw.
+  const substeps = steps * 4
+  for (let step = 1; step < substeps; step++) {
+    const ratio = step / substeps
     const x = Math.round(start.x + (end.x - start.x) * ratio)
     const y = Math.round(start.y + (end.y - start.y) * ratio)
     const cellId = cellFromCoordinates(x, y)

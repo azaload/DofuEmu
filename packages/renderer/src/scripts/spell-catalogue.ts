@@ -62,6 +62,10 @@ export interface SpellDetails {
   kind: EffectKind
   elements: CombatElement[]
   pushes: boolean
+  /** Cells the spell pushes its targets away, 0 when it pushes none. */
+  pushDistance: number
+  /** Cells it pulls them in by, towards the cell it was aimed at. */
+  pullDistance: number
 }
 
 /**
@@ -308,7 +312,13 @@ export function readSpellCatalogue(gameWindow: DofusWindow): SpellDetails[] {
             .filter((element): element is CombatElement => element !== null)
         )
       ],
-      pushes: effects.some((effect) => effect.kind === 'push')
+      pushes: effects.some((effect) => effect.kind === 'push'),
+      pushDistance: effects
+        .filter((effect) => effect.kind === 'push')
+        .reduce((most, effect) => Math.max(most, Math.round(effect.average)), 0),
+      pullDistance: effects
+        .filter((effect) => effect.kind === 'pull')
+        .reduce((most, effect) => Math.max(most, Math.round(effect.average)), 0)
     })
   }
 

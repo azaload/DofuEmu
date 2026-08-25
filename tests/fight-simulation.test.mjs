@@ -129,7 +129,7 @@ function createWorld(options) {
 
 /** Referees a plan the way the game would, and applies what it allows. */
 function applyPlan(world, plan, geometry, catalogue, damage) {
-  const { cellDistance, hasLineOfSight } = geometry
+  const { cellDistance, hasLineOfSight, areaCells, cellCoordinates, cellFromCoordinates } = geometry
   let apLeft = world.me.ap
   let mpLeft = world.me.mp
   world.castsThisTurn = []
@@ -182,12 +182,46 @@ function applyPlan(world, plan, geometry, catalogue, damage) {
       continue
     }
 
+    // What the cast really covers, against what the plan claimed it would
+    // hit: a second area spell aimed where the first one pushed everything
+    // out of shows up here as a cast into thin air.
+    const covered = areaCells(spell.zone, world.me.cellId, action.cellId)
+    const standing = world.monsters
+      .filter((monster) => monster.alive && covered.includes(monster.cellId))
+      .map((monster) => monster.id)
+    const missed = action.hits.filter((id) => !standing.includes(id))
+    if (missed.length > 0) {
+      world.violations.push(
+        `turn ${world.turn}: ${spell.name} claimed ${action.hits.length} hit(s) and touched ${standing.length}`
+      )
+    }
+
     apLeft -= action.apCost
     world.castsThisTurn.push(action)
 
     if (spell.rangeBoost > 0) {
       world.me.rangeBonus = spell.rangeBoost
       world.me.rangeBoostUntil = world.turn + BUFF_TURNS
+    }
+
+    // A push slides what it hit away from the caster, exactly as the game does.
+    if (spell.pushDistance > 0) {
+      const anchor = cellCoordinates(world.me.cellId)
+      for (const id of standing) {
+        const monster = world.monsters.find((candidate) => candidate.id === id)
+        if (!monster) continue
+        const here = cellCoordinates(monster.cellId)
+        const dx = here.x - anchor.x
+        const dy = here.y - anchor.y
+        const stepX = Math.abs(dx) >= Math.abs(dy) ? Math.sign(dx) : 0
+        const stepY = stepX === 0 ? Math.sign(dy) : 0
+        for (let step = 1; step <= spell.pushDistance; step++) {
+          const next = cellFromCoordinates(here.x + stepX * step, here.y + stepY * step)
+          const taken = world.monsters.some((other) => other.alive && other.cellId === next)
+          if (next === null || taken || next === world.me.cellId) break
+          monster.cellId = next
+        }
+      }
     }
 
     for (const hit of action.hits) {
@@ -308,9 +342,14 @@ async function main() {
     `${pathToFileURL(path.join(tmpDir, 'spell-planner.js')).href}?t=${Date.now()}`
   )
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
-  const geometry = await import(
+  const cellsModule = await import(
     `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
   )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/zones.ts'))
+  const { areaCells } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'zones.js')).href}?t=${Date.now()}`
+  )
+  const geometry = { ...cellsModule, areaCells }
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-catalogue.ts'))
   const { readSpellCatalogue } = await import(
     `${pathToFileURL(path.join(tmpDir, 'spell-catalogue.js')).href}?t=${Date.now()}`
@@ -775,6 +814,42 @@ async function main() {
       `and the turn says so (${plan.leftOut.join(' | ')})`
     )
     console.log('ok - an unticked element is reported, not silently obeyed')
+  }
+
+  // --- a push moves what the next cast is aimed at ---
+  // Two Barrages in a turn: the first slides both birds a cell back, so the
+  // second has to follow them instead of being thrown where they stood.
+  {
+    const world = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 8,
+      movementPoints: 0,
+      characteristics: strengthCra,
+      spells: craSpells(),
+      monsters: [
+        { cellId: cellFromCoordinates(14, 10), life: 400, behaviour: 'static', name: 'Piou Bleu' },
+        { cellId: cellFromCoordinates(14, 11), life: 400, behaviour: 'static', name: 'Piou Rouge' }
+      ]
+    })
+
+    const catalogue = readSpellCatalogue(world.gameWindow)
+    assert.strictEqual(
+      catalogue.find((spell) => spell.id === 2).pushDistance,
+      1,
+      'Barrage is read as pushing a cell'
+    )
+
+    const history = await playFight(world, planTurn, geometry, catalogue, { turns: 3, damage: hit })
+    assert.deepStrictEqual(
+      world.violations,
+      [],
+      'no cast is thrown at cells its own push has emptied'
+    )
+    assert.ok(
+      history[0].casts >= 2,
+      `the turn still spends its points (${history[0].casts} cast(s))`
+    )
+    console.log('ok - a second area cast follows the push of the first')
   }
 
   // --- no action points at all ---

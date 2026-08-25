@@ -163,7 +163,15 @@ function createFakeGameWindow() {
           }, 5)
         }
         if (name === 'GameActionFightCastRequestMessage') {
-          setTimeout(() => state.emit('GameActionFightSpellCastMessage', { sourceId: 7, spellId: data.spellId }), 5)
+          // The server confirms a cast it accepted, and answers a refusal —
+          // an obstacle in the way, a state the spell forbids — with silence.
+          const refused = typeof state.refuseCast === 'function' && state.refuseCast(data)
+          if (!refused) {
+            setTimeout(
+              () => state.emit('GameActionFightSpellCastMessage', { sourceId: 7, spellId: data.spellId }),
+              5
+            )
+          }
         }
         if (name === 'ChangeMapMessage') {
           setTimeout(() => {
@@ -312,6 +320,31 @@ function createFakeGameWindow() {
     state.emit('GameFightTurnStartPlayingMessage', { id: fighterId })
 
   return { gameWindow, state }
+}
+
+/** Combat settings a test can spread and override, all delays at zero. */
+const combatDefaults = {
+  enabled: true,
+  combo: [],
+  turnCombos: [],
+  targetStrategy: 'first',
+  autoReady: true,
+  turnStartDelayMs: 0,
+  castDelayMs: 0,
+  readyDelayMs: 0,
+  placeBeforeReady: false,
+  randomJitterMs: 0,
+  endTurnAfterCombo: true,
+  closeEndScreens: true,
+  approachEnemies: false,
+  defaultSpellRange: 1,
+  preferLineUp: false,
+  positioning: 'close-in',
+  tackleAware: true,
+  spreadCasts: false,
+  spellMode: 'combo',
+  brain: 'rules',
+  elements: ['fire', 'earth', 'water', 'air', 'neutral']
 }
 
 const settings = {
@@ -705,7 +738,6 @@ async function testTurnCombos() {
     approachEnemies: false,
     defaultSpellRange: 1,
     preferLineUp: false,
-    positioning: 'close-in',
     positioning: 'close-in',
     tackleAware: true,
     spreadCasts: false,
@@ -3272,6 +3304,94 @@ async function testRangeAndItsBoost() {
   console.log('ok - range, its characteristic and the buff that raises it')
 }
 
+/**
+ * A cast the server refuses must not cost the turn.
+ *
+ * "Un obstacle gêne votre vue" comes back as silence on the wire: the request
+ * is simply never answered. Waiting for a confirmation that will not come held
+ * the turn until the clock ran out; the AI has to notice, drop that cast and
+ * play something else.
+ */
+async function testRefusedCastIsReplaced() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  const logs = []
+  const combatSettings = {
+    ...combatDefaults,
+    spellMode: 'auto',
+    approachEnemies: false,
+    endTurnAfterCombo: true,
+    combo: []
+  }
+
+  // Two arrows: the strong one will be refused, the weak one must be played.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: {
+      id: 1,
+      spell: { nameId: 'Refused' },
+      spellLevel: {
+        apCost: 4,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 100, diceNum: 40, diceSide: 40, zoneSize: 0 }]
+      }
+    },
+    2: {
+      id: 2,
+      spell: { nameId: 'Allowed' },
+      spellLevel: {
+        apCost: 3,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 100, diceNum: 10, diceSide: 10, zoneSize: 0 }]
+      }
+    }
+  }
+
+  state.refuseCast = (data) => data.spellId === 1
+  state.startFight()
+
+  const dispose = initCombatAi(gameWindow, 'tab-refused', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 4000))
+
+  const casts = state.sent.filter((message) => message.name === 'GameActionFightCastRequestMessage')
+  const refused = casts.filter((message) => message.data.spellId === 1)
+  const played = casts.filter((message) => message.data.spellId === 2)
+
+  assert.ok(refused.length > 0, 'the strong spell is tried first')
+  assert.ok(
+    logs.some((line) => line.includes('refused')),
+    `the refusal is reported (${logs.join(' | ')})`
+  )
+  assert.ok(played.length > 0, 'and the turn carries on with another spell')
+
+  const sameCellTwice = refused.filter(
+    (message) => message.data.cellId === refused[0].data.cellId
+  )
+  assert.strictEqual(sameCellTwice.length, 1, 'the refused cast is never asked for twice')
+
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameFightTurnFinishMessage'),
+    'and the turn ends instead of running out the clock'
+  )
+
+  dispose()
+  console.log('ok - a refused cast is replaced, not waited on')
+}
+
 async function testChallengeRules() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-state.ts'))
   const { deriveChallengeRules } = await import(
@@ -3607,6 +3727,7 @@ async function main() {
   await testUtilitySpellsAreNotBuffs()
   await testSightBlockedByFighters()
   await testRangeAndItsBoost()
+  await testRefusedCastIsReplaced()
   await testChallengeRules()
   await testTurnPlanValidation()
   await testConnectionCheck()
