@@ -69,6 +69,16 @@ export interface PlanContext {
   blockedCasts?: Set<string>
   /** Fighters the fight has announced dead, whatever the client still says. */
   ignoreFighters?: Set<number>
+  /** Casts already played this turn, per spell, across the re-plans. */
+  castsThisTurn?: Map<number, number>
+  /**
+   * What a spell really costs this turn, when it is not what the book says.
+   *
+   * Some spells grow with use — each cast in the same turn costs a point more
+   * than the last. The book gives the first price only, so the turn learns the
+   * rest from what the game accepts and passes it back here.
+   */
+  apCosts?: Map<number, number>
   actionPoints: number
   movementPoints: number
   elements: CombatElement[]
@@ -87,7 +97,15 @@ const SELF_PENALTY = 6
 const BUFF_VALUE = 120
 const HEAL_VALUE = 2
 const MOVE_COST_PENALTY = 0.5
-const DISTANCE_BONUS = 4
+/**
+ * What a cell of distance is worth beside the damage of a cast.
+ *
+ * Ending the fight is the point; standing further back only helps until it
+ * starts costing hits. Kept small deliberately: a better cast from closer in
+ * has to win, or the character spends the fight backing away from spells it
+ * could have thrown.
+ */
+const DISTANCE_BONUS = 1.5
 /** Weight of getting closer when no cast is possible from anywhere. */
 const APPROACH_WEIGHT = 10
 /** Casts examined per position; more than this buys nothing in practice. */
@@ -113,6 +131,11 @@ interface SimState {
   rangeBonus: number
 }
 
+/** The book's price, unless the turn has learnt a different one. */
+function costOf(spell: SpellDetails, context: PlanContext): number {
+  return context.apCosts?.get(spell.id) ?? spell.apCost ?? 0
+}
+
 function elementAllowed(spell: SpellDetails, allowed: CombatElement[]): boolean {
   // A spell whose element the client does not expose is never filtered out.
   if (spell.elements.length === 0) return true
@@ -120,10 +143,19 @@ function elementAllowed(spell: SpellDetails, allowed: CombatElement[]): boolean 
   return spell.elements.some((element) => allowed.includes(element))
 }
 
+/**
+ * Whether the spell may be cast again.
+ *
+ * A cooldown counts the turns to wait between casts, so a spell without one
+ * may be cast again on the same turn. The turn is planned afresh after every
+ * action, with the cast just played already on record — reading that record
+ * as a cooldown is what quietly limited every spell to one cast a turn,
+ * however many action points were left over.
+ */
 function offCooldown(spell: SpellDetails, context: PlanContext): boolean {
   const last = context.lastCastTurn.get(spell.id)
   if (last === undefined) return true
-  return context.turn - last > spell.cooldown
+  return context.turn - last >= spell.cooldown
 }
 
 function castsLeft(spell: SpellDetails, state: SimState): boolean {
@@ -212,7 +244,7 @@ function valueOfCast(
   state: SimState,
   context: PlanContext
 ): PlannedCast | null {
-  const apCost = spell.apCost ?? 0
+  const apCost = costOf(spell, context)
   if (apCost > state.actionPoints) return null
 
   // Asking a second time for what the server has just refused wastes the turn
@@ -328,7 +360,7 @@ function candidateCasts(
   limit: number
 ): PlannedCast[] {
   const usable = spells.filter(
-    (spell) => castsLeft(spell, state) && (spell.apCost ?? 0) <= state.actionPoints
+    (spell) => castsLeft(spell, state) && costOf(spell, context) <= state.actionPoints
   )
 
   // A boost lasts several turns, so it comes before any single hit — as long
@@ -546,7 +578,7 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
   const spells = allowed.filter((spell) => offCooldown(spell, context))
   if (spells.length === 0) return empty('every spell is still on cooldown')
 
-  const affordable = spells.filter((spell) => (spell.apCost ?? 0) <= context.actionPoints)
+  const affordable = spells.filter((spell) => costOf(spell, context) <= context.actionPoints)
   if (affordable.length === 0) {
     return empty(`no spell costs ${context.actionPoints} action point(s) or less`)
   }
@@ -573,7 +605,7 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
     0
   )
   const castsAfforded = Math.floor(
-    context.actionPoints / Math.max(1, Math.min(...affordable.map((spell) => spell.apCost ?? 1)))
+    context.actionPoints / Math.max(1, Math.min(...affordable.map((spell) => costOf(spell, context) || 1)))
   )
 
   const profile = readDamageProfile(gameWindow)
@@ -582,13 +614,13 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
     profile,
     actionPoints: context.actionPoints,
     life: new Map(enemies.map((enemy) => [enemy.id, enemy.life ?? 0])),
-    castsThisTurn: new Map(),
+    castsThisTurn: new Map(context.castsThisTurn ?? []),
     castsPerTarget: new Map(),
     hitThisTurn: new Set(),
     fightEndsThisTurn: totalLife > 0 && bestDamage * castsAfforded >= totalLife,
     rangeBonus: 0,
     cheapestAttackCost: Math.min(
-      ...affordable.filter((spell) => spell.kind === 'damage').map((spell) => spell.apCost ?? 0),
+      ...affordable.filter((spell) => spell.kind === 'damage').map((spell) => costOf(spell, context)),
       Number.MAX_SAFE_INTEGER
     )
   }
@@ -724,7 +756,7 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
   for (const spell of catalogue) {
     if (castIds.has(spell.id)) continue
     const name = spell.name ?? `spell ${spell.id}`
-    const cost = spell.apCost ?? 0
+    const cost = costOf(spell, context)
 
     if (!elementAllowed(spell, context.elements)) {
       leftOut.push(`${name}: ${spell.elements.join('/')} not ticked in Elements`)

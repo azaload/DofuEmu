@@ -3701,6 +3701,82 @@ async function testLineSpellDrivesThePosition() {
   console.log('ok - a line-only spell walks the AI onto its line')
 }
 
+/**
+ * A spell that grows with use is played to the end of the turn.
+ *
+ * Some spells cost a point more on each cast in the same turn. The spellbook
+ * only ever quotes the first price, so the second cast is refused for want of
+ * a point — and dropping the spell there leaves a turn half played. The right
+ * answer is to raise its price and carry on.
+ */
+async function testEscalatingSpellIsRepriced() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  const logs = []
+  const combatSettings = { ...combatDefaults, spellMode: 'auto', approachEnemies: false, combo: [] }
+
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: {
+      id: 1,
+      spell: { nameId: 'Harcelante' },
+      spellLevel: {
+        apCost: 2,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 100, diceNum: 15, diceSide: 15, zoneSize: 0 }]
+      }
+    }
+  }
+
+  // The game charges 2, then 3, then 4: it refuses whatever asks for less.
+  let paid = 0
+  let casts = 0
+  state.refuseCast = () => {
+    const price = 2 + casts
+    if (paid + price > 8) return true
+    // The second request is refused once, as the game would when the plan
+    // still believes the spell costs two.
+    if (casts === 1 && !state.repriced) {
+      state.repriced = true
+      return true
+    }
+    paid += price
+    casts += 1
+    return false
+  }
+
+  state.fighters[0].data.stats.actionPoints = 8
+  state.startFight()
+
+  const dispose = initCombatAi(gameWindow, 'tab-escalating', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 3000))
+
+  const requests = state.sent.filter(
+    (message) => message.name === 'GameActionFightCastRequestMessage'
+  )
+  // The same spell twice in a turn: a cooldown counts turns between casts, and
+  // the cast just played is a record, not a cooldown.
+  assert.ok(requests.length >= 3, `the spell is asked for again in the same turn (${requests.length})`)
+  assert.ok(
+    logs.some((line) => line.includes('pricing it at 3 AP')),
+    `the refusal raises the price rather than dropping the spell (${logs.join(' | ')})`
+  )
+  assert.ok(casts >= 2, `and the turn keeps casting it (${casts} accepted of ${requests.length} asked)`)
+
+  dispose()
+  console.log('ok - a spell that grows with use is re-priced, not dropped')
+}
+
 async function testChallengeRules() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-state.ts'))
   const { deriveChallengeRules } = await import(
@@ -4042,6 +4118,7 @@ async function main() {
   await testComboAimsAtTheBestCell()
   await testCorpsesAreNotTargeted()
   await testLineSpellDrivesThePosition()
+  await testEscalatingSpellIsRepriced()
   await testChallengeRules()
   await testTurnPlanValidation()
   await testConnectionCheck()

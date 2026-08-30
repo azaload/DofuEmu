@@ -257,6 +257,16 @@ where the area still covers it, and among the cells that cover the named target 
 catching the most enemies wins. Spells the client does not describe keep the configured
 range and are aimed as before.
 
+A cooldown counts the turns to wait **between** casts, so a spell without one may be cast
+again on the same turn — twice, three times, as long as the points last. A spell that grows
+with use, costing a point more on each cast, is re-priced from what the game accepts rather
+than dropped after its first refusal.
+
+Statistics are looked for by what they contain rather than by where they should be: the
+first object carrying the primary characteristics wins, and the path it was found at is
+written to the log. A sheet that cannot be found is said outright, because with every
+statistic at zero fire scores exactly as well as earth on a strength character.
+
 A cast the server refuses — an obstacle in the way, a state the spell forbids — comes back
 as silence rather than an error. The AI waits for the confirmation, and when none arrives it
 says so, drops that spell on that cell for the rest of the turn and plans something else,

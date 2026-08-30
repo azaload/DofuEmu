@@ -50,11 +50,67 @@ function characteristic(source: Dict | null, name: string): number {
     .reduce((total, value) => total + value, 0)
 }
 
-export function readDamageProfile(gameWindow: DofusWindow): DamageProfile {
+/**
+ * The character sheet, wherever this build keeps it.
+ *
+ * Guessing the path is how every statistic ends up read as zero — and with
+ * zeroes, fire scores exactly as well as earth on a strength character. So
+ * the sheet is looked for by what it contains rather than by where it should
+ * be: the first object carrying the primary characteristics wins, and the
+ * path it was found at is reported so a build that hides it elsewhere is
+ * visible rather than silently flattening every spell to the same value.
+ */
+const SHEET_MARKERS = ['strength', 'intelligence', 'chance', 'agility']
+
+function looksLikeASheet(value: unknown): boolean {
+  const dict = asDict(value)
+  if (!dict) return false
+  return SHEET_MARKERS.filter((name) => dict[name] !== undefined).length >= 3
+}
+
+export function findCharacterSheet(gameWindow: DofusWindow): { stats: Dict | null; path: string } {
   const playerData = asDict(asDict(gameWindow.gui)?.playerData)
-  const stats =
-    asDict(asDict(asDict(playerData?.characters)?.mainCharacter)?.characteristics) ??
-    asDict(playerData?.characteristics)
+  if (!playerData) return { stats: null, path: 'no playerData' }
+
+  const named: Array<[string, unknown]> = [
+    [
+      'characters.mainCharacter.characteristics',
+      asDict(asDict(playerData.characters)?.mainCharacter)?.characteristics
+    ],
+    ['characteristics', playerData.characteristics],
+    ['characters.mainCharacter.stats', asDict(asDict(playerData.characters)?.mainCharacter)?.stats],
+    ['stats', playerData.stats]
+  ]
+
+  for (const [path, value] of named) {
+    if (looksLikeASheet(value)) return { stats: asDict(value), path }
+  }
+
+  // Nothing where it should be: look for it, breadth first and shallow, so a
+  // renamed field is found instead of quietly costing every damage decision.
+  const seen = new Set<unknown>([playerData])
+  let frontier: Array<[string, Dict]> = [['playerData', playerData]]
+
+  for (let depth = 0; depth < 3; depth++) {
+    const next: Array<[string, Dict]> = []
+    for (const [path, node] of frontier) {
+      for (const key of Object.keys(node)) {
+        const value = node[key]
+        if (looksLikeASheet(value)) return { stats: asDict(value), path: `${path}.${key}` }
+        const child = asDict(value)
+        if (!child || seen.has(child) || Array.isArray(value)) continue
+        seen.add(child)
+        next.push([`${path}.${key}`, child])
+      }
+    }
+    frontier = next.slice(0, 40)
+  }
+
+  return { stats: null, path: 'not found' }
+}
+
+export function readDamageProfile(gameWindow: DofusWindow): DamageProfile {
+  const stats = findCharacterSheet(gameWindow).stats
 
   const strength = characteristic(stats, 'strength')
   const intelligence = characteristic(stats, 'intelligence')

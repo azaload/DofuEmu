@@ -34,7 +34,7 @@ import { requestMoveToCell } from '@/scripts/game-bridge'
 import { reachableCells } from '@/scripts/cells'
 import { planTurn as planSpellTurn, castableCells, hitsFrom } from '@/scripts/spell-planner'
 import { readRangeBonus, readSpellCatalogue, type SpellDetails } from '@/scripts/spell-catalogue'
-import { readDamageProfile } from '@/scripts/damage'
+import { findCharacterSheet, readDamageProfile } from '@/scripts/damage'
 import type { DofusWindow } from '@/types/dofus-window'
 
 /**
@@ -740,6 +740,11 @@ export function initCombatAi(
     let spentAp = 0
     let movementRefused = false
     refusedCasts = new Set()
+    // What each spell really costs this turn. A spell that grows with use —
+    // one more point per cast — is only ever priced by the book at its first
+    // cast, so the rest is learnt from what the game accepts.
+    const apCosts = new Map<number, number>()
+    const castsPerSpell = new Map<number, number>()
     const startingAp = getMyFighter(gameWindow)?.ap ?? 0
 
     // The plan is redone after every action, from the points the game really
@@ -768,7 +773,9 @@ export function initCombatAi(
         canMove: settings.approachEnemies && !held,
         keepDistance: settings.positioning === 'keep-distance',
         blockedCasts: refusedCasts,
-        ignoreFighters: deadFighters
+        ignoreFighters: deadFighters,
+        apCosts,
+        castsThisTurn: castsPerSpell
       })
 
       if (!plan) {
@@ -821,6 +828,19 @@ export function initCombatAi(
       // clock runs out.
       const confirmed = await waitFor(() => castsConfirmed > confirmedBefore, CAST_CONFIRM_MS)
       if (!confirmed) {
+        // A spell that grows with use is refused for want of a point, not for
+        // want of a line: raising its price and trying again is what plays it
+        // to the end of the turn instead of dropping it after the first cast.
+        const priced = apCosts.get(action.spellId) ?? action.apCost
+        const cast = (castsPerSpell.get(action.spellId) ?? 0) > 0
+        if (cast && priced < actionPoints) {
+          apCosts.set(action.spellId, priced + 1)
+          log(
+            `${action.name || action.spellId} was refused at ${priced} AP: pricing it at ${priced + 1} AP`
+          )
+          continue
+        }
+
         refusedCasts.add(`${action.spellId}:${action.cellId}`)
         log(
           `The game refused ${action.name || action.spellId} on cell ${action.cellId}` +
@@ -831,7 +851,8 @@ export function initCombatAi(
 
       lastCastTurn.set(action.spellId, turn)
       cast += 1
-      spentAp += action.apCost
+      castsPerSpell.set(action.spellId, (castsPerSpell.get(action.spellId) ?? 0) + 1)
+      spentAp += apCosts.get(action.spellId) ?? action.apCost
       log(
         `Cast ${action.name || action.spellId} on cell ${action.cellId}: ${action.reason}` +
           (action.apCost > 0 ? ` (${action.apCost} AP)` : '')
@@ -1215,10 +1236,17 @@ export function initCombatAi(
       // All zeroes means the sheet was not found, and every spell then looks
       // equally good — the fire one as much as the earth one.
       const profile = readDamageProfile(gameWindow)
+      const sheet = findCharacterSheet(gameWindow)
       log(
         `Stats: earth ${profile.stat.earth}, fire ${profile.stat.fire}, water ${profile.stat.water}, ` +
-          `air ${profile.stat.air}, +${profile.damagePercent}% damage`
+          `air ${profile.stat.air}, +${profile.damagePercent}% damage (from ${sheet.path})`
       )
+      if (!sheet.stats) {
+        log(
+          'Stats: the character sheet was not found — every element scores the same, ' +
+            'so the hardest hitter is picked on printed dice alone'
+        )
+      }
 
       // The areas as this build describes them, to be read against the spell
       // sheets in game: a shape this code does not know falls back to a circle

@@ -1,6 +1,7 @@
 import type { CombatElement } from '@dofemu/shared'
 import type { DofusWindow } from '@/types/dofus-window'
 import { zoneShapeOf, type ZoneDescription } from './zones'
+import { findCharacterSheet } from './damage'
 
 /**
  * The character's spells, with everything a turn needs to be planned.
@@ -132,11 +133,7 @@ export function readRangeBonus(gameWindow: DofusWindow): number {
   const inFight = characteristic(asDict(asDict(mine?.data)?.stats), 'range')
   if (inFight !== null) return inFight
 
-  const sheet =
-    asDict(asDict(asDict(playerData?.characters)?.mainCharacter)?.characteristics) ??
-    asDict(playerData?.characteristics)
-
-  return characteristic(sheet, 'range') ?? 0
+  return characteristic(findCharacterSheet(gameWindow).stats, 'range') ?? 0
 }
 
 /** A characteristic is spread over base, gear and buffs: they all count. */
