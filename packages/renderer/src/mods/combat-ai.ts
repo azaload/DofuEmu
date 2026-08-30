@@ -140,6 +140,14 @@ export function initCombatAi(
   let refusedCasts = new Set<string>()
   /** Fighters the fight has announced dead, ahead of the client's own list. */
   let deadFighters = new Set<number>()
+  /**
+   * Spells whose price rises with each cast in a turn, and by how much.
+   *
+   * Learnt from a refusal once, then applied for the rest of the fight: the
+   * second cast of such a spell is planned at its real price instead of being
+   * refused again every single turn.
+   */
+  let escalating = new Map<number, number>()
   /** Challenges of the current fight, from its messages and its panel. */
   let challenges: FightChallenge[] = []
   /** Starting cells the placement phase offers. */
@@ -740,11 +748,20 @@ export function initCombatAi(
     let spentAp = 0
     let movementRefused = false
     refusedCasts = new Set()
-    // What each spell really costs this turn. A spell that grows with use —
-    // one more point per cast — is only ever priced by the book at its first
-    // cast, so the rest is learnt from what the game accepts.
-    const apCosts = new Map<number, number>()
     const castsPerSpell = new Map<number, number>()
+
+    // What each spell really costs right now: the book's price, plus what a
+    // spell known to grow with use has added since the turn began.
+    const pricesNow = () => {
+      const prices = new Map<number, number>()
+      if (escalating.size === 0) return prices
+      for (const spell of readSpellCatalogue(gameWindow)) {
+        const step = escalating.get(spell.id)
+        if (!step) continue
+        prices.set(spell.id, (spell.apCost ?? 0) + step * (castsPerSpell.get(spell.id) ?? 0))
+      }
+      return prices
+    }
     const startingAp = getMyFighter(gameWindow)?.ap ?? 0
 
     // The plan is redone after every action, from the points the game really
@@ -757,6 +774,7 @@ export function initCombatAi(
       const me = getMyFighter(gameWindow)
       if (!me || me.cellId === null) break
 
+      const apCosts = pricesNow()
       const budget = Math.max(0, startingAp - spentAp)
       const actionPoints = Math.min(me.ap ?? 0, budget)
       const movementPoints = movementRefused ? 0 : (me.mp ?? 0)
@@ -832,11 +850,15 @@ export function initCombatAi(
         // want of a line: raising its price and trying again is what plays it
         // to the end of the turn instead of dropping it after the first cast.
         const priced = apCosts.get(action.spellId) ?? action.apCost
-        const cast = (castsPerSpell.get(action.spellId) ?? 0) > 0
-        if (cast && priced < actionPoints) {
-          apCosts.set(action.spellId, priced + 1)
+        const already = castsPerSpell.get(action.spellId) ?? 0
+        if (already > 0 && priced < actionPoints && !escalating.has(action.spellId)) {
+          // It worked once and is refused now with points to spare: this is a
+          // spell that costs a point more on every cast. Remembered for the
+          // rest of the fight, not just the rest of the turn.
+          escalating.set(action.spellId, 1)
           log(
-            `${action.name || action.spellId} was refused at ${priced} AP: pricing it at ${priced + 1} AP`
+            `${action.name || action.spellId} was refused at ${priced} AP: it grows with use, ` +
+              `pricing it at ${priced + 1} AP from now on`
           )
           continue
         }
@@ -929,10 +951,18 @@ export function initCombatAi(
 
     if (settings.brain === 'ollama') {
       const outcome = await playWithModel(settings, combo, turn, stillOurTurn)
-      if (outcome === 'played') return
-      if (outcome === 'no-cast') {
-        log('The model only moved: casting the combo on top')
-        await castForTurn(settings, combo, label, turn, rules, stillOurTurn)
+
+      // A small model plays one or two actions and stops, leaving most of the
+      // turn unspent. Whatever it managed, the rest of the turn is played on
+      // the rules — points left at the end of a turn are points thrown away.
+      if (outcome === 'played' || outcome === 'no-cast') {
+        if (outcome === 'no-cast') log('The model only moved: casting on top')
+        const left = getMyFighter(gameWindow)
+        const points = left?.ap ?? 0
+        if (points > 0 && stillOurTurn() && isFightStarted(gameWindow)) {
+          log(`Model left ${points} AP: finishing the turn on the rules`)
+          await castForTurn(settings, combo, label, turn, rules, stillOurTurn)
+        }
         return
       }
     }
@@ -1300,6 +1330,7 @@ export function initCombatAi(
     challenges = []
     placed = false
     deadFighters = new Set()
+    escalating = new Map()
     lastCastTurn = new Map()
     // The placement cells arrive with the preparation phase, which can come
     // before this message: clearing them here would throw them away.

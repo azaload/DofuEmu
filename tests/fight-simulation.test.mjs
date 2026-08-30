@@ -926,6 +926,90 @@ async function main() {
     console.log(`ok - an area is aimed at its best cell across ${Object.keys(layouts).length} arrangements`)
   }
 
+  // --- the points left at the end of a turn buy safety ---
+  // A monster with three movement points reaches four cells. Ending the turn
+  // inside that ring hands it a free hit; ending it outside, but still within
+  // our own range, is the difference between trading and being hit for free.
+  {
+    const world = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 8,
+      movementPoints: 4,
+      characteristics: strengthCra,
+      spells: craSpells(),
+      monsters: [
+        { cellId: cellFromCoordinates(13, 10), life: 500, behaviour: 'static', mp: 3, name: 'Piou Bleu' }
+      ]
+    })
+
+    const catalogue = readSpellCatalogue(world.gameWindow)
+    const plan = planTurn(world.gameWindow, {
+      turn: 1,
+      actionPoints: 8,
+      movementPoints: 4,
+      elements: [],
+      lastCastTurn: new Map(),
+      canMove: true,
+      keepDistance: true
+    })
+
+    assert.ok(plan.casts.length > 0, 'the turn still shoots')
+
+    // Where the turn leaves the character, whatever order it acted in.
+    const ending = plan.actions.reduce(
+      (cell, action) => (action.type === 'move' ? action.cellId : cell),
+      cellFromCoordinates(10, 10)
+    )
+    const monster = cellFromCoordinates(13, 10)
+    const longest = Math.max(
+      ...catalogue.filter((entry) => entry.kind === 'damage').map((entry) => entry.range)
+    )
+    const gap = cellDistance(ending, monster)
+    assert.ok(gap > 4, `the turn ends outside the monster's four-cell reach (${gap} away)`)
+    assert.ok(
+      gap <= longest,
+      `but inside our own range, so next turn opens with a cast (${gap} against ${longest})`
+    )
+    console.log('ok - leftover movement is spent getting out of reach')
+  }
+
+  // --- the wounded one falls first ---
+  // Damage spread evenly leaves every monster alive and hitting back. With
+  // two identical birds, one of them nearly dead, the arrows go to that one.
+  {
+    const world = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 3,
+      movementPoints: 0,
+      characteristics: strengthCra,
+      spells: { 5: craSpells()[5] },
+      monsters: [
+        { cellId: cellFromCoordinates(13, 10), life: 500, behaviour: 'static', name: 'Piou Sain' },
+        { cellId: cellFromCoordinates(13, 12), life: 500, behaviour: 'static', name: 'Piou Blessé' }
+      ]
+    })
+
+    // The second has taken a beating already.
+    world.monsters[1].life = 60
+
+    const plan = planTurn(world.gameWindow, {
+      turn: 1,
+      actionPoints: 3,
+      movementPoints: 0,
+      elements: [],
+      lastCastTurn: new Map(),
+      canMove: false,
+      keepDistance: true
+    })
+
+    assert.ok(plan.casts.length > 0, 'the turn shoots')
+    assert.ok(
+      plan.casts[0].hits.includes(world.monsters[1].id),
+      'and picks the monster closest to death over the healthy one'
+    )
+    console.log('ok - arrows go to the monster closest to death')
+  }
+
   // --- no action points at all ---
   {
     const world = createWorld({

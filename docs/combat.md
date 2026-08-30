@@ -257,6 +257,11 @@ where the area still covers it, and among the cells that cover the named target 
 catching the most enemies wins. Spells the client does not describe keep the configured
 range and are aimed as before.
 
+Movement points left at the end of a turn are spent backing out of the monsters' reach —
+each one's own movement decides how far that is — but never past the character's own range,
+since leaving the fight only postpones it. Short of a kill, arrows go to the monster closest
+to death: one that falls stops playing its turn, which is the cheapest defence there is.
+
 A cooldown counts the turns to wait **between** casts, so a spell without one may be cast
 again on the same turn — twice, three times, as long as the points last. A spell that grows
 with use, costing a point more on each cast, is re-priced from what the game accepts rather

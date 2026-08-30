@@ -1827,7 +1827,17 @@ async function testModelBrain() {
   assert.ok(asked[0].prompt.includes('"cells"') || asked[0].prompt.includes('cells'), 'the prompt carries the state')
 
   const casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
-  assert.strictEqual(casts.length, 1, 'only the legal cast is played')
+  assert.ok(casts.length >= 1, 'the legal cast is played')
+  assert.ok(
+    casts.every((message) => message.data.spellId !== 777),
+    'and the spell the model invented never reaches the game'
+  )
+  // Whatever the model managed, the points it left over are played on the
+  // rules rather than thrown away with the turn.
+  assert.ok(
+    logs.some((line) => line.includes('finishing the turn on the rules')),
+    `the rest of the turn is played (${logs.join(' | ')})`
+  )
   assert.strictEqual(casts[0].data.spellId, 161)
   assert.ok(logs.some((line) => line.includes('hit the closest')), 'the reason is logged')
   assert.ok(logs.some((line) => line.includes('not in the combo')), 'the invented spell is reported')

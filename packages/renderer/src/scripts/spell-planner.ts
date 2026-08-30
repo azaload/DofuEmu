@@ -92,6 +92,14 @@ export interface PlanContext {
 
 /** What one point of damage is worth against everything else. */
 const KILL_BONUS = 400
+/**
+ * How much finishing a wounded monster is worth beyond the damage itself.
+ *
+ * Spreading damage evenly leaves every monster alive and hitting back. The
+ * one closest to death is the one worth another arrow: a dead monster stops
+ * playing altogether, which is the cheapest defence there is.
+ */
+const FOCUS_BONUS = 40
 const ALLY_PENALTY = 3
 const SELF_PENALTY = 6
 const BUFF_VALUE = 120
@@ -271,6 +279,15 @@ function valueOfCast(
       const left = state.life.get(enemy.id) ?? enemy.life ?? dealt
       value += Math.min(dealt, left)
       if (dealt >= left) value += KILL_BONUS
+
+      // Short of a kill, the closer to death the better: it is the next one
+      // to fall, and one fewer monster playing its turn.
+      // Clamped: a client that reports more life than the maximum — a shield,
+      // a buff, a stale reading — must not turn the bonus into a penalty.
+      const full = enemy.maxLife ?? enemy.life ?? 0
+      if (full > 0 && dealt < left) {
+        value += Math.min(1, Math.max(0, 1 - left / full)) * FOCUS_BONUS
+      }
     }
 
     const friendlyCost = friendlyHits.reduce(
@@ -737,6 +754,78 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
     state = afterCast(state, next, spells, enemies)
 
     if (state.actionPoints <= 0) break
+  }
+
+  /**
+   * The last thing a turn does: get out of reach.
+   *
+   * Movement points left over at the end of a turn are worth nothing kept.
+   * Spent backing away, they decide how much of the monsters' turn lands: one
+   * that cannot walk up to the character cannot hit it either. Cells are
+   * scored by how many enemies could still reach them, using the movement
+   * each one really has, then by plain distance.
+   */
+  if (movementPoints > 0 && context.keepDistance && enemies.length > 0) {
+    const reachOf = (enemy: Fighter) => (enemy.mp ?? 3) + 1
+
+    // Backing away past our own range is not safety, it is leaving the fight:
+    // next turn would open with a walk instead of a cast.
+    const ownReach = Math.max(
+      ...spells
+        .filter((spell) => spell.kind === 'damage')
+        .map((spell) => spell.range + (spell.rangeBoostable ? state.rangeBonus : 0)),
+      0
+    )
+
+    const threats = (cellId: number) =>
+      enemies.filter((enemy) => cellDistance(cellId, enemy.cellId as number) <= reachOf(enemy)).length
+
+    const blocked = new Set([...occupied].filter((cellId) => cellId !== position))
+    const here = { threats: threats(position), distance: distanceToEnemies(position) }
+
+    let retreat: { cellId: number; path: number[]; cost: number; threats: number; distance: number } | null =
+      null
+
+    for (const entry of reachableCells(gameWindow, position, movementPoints, blocked).values()) {
+      if (entry.cellId === position) continue
+      const candidate = {
+        cellId: entry.cellId,
+        path: entry.path,
+        cost: entry.cost,
+        threats: threats(entry.cellId),
+        distance: distanceToEnemies(entry.cellId)
+      }
+
+      const better =
+        candidate.threats !== here.threats
+          ? candidate.threats < here.threats
+          : candidate.distance > here.distance
+
+      if (candidate.distance > ownReach) continue
+      if (!better) continue
+      if (
+        !retreat ||
+        candidate.threats < retreat.threats ||
+        (candidate.threats === retreat.threats && candidate.distance > retreat.distance)
+      ) {
+        retreat = candidate
+      }
+    }
+
+    if (retreat) {
+      actions.push({
+        type: 'move',
+        cellId: retreat.cellId,
+        path: retreat.path,
+        cost: retreat.cost,
+        reason:
+          retreat.threats < here.threats
+            ? `out of reach of ${here.threats - retreat.threats} monster(s) next turn`
+            : `${retreat.distance} cell(s) from the closest monster`
+      })
+      movementPoints -= retreat.cost
+      position = retreat.cellId
+    }
   }
 
   /**
