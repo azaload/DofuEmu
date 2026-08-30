@@ -246,6 +246,11 @@ takes the first one. Each outcome is written to the log: the cell taken and why,
 none was offered, that no monster was placed yet, or that the game kept the character where
 it stood.
 
+A move says what it really does — `closing on Piou Vert, 19 to 14 cell(s)`, `backing off`,
+`sidestepping` — rather than repeating the positioning setting, and whether it ended in
+range. A combo holding a spell that must be thrown along an axis lines the character up
+whatever the setting says: from off the line that spell can only ever be skipped.
+
 In the manual combo, a spell is aimed by its own rules rather than at the target's cell: one
 with a minimum range cannot be thrown at a monster in melee, so the cast is placed beside it
 where the area still covers it, and among the cells that cover the named target the one

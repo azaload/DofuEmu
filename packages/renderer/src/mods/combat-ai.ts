@@ -298,8 +298,16 @@ export function initCombatAi(
 
     const tacklers = tacklingEnemies(getEnemies(gameWindow), me.cellId)
 
+    // A spell that must be thrown along an axis is worthless from a cell that
+    // is not on one, whatever the setting says: the combo decides this, not a
+    // preference.
+    const catalogue = readSpellCatalogue(gameWindow)
+    const needsLine = combo.some(
+      (entry) => catalogue.find((spell) => spell.id === entry.id && spell.detailed)?.castInLine
+    )
+
     const move = findPositionCell(gameWindow, target, range, movementPoints, {
-      preferLineUp: settings.preferLineUp,
+      preferLineUp: settings.preferLineUp || needsLine,
       positioning: settings.positioning,
       tackleAware: settings.tackleAware
     })
@@ -313,15 +321,21 @@ export function initCombatAi(
       return
     }
 
+    // What the move actually does, not what the setting asks for: a log that
+    // says "keeping my distance" while walking towards the pack is worse than
+    // no log at all.
+    const name = target.name ?? `fighter ${target.id}`
     const intent =
-      settings.positioning === 'keep-distance'
-        ? `keeping ${move.distanceToClosestEnemy} cell(s) from the closest enemy`
-        : `closing to ${move.distanceToTarget} cell(s)`
+      move.distanceToTarget < distance
+        ? `closing on ${name}, ${distance} to ${move.distanceToTarget} cell(s)`
+        : move.distanceToTarget > distance
+          ? `backing off ${name}, ${distance} to ${move.distanceToTarget} cell(s)`
+          : `sidestepping, still ${move.distanceToTarget} cell(s) from ${name}`
     const escaping = tacklers.length > 0 ? `, breaking away from ${tacklers.length} monster(s)` : ''
     log(
       `Moving to cell ${move.cellId}: ${move.cost} of ${movementPoints} MP, ${intent}${escaping}` +
         (move.aligned ? ', lined up' : '') +
-        ` (range ${range} from ${source})`
+        (move.inRange ? ', in range' : `, out of range ${range} from ${source}`)
     )
 
     const apBefore = me.ap ?? null
@@ -543,6 +557,15 @@ export function initCombatAi(
     rules: ReturnType<typeof deriveChallengeRules>,
     stillOurTurn: () => boolean
   ) => {
+    // The same combo entry can come round twice, once per target: saying the
+    // same thing twice hides how much of the turn was actually played.
+    const said = new Set<string>()
+    const sayOnce = (message: string) => {
+      if (said.has(message)) return
+      said.add(message)
+      log(message)
+    }
+
     for (const spell of combo) {
       if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
@@ -596,7 +619,7 @@ export function initCombatAi(
         if (here !== null) {
           const distance = cellDistance(here, target.cellId)
           if (distance > range) {
-            log(
+            sayOnce(
               `Skipping ${spell.name || spell.id}: ${target.name ?? target.id} is ${distance} cell(s) away, range ${range}`
             )
             continue
@@ -619,9 +642,10 @@ export function initCombatAi(
         const cellId = aim?.cellId ?? target.cellId
 
         if (details && !aim) {
-          log(
+          sayOnce(
             `Skipping ${spell.name || spell.id}: no cell in its ${details.minRange}-${details.range}` +
-              `${details.castInLine ? ' straight-line' : ''} reach covers ${target.name ?? target.id}`
+              `${details.castInLine ? ' straight-line' : ''} reach covers ${target.name ?? target.id}` +
+              (details.castInLine ? ' — walk onto its line, or drop it from the combo' : '')
           )
           continue
         }

@@ -1144,7 +1144,10 @@ async function testKitingAndSingleMove() {
     'the AI backs away from the enemy'
   )
   assert.ok(cellDistance(landing, enemyCell) <= 5, 'it stays within casting range')
-  assert.ok(logs.some((line) => line.includes('keeping')), 'the intent is logged')
+  assert.ok(
+    logs.some((line) => line.includes('backing off')),
+    `the move says what it really does (${logs.join(' | ')})`
+  )
   assert.ok(
     state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
     'the spell is cast from the new position'
@@ -3622,6 +3625,82 @@ async function testCorpsesAreNotTargeted() {
   console.log('ok - corpses are not aimed at')
 }
 
+/**
+ * A combo with a line-only spell walks onto that line.
+ *
+ * "No cell in its straight-line reach covers the target", turn after turn, is
+ * a spell that can never be cast from where the AI keeps standing. Whether to
+ * line up is not a preference when the combo holds a spell that must be
+ * thrown along an axis — it is the difference between casting and skipping.
+ */
+async function testLineSpellDrivesThePosition() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellFromCoordinates, cellDistance, areCellsAligned } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  const logs = []
+  const combatSettings = {
+    ...combatDefaults,
+    combo: [{ id: 2, name: 'Barrage' }],
+    approachEnemies: true,
+    // Even with lining up turned off, the spell's own rule decides.
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    targetStrategy: 'nearest',
+    defaultSpellRange: 7
+  }
+
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    2: {
+      id: 2,
+      spell: { nameId: 'Barrage' },
+      spellLevel: {
+        apCost: 4,
+        range: 7,
+        minRange: 1,
+        castInLine: true,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 97, diceNum: 26, diceSide: 29, zoneShape: 84, zoneSize: 1 }]
+      }
+    }
+  }
+
+  // The enemy is in range but off any axis, and the second one is far away.
+  const me = cellFromCoordinates(10, 10)
+  const enemy = cellFromCoordinates(13, 12)
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+  state.fighters[1].data.disposition.cellId = enemy
+  state.fighters[2].data.disposition.cellId = cellFromCoordinates(25, 25)
+  state.mpPerTurn = 5
+  assert.ok(!areCellsAligned(me, enemy), 'the fight opens off the enemy line')
+  state.startFight()
+
+  const dispose = initCombatAi(gameWindow, 'tab-line', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 700))
+
+  assert.strictEqual(state.moves.length, 1, `the AI moves once (${logs.join(' | ')})`)
+  const landing = state.moves[0]
+  assert.ok(areCellsAligned(landing, enemy), 'and lands on the line the spell needs')
+  assert.ok(cellDistance(landing, enemy) <= 7, 'within its range')
+
+  const casts = state.sent.filter((message) => message.name === 'GameActionFightCastRequestMessage')
+  assert.ok(casts.length > 0, 'so the spell is cast instead of skipped')
+
+  dispose()
+  console.log('ok - a line-only spell walks the AI onto its line')
+}
+
 async function testChallengeRules() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-state.ts'))
   const { deriveChallengeRules } = await import(
@@ -3962,6 +4041,7 @@ async function main() {
   await testPlacementWaitsForTheOffer()
   await testComboAimsAtTheBestCell()
   await testCorpsesAreNotTargeted()
+  await testLineSpellDrivesThePosition()
   await testChallengeRules()
   await testTurnPlanValidation()
   await testConnectionCheck()
