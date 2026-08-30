@@ -25,12 +25,14 @@ import {
   isFightStarted,
   pickTarget,
   targetsInRange,
-  setFightReady
+  setFightReady,
+  getAllies,
+  type Fighter
 } from '@/scripts/fight-bridge'
 import { requestMoveToCell } from '@/scripts/game-bridge'
 import { reachableCells } from '@/scripts/cells'
-import { planTurn as planSpellTurn } from '@/scripts/spell-planner'
-import { readRangeBonus, readSpellCatalogue } from '@/scripts/spell-catalogue'
+import { planTurn as planSpellTurn, castableCells, hitsFrom } from '@/scripts/spell-planner'
+import { readRangeBonus, readSpellCatalogue, type SpellDetails } from '@/scripts/spell-catalogue'
 import { readDamageProfile } from '@/scripts/damage'
 import type { DofusWindow } from '@/types/dofus-window'
 
@@ -84,7 +86,11 @@ const TURN_PLAYABLE_TIMEOUT_MS = 2500
 const SEQUENCE_TIMEOUT_MS = 2500
 const DUPLICATE_FIGHT_MS = 3000
 const CAST_CONFIRM_MS = 1500
-const IDLE_POLL_MS = 50
+const PLACEMENT_WAIT_MS = 2500
+const PLACEMENT_MOVE_MS = 1200
+// Every wait costs up to one poll, and a turn waits several times: a short
+// period is what keeps a fight from crawling.
+const IDLE_POLL_MS = 20
 
 function addListener(
   source: EventSourceLike | undefined,
@@ -131,6 +137,8 @@ export function initCombatAi(
   let castsConfirmed = 0
   /** `spellId:cellId` the server refused this turn: never asked for twice. */
   let refusedCasts = new Set<string>()
+  /** Fighters the fight has announced dead, ahead of the client's own list. */
+  let deadFighters = new Set<number>()
   /** Challenges of the current fight, from its messages and its panel. */
   let challenges: FightChallenge[] = []
   /** Starting cells the placement phase offers. */
@@ -594,28 +602,101 @@ export function initCombatAi(
           }
         }
 
-        try {
-          castSpell(gameWindow, spell.id, target.cellId)
-          const me = getMyFighter(gameWindow)
-          const distance =
-            me?.cellId !== null && me?.cellId !== undefined
-              ? cellDistance(me.cellId, target.cellId)
-              : null
+        // Aim through the spell's own rules — minimum range, line, area — so a
+        // monster in melee is caught by a cast placed beside it rather than
+        // skipped, and an area lands on as many enemies as it can reach.
+        const mine = getMyFighter(gameWindow)
+        // Only a spell the client really described is aimed by its own rules;
+        // otherwise the configured range is all there is to go on.
+        const details = readSpellCatalogue(gameWindow).find(
+          (entry) => entry.id === spell.id && entry.detailed
+        )
+        const aim =
+          details && mine
+            ? aimFor(details, target, getEnemies(gameWindow), [mine, ...getAllies(gameWindow)], range)
+            : null
+        const cellId = aim?.cellId ?? target.cellId
+
+        if (details && !aim) {
           log(
-            `Cast ${spell.name || spell.id} on ${target.name ?? target.id}` +
-              (distance !== null ? ` from ${distance} cell(s)` : '') +
-              (targets.length > 1 ? ` (${targets.length} enemies in range)` : '')
+            `Skipping ${spell.name || spell.id}: no cell in its ${details.minRange}-${details.range}` +
+              `${details.castInLine ? ' straight-line' : ''} reach covers ${target.name ?? target.id}`
           )
+          continue
+        }
+
+        const confirmedBefore = castsConfirmed
+        try {
+          castSpell(gameWindow, spell.id, cellId)
         } catch (err) {
           log(`Cast failed: ${err instanceof Error ? err.message : String(err)}`)
           break
         }
+
+        if (!(await waitFor(() => castsConfirmed > confirmedBefore, CAST_CONFIRM_MS))) {
+          log(`The game refused ${spell.name || spell.id} on cell ${cellId} (sight or a state)`)
+          continue
+        }
+
+        const caster = getMyFighter(gameWindow)
+        const distance =
+          caster?.cellId !== null && caster?.cellId !== undefined
+            ? cellDistance(caster.cellId, cellId)
+            : null
+        log(
+          `Cast ${spell.name || spell.id} on ${target.name ?? target.id}` +
+            (aim && aim.hits.length > 1 ? ` and ${aim.hits.length - 1} more in the area` : '') +
+            (distance !== null ? ` from ${distance} cell(s)` : '')
+        )
 
         await humanSleep(settings.castDelayMs)
         // Let the spell animation play out before the next action.
         await waitForIdle()
       }
     }
+  }
+
+  /**
+   * Where to aim a combo spell so it lands on the most enemies.
+   *
+   * A fixed combo names a target, not a cell, and a spell is rarely aimed at
+   * the target itself: one with a minimum range cannot be thrown at a monster
+   * in melee at all, and an area spell aimed a cell to the side often covers
+   * two. The cell is therefore chosen the way the planner chooses it — every
+   * cell the spell may legally be thrown at, scored by what its area covers.
+   */
+  const aimFor = (
+    spell: SpellDetails,
+    target: Fighter,
+    enemies: Fighter[],
+    friends: Fighter[],
+    /** Range configured for this combo entry, when the client's is unusable. */
+    effectiveRange: number
+  ): { cellId: number; hits: Fighter[] } | null => {
+    const here = getMyFighter(gameWindow)?.cellId ?? null
+    if (here === null || target.cellId === null) return null
+
+    const occupied = new Set(
+      [...enemies, ...friends]
+        .map((fighter) => fighter.cellId)
+        .filter((cellId): cellId is number => cellId !== null)
+    )
+
+    const reach = { ...spell, range: Math.max(spell.range, effectiveRange) }
+
+    let best: { cellId: number; hits: Fighter[]; score: number } | null = null
+    for (const cellId of castableCells(gameWindow, reach, here, occupied)) {
+      const hits = hitsFrom(reach, here, cellId, enemies)
+      // The combo names a target: a cell that catches somebody else instead is
+      // not the same cast, however many it touches.
+      if (!hits.some((enemy) => enemy.id === target.id)) continue
+
+      const friendlyHits = hitsFrom(reach, here, cellId, friends).length
+      const score = hits.length * 10 - friendlyHits * 5
+      if (!best || score > best.score) best = { cellId, hits, score }
+    }
+
+    return best ? { cellId: best.cellId, hits: best.hits } : null
   }
 
   /**
@@ -661,7 +742,8 @@ export function initCombatAi(
         lastCastTurn,
         canMove: settings.approachEnemies && !held,
         keepDistance: settings.positioning === 'keep-distance',
-        blockedCasts: refusedCasts
+        blockedCasts: refusedCasts,
+        ignoreFighters: deadFighters
       })
 
       if (!plan) {
@@ -916,16 +998,38 @@ export function initCombatAi(
   const takePlacementCell = async () => {
     const settings = callbacks.getSettings()
     if (disposed || placed || !settings.enabled || !settings.placeBeforeReady) return
-    if (placementCells.length === 0) return
+
+    // The offered cells and the monsters both arrive with the preparation
+    // phase, in no fixed order. Choosing before either is known scores every
+    // cell the same and takes the first one — which is what "the placement
+    // does nothing" looks like from the outside.
+    const known = await waitFor(
+      () =>
+        placementCells.length > 0 &&
+        getEnemies(gameWindow).some((enemy) => enemy.cellId !== null),
+      PLACEMENT_WAIT_MS
+    )
+    if (!known) {
+      log(
+        placementCells.length === 0
+          ? 'Placement: the game offered no starting cell'
+          : 'Placement: no monster is placed yet, keeping the starting cell'
+      )
+      return
+    }
 
     const choice = choosePlacementCell(gameWindow, placementCells, {
       positioning: settings.positioning
     })
-    if (!choice) return
+    if (!choice) {
+      log('Placement: none of the offered cells could be scored')
+      return
+    }
 
     const current = getMyFighter(gameWindow)?.cellId ?? null
     if (choice.cellId === current) {
       placed = true
+      log(`Placement: already on the best of ${placementCells.length} starting cell(s)`)
       return
     }
 
@@ -939,6 +1043,13 @@ export function initCombatAi(
             ? `seeing ${choice.sees.length} enemy(ies)`
             : `${choice.distanceToClosestEnemy} cell(s) from the closest enemy`
       log(`Taking starting cell ${choice.cellId}: ${why}`)
+
+      // The server can refuse the cell — someone else took it first.
+      const moved = await waitFor(
+        () => getMyFighter(gameWindow)?.cellId === choice.cellId,
+        PLACEMENT_MOVE_MS
+      )
+      if (!moved) log(`Placement: the game kept me on cell ${current}`)
     } catch (err) {
       log(`Could not take a starting cell: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -991,6 +1102,19 @@ export function initCombatAi(
    */
   const onSpellCast = () => {
     castsConfirmed += 1
+  }
+
+  /**
+   * A fighter died.
+   *
+   * The client keeps a corpse in its list until the death has played out, so
+   * a plan made in between aims a spell at a monster that is already gone —
+   * and lands it on whatever else the area happens to cover.
+   */
+  const onFighterDeath = (...args: unknown[]) => {
+    const message = args[0] as { targetId?: number; id?: number }
+    const id = typeof message?.targetId === 'number' ? message.targetId : message?.id
+    if (typeof id === 'number') deadFighters.add(id)
   }
 
   const onSequenceStart = () => {
@@ -1098,6 +1222,7 @@ export function initCombatAi(
     turnToken += 1
     challenges = []
     placed = false
+    deadFighters = new Set()
     lastCastTurn = new Map()
     // The placement cells arrive with the preparation phase, which can come
     // before this message: clearing them here would throw them away.
@@ -1128,6 +1253,7 @@ export function initCombatAi(
     addListener(source, 'ChallengeInfoMessage', onChallengeInfo, cleanups)
     addListener(source, 'GameFightPlacementPossiblePositionsMessage', onPlacementPositions, cleanups)
     addListener(source, 'GameActionFightSpellCastMessage', onSpellCast, cleanups)
+    addListener(source, 'GameActionFightDeathMessage', onFighterDeath, cleanups)
     addListener(source, 'SequenceStartMessage', onSequenceStart, cleanups)
     addListener(source, 'SequenceEndMessage', onSequenceEnd, cleanups)
     addListener(source, 'GameFightStartingMessage', onFightStart, cleanups)

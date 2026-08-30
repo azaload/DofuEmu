@@ -33,6 +33,12 @@ export interface SpellDetails {
   level: number | null
 
   apCost: number | null
+  /**
+   * The build really described this spell — cost, range, area — rather than
+   * leaving it to defaults. Constraints are only worth enforcing when they
+   * were read, never when they were assumed.
+   */
+  detailed: boolean
   range: number
   minRange: number
   rangeBoostable: boolean
@@ -278,6 +284,7 @@ export function readSpellCatalogue(gameWindow: DofusWindow): SpellDetails[] {
       level: asNumber(level?.grade) ?? asNumber(dict.level),
 
       apCost: asNumber(level?.apCost) ?? asNumber(dict.apCost),
+      detailed: (asNumber(level?.range) ?? asNumber(dict.range)) !== null,
       // Boostable spells reach as far as the character's Portée takes them,
       // which is what makes a range buff worth casting before an attack.
       range:

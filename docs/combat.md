@@ -229,6 +229,23 @@ air 20` — and which elements are ticked, naming every spell that ticking disab
 statistics at zero means the character sheet was not found and every spell then looks
 equally good, which is exactly how a fire arrow ends up cast by an earth character.
 
+A monster that has just died stays in the client's list until its death has played out, and
+is reported with no life left rather than absent. Anything at zero life, and anything the
+fight has announced dead, is left alone: a spell aimed at a corpse lands on whatever else
+the area covers.
+
+Starting cells are taken once the game has both offered them and placed the monsters — they
+arrive in no fixed order, and choosing before either is known scores every cell the same and
+takes the first one. Each outcome is written to the log: the cell taken and why, or that
+none was offered, that no monster was placed yet, or that the game kept the character where
+it stood.
+
+In the manual combo, a spell is aimed by its own rules rather than at the target's cell: one
+with a minimum range cannot be thrown at a monster in melee, so the cast is placed beside it
+where the area still covers it, and among the cells that cover the named target the one
+catching the most enemies wins. Spells the client does not describe keep the configured
+range and are aimed as before.
+
 A cast the server refuses — an obstacle in the way, a state the spell forbids — comes back
 as silence rather than an error. The AI waits for the confirmation, and when none arrives it
 says so, drops that spell on that cell for the rest of the turn and plans something else,

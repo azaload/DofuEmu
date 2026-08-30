@@ -67,6 +67,8 @@ export interface PlanContext {
   turn: number
   /** `spellId:cellId` the server has already refused this turn. */
   blockedCasts?: Set<string>
+  /** Fighters the fight has announced dead, whatever the client still says. */
+  ignoreFighters?: Set<number>
   actionPoints: number
   movementPoints: number
   elements: CombatElement[]
@@ -511,7 +513,13 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
   const me = getMyFighter(gameWindow)
   if (!me || me.cellId === null) return null
 
-  const enemies = getEnemies(gameWindow).filter((enemy) => enemy.cellId !== null)
+  // A monster killed a moment ago can still be listed as standing: the client
+  // clears it only once the death has played out. Aiming at one is a spell
+  // thrown at a corpse, so the fight's own death announcements win.
+  const gone = context.ignoreFighters ?? new Set<number>()
+  const enemies = getEnemies(gameWindow).filter(
+    (enemy) => enemy.cellId !== null && !gone.has(enemy.id)
+  )
   const allies = getAllies(gameWindow)
   const friends = [me, ...allies]
 
@@ -551,7 +559,7 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
 
   const occupied = new Set(
     getFighters(gameWindow)
-      .filter((fighter) => fighter.alive && fighter.cellId !== null)
+      .filter((fighter) => fighter.alive && fighter.cellId !== null && !gone.has(fighter.id))
       .map((fighter) => fighter.cellId as number)
   )
 

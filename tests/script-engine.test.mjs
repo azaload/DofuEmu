@@ -162,6 +162,13 @@ function createFakeGameWindow() {
             state.emit('GameFightStartingMessage', { monsterGroupId: data.monsterGroupId })
           }, 5)
         }
+        if (name === 'GameFightPlacementPositionRequestMessage') {
+          // The server puts the fighter on the cell it accepted.
+          setTimeout(() => {
+            fighters[0].data.disposition.cellId = data.cellId
+            gameWindow.isoEngine.actorManager.userActor.cellId = data.cellId
+          }, 2)
+        }
         if (name === 'GameActionFightCastRequestMessage') {
           // The server confirms a cast it accepted, and answers a refusal —
           // an obstacle in the way, a state the spell forbids — with silence.
@@ -3392,6 +3399,223 @@ async function testRefusedCastIsReplaced() {
   console.log('ok - a refused cast is replaced, not waited on')
 }
 
+/**
+ * Taking a starting cell when the offer and the monsters arrive late.
+ *
+ * The preparation phase sends the cells you may stand on and places the
+ * monsters in no fixed order. Choosing before either is known scores every
+ * cell the same and takes the first one, which looks from the outside like a
+ * placement that does nothing at all.
+ */
+async function testPlacementWaitsForTheOffer() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-bridge.ts'))
+  const { areCellsAligned } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-bridge.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  const logs = []
+  const combatSettings = {
+    ...combatDefaults,
+    placeBeforeReady: true,
+    autoReady: true,
+    readyDelayMs: 40,
+    positioning: 'keep-distance'
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-placement', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  // The fight opens with nobody placed and no cells offered yet.
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = null
+  state.fighters[2].data.disposition.cellId = null
+  gameWindow.gui.fightManager.isFightStarted = true
+  gameWindow.gui.playerData.isFighting = true
+  state.emit('GameFightStartingMessage', {})
+
+  // Both arrive a moment later, as they do in a real preparation phase.
+  await new Promise((resolve) => setTimeout(resolve, 120))
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[2].data.disposition.cellId = 336
+  const aligned = 322
+  const offLine = 267
+  assert.ok(areCellsAligned(aligned, 336), 'one offered cell is on the enemy line')
+  state.emit('GameFightPlacementPossiblePositionsMessage', { positions: [offLine, aligned] })
+
+  await new Promise((resolve) => setTimeout(resolve, 900))
+
+  const placement = state.sent.filter(
+    (message) => message.name === 'GameFightPlacementPositionRequestMessage'
+  )
+  assert.strictEqual(placement.length, 1, `one starting cell is asked for (${logs.join(' | ')})`)
+  assert.strictEqual(placement[0].data.cellId, aligned, 'and it is the one lined up with the enemy')
+
+  const ready = state.sent.findIndex((message) => message.name === 'GameFightReadyMessage')
+  const placedAt = state.sent.findIndex(
+    (message) => message.name === 'GameFightPlacementPositionRequestMessage'
+  )
+  assert.ok(placedAt < ready, 'the cell is taken before pressing ready')
+
+  dispose()
+  console.log('ok - a starting cell is taken once the offer and the monsters are known')
+}
+
+/**
+ * A combo aims by the spell's own rules, not at the target's cell.
+ *
+ * Concentration is thrown from two cells away and covers a cross: a monster
+ * in melee cannot be aimed at directly, but a cell beside it catches it — and
+ * with two monsters together, one cell catches both.
+ */
+async function testComboAimsAtTheBestCell() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellFromCoordinates, cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/zones.ts'))
+  const { areaCells } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'zones.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  const logs = []
+  const combatSettings = {
+    ...combatDefaults,
+    combo: [{ id: 3, name: 'Concentration' }],
+    targetStrategy: 'nearest',
+    spreadCasts: false,
+    defaultSpellRange: 4
+  }
+
+  // Concentration off the game's own sheet: 3 AP, range 2-4, cross of 1.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    3: {
+      id: 3,
+      spell: { nameId: 'Concentration' },
+      spellLevel: {
+        apCost: 3,
+        range: 4,
+        minRange: 2,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 97, diceNum: 20, diceSide: 22, zoneShape: 43, zoneSize: 1 }]
+      }
+    }
+  }
+
+  // Two monsters side by side, one of them in melee.
+  const me = cellFromCoordinates(10, 10)
+  const melee = cellFromCoordinates(11, 10)
+  const behind = cellFromCoordinates(12, 10)
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+  state.fighters[1].data.disposition.cellId = melee
+  state.fighters[2].data.disposition.cellId = behind
+  state.startFight()
+
+  const dispose = initCombatAi(gameWindow, 'tab-aim', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 600))
+
+  const casts = state.sent.filter((message) => message.name === 'GameActionFightCastRequestMessage')
+  assert.strictEqual(casts.length, 1, `the spell is cast (${logs.join(' | ')})`)
+
+  const cellId = casts[0].data.cellId
+  assert.notStrictEqual(cellId, melee, 'not at the monster in melee, which is inside the minimum range')
+  assert.ok(cellDistance(me, cellId) >= 2, 'the cast respects the minimum range')
+
+  const covered = areaCells({ shape: 'cross', size: 1, minSize: 0 }, me, cellId)
+  assert.ok(covered.includes(melee), 'and its cross still covers the monster in melee')
+  assert.ok(covered.includes(behind), 'along with the one behind it')
+
+  dispose()
+  console.log('ok - a combo aims beside a melee monster to cover it')
+}
+
+/**
+ * A corpse is never aimed at.
+ *
+ * The client keeps a dead monster in its list until the death has played out,
+ * and reports it with no life left rather than absent. A plan made in between
+ * throws the next spell at a body — and lands it on whatever else the area
+ * happens to cover.
+ */
+async function testCorpsesAreNotTargeted() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-planner.ts'))
+  const { planTurn } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'spell-planner.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: {
+      id: 1,
+      spell: { nameId: 'Arrow' },
+      spellLevel: {
+        apCost: 3,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 100, diceNum: 20, diceSide: 20, zoneSize: 0 }]
+      }
+    }
+  }
+
+  const context = (over) =>
+    Object.assign(
+      {
+        turn: 1,
+        actionPoints: 6,
+        movementPoints: 0,
+        elements: [],
+        lastCastTurn: new Map(),
+        canMove: false,
+        keepDistance: false
+      },
+      over
+    )
+
+  // The first monster has no life left but is still flagged alive.
+  state.fighters[1].data.stats.lifePoints = 0
+  const plan = planTurn(gameWindow, context({}))
+  assert.ok(plan.casts.length > 0, 'the fight goes on')
+  assert.ok(
+    plan.casts.every((cast) => !cast.hits.includes(20)),
+    'nothing is aimed at the monster with no life left'
+  )
+
+  // And a death the fight announced wins over whatever the client still lists.
+  state.fighters[1].data.stats.lifePoints = 120
+  const ignored = planTurn(gameWindow, context({ ignoreFighters: new Set([20]) }))
+  assert.ok(
+    ignored.casts.every((cast) => !cast.hits.includes(20)),
+    'a monster announced dead is left alone'
+  )
+  assert.ok(
+    ignored.casts.some((cast) => cast.hits.includes(21)),
+    'and the turn moves on to the next one'
+  )
+
+  console.log('ok - corpses are not aimed at')
+}
+
 async function testChallengeRules() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-state.ts'))
   const { deriveChallengeRules } = await import(
@@ -3647,7 +3871,8 @@ async function testCombatAi() {
   )
 
   state.startTurn(7)
-  await new Promise((resolve) => setTimeout(resolve, 120))
+  // Each cast waits for the server to confirm it, so give the turn room.
+  await new Promise((resolve) => setTimeout(resolve, 400))
 
   const casts = state.sent.filter((message) => message.name === 'GameActionFightCastRequestMessage')
   assert.deepStrictEqual(casts.map((c) => c.data.spellId), [161, 165], 'the combo is cast in order')
@@ -3728,6 +3953,9 @@ async function main() {
   await testSightBlockedByFighters()
   await testRangeAndItsBoost()
   await testRefusedCastIsReplaced()
+  await testPlacementWaitsForTheOffer()
+  await testComboAimsAtTheBestCell()
+  await testCorpsesAreNotTargeted()
   await testChallengeRules()
   await testTurnPlanValidation()
   await testConnectionCheck()

@@ -95,14 +95,19 @@ function toFighter(raw: unknown): Fighter | null {
 
   const disposition = asDict(data.disposition)
   const stats = asDict(data.stats)
-  const alive = typeof data.alive === 'boolean' ? data.alive : dict.alive !== false
+  // A fighter the client still flags alive but whose life has run out is a
+  // corpse: aiming at one wastes the spell, and the client only clears the
+  // flag once the death animation has played.
+  const life = asNumber(stats?.lifePoints)
+  const flagged = typeof data.alive === 'boolean' ? data.alive : dict.alive !== false
+  const alive = flagged && (life === null || life > 0)
 
   return {
     id,
     teamId: asNumber(data.teamId) ?? asNumber(dict.teamId),
     alive,
     cellId: asNumber(disposition?.cellId) ?? asNumber(dict.cellId) ?? asNumber(asDict(dict.position)?.cellId),
-    life: asNumber(stats?.lifePoints),
+    life,
     maxLife: asNumber(stats?.maxLifePoints) ?? asNumber(stats?.lifePointsMax),
     ap: asNumber(stats?.actionPoints),
     mp: asNumber(stats?.movementPoints),
