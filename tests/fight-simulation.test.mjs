@@ -363,7 +363,7 @@ async function main() {
   const hit = (world, spell, monster) =>
     damageAgainst(spell, { stats: monster.resists ?? {} }, readDamageProfile(world.gameWindow))
 
-  const { cellFromCoordinates, cellDistance } = geometry
+  const { cellFromCoordinates, cellDistance, hasLineOfSight } = geometry
 
   // --- a monster that stands still ---
   {
@@ -850,6 +850,80 @@ async function main() {
       `the turn still spends its points (${history[0].casts} cast(s))`
     )
     console.log('ok - a second area cast follows the push of the first')
+  }
+
+  // --- an area is aimed where it catches the most, whatever stands there ---
+  // Concentration off the sheet: 3 AP, range 2-4, a cross. Against every
+  // arrangement below, what the plan catches is compared with the best any
+  // cell within range could catch — searched exhaustively, not guessed. Two
+  // monsters set diagonally are the telling case: no cell on either of them
+  // covers the other, and only the empty ground between the two does.
+  {
+    const layouts = {
+      'a diagonal pair': [[12, 10], [13, 11], [18, 14]],
+      'a diagonal pair and a third': [[12, 10], [13, 11], [13, 9]],
+      'an L of three': [[12, 11], [13, 11], [13, 10]],
+      'a row of three': [[14, 10], [15, 10], [16, 10]],
+      'a square of four': [[14, 10], [15, 10], [14, 11], [15, 11]],
+      'two clumps of two': [[14, 10], [15, 10], [14, 15], [15, 15]],
+      'a scattered triangle': [[14, 10], [15, 12], [13, 12]]
+    }
+
+    for (const [name, spots] of Object.entries(layouts)) {
+      const world = createWorld({
+        myCell: cellFromCoordinates(10, 10),
+        actionPoints: 3,
+        movementPoints: 0,
+        characteristics: strengthCra,
+        spells: { 3: craSpells()[3] },
+        monsters: spots.map(([x, y], index) => ({
+          cellId: cellFromCoordinates(x, y),
+          life: 500,
+          behaviour: 'static',
+          name: `Piou ${index + 1}`
+        }))
+      })
+
+      const catalogue = readSpellCatalogue(world.gameWindow)
+      const spell = catalogue[0]
+      const me = cellFromCoordinates(10, 10)
+
+      // The best any legal cell could do, found by trying all of them under
+      // the rules the game itself applies — range, and a clear line with the
+      // other fighters counting as walls.
+      const bodies = world.monsters.map((monster) => monster.cellId)
+      let best = 0
+      for (let cellId = 0; cellId < 560; cellId++) {
+        const distance = cellDistance(me, cellId)
+        if (distance < spell.minRange || distance > spell.range) continue
+        if (spell.needsLineOfSight) {
+          const blockers = new Set(bodies.filter((cell) => cell !== cellId))
+          if (!hasLineOfSight(world.gameWindow, me, cellId, blockers)) continue
+        }
+        const covered = areaCells(spell.zone, me, cellId)
+        const caught = world.monsters.filter((monster) => covered.includes(monster.cellId)).length
+        if (caught > best) best = caught
+      }
+
+      const plan = planTurn(world.gameWindow, {
+        turn: 1,
+        actionPoints: 3,
+        movementPoints: 0,
+        elements: [],
+        lastCastTurn: new Map(),
+        canMove: false,
+        keepDistance: true
+      })
+
+      assert.ok(plan.casts.length > 0, `${name}: the spell is cast`)
+      assert.strictEqual(
+        plan.casts[0].hits.length,
+        best,
+        `${name}: the cast catches every monster a cell could reach (${plan.casts[0].hits.length} of ${best})`
+      )
+    }
+
+    console.log(`ok - an area is aimed at its best cell across ${Object.keys(layouts).length} arrangements`)
   }
 
   // --- no action points at all ---

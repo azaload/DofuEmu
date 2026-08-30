@@ -26,6 +26,7 @@ import {
   pickTarget,
   targetsInRange,
   setFightReady,
+  readPlacementCells,
   getAllies,
   type Fighter
 } from '@/scripts/fight-bridge'
@@ -1003,22 +1004,30 @@ export function initCombatAi(
     // phase, in no fixed order. Choosing before either is known scores every
     // cell the same and takes the first one — which is what "the placement
     // does nothing" looks like from the outside.
-    const known = await waitFor(
-      () =>
-        placementCells.length > 0 &&
-        getEnemies(gameWindow).some((enemy) => enemy.cellId !== null),
-      PLACEMENT_WAIT_MS
-    )
+    // The message is the usual source; a build that names it differently, or a
+    // mod that loaded after it went past, still finds the cells on the client.
+    let offer = { cells: placementCells, source: 'the preparation message', hints: [] as string[] }
+    const known = await waitFor(() => {
+      if (placementCells.length > 0) {
+        offer = { cells: placementCells, source: 'the preparation message', hints: [] }
+      } else {
+        const read = readPlacementCells(gameWindow)
+        if (read.cells.length > 0) offer = read
+      }
+      return offer.cells.length > 0 && getEnemies(gameWindow).some((enemy) => enemy.cellId !== null)
+    }, PLACEMENT_WAIT_MS)
+
     if (!known) {
+      const read = readPlacementCells(gameWindow)
       log(
-        placementCells.length === 0
-          ? 'Placement: the game offered no starting cell'
+        offer.cells.length === 0
+          ? `Placement: no starting cell found${read.hints.length > 0 ? ` (client exposes ${read.hints.join(', ')})` : ''}`
           : 'Placement: no monster is placed yet, keeping the starting cell'
       )
       return
     }
 
-    const choice = choosePlacementCell(gameWindow, placementCells, {
+    const choice = choosePlacementCell(gameWindow, offer.cells, {
       positioning: settings.positioning
     })
     if (!choice) {
@@ -1029,7 +1038,7 @@ export function initCombatAi(
     const current = getMyFighter(gameWindow)?.cellId ?? null
     if (choice.cellId === current) {
       placed = true
-      log(`Placement: already on the best of ${placementCells.length} starting cell(s)`)
+      log(`Placement: already on the best of ${offer.cells.length} starting cell(s) from ${offer.source}`)
       return
     }
 
@@ -1037,12 +1046,15 @@ export function initCombatAi(
     try {
       sendPlacementMove(gameWindow, choice.cellId)
       const why =
-        choice.alignedWith.length > 0
-          ? `lined up with ${choice.alignedWith.length} enemy(ies)`
+        `${choice.distanceToClosestEnemy} cell(s) from the closest monster` +
+        (choice.alignedWith.length > 0
+          ? `, lined up with ${choice.alignedWith.length}`
           : choice.sees.length > 0
-            ? `seeing ${choice.sees.length} enemy(ies)`
-            : `${choice.distanceToClosestEnemy} cell(s) from the closest enemy`
-      log(`Taking starting cell ${choice.cellId}: ${why}`)
+            ? `, seeing ${choice.sees.length}`
+            : '')
+      log(
+        `Taking starting cell ${choice.cellId} of ${offer.cells.length} from ${offer.source}: ${why}`
+      )
 
       // The server can refuse the cell — someone else took it first.
       const moved = await waitFor(
@@ -1183,6 +1195,19 @@ export function initCombatAi(
         `Stats: earth ${profile.stat.earth}, fire ${profile.stat.fire}, water ${profile.stat.water}, ` +
           `air ${profile.stat.air}, +${profile.damagePercent}% damage`
       )
+
+      // The areas as this build describes them, to be read against the spell
+      // sheets in game: a shape this code does not know falls back to a circle
+      // and is named here rather than quietly approximated.
+      const areas = usable.filter((spell) => spell.zone.size > 0)
+      if (areas.length > 0) {
+        log(
+          'Areas: ' +
+            areas
+              .map((spell) => `${spell.name ?? spell.id} ${spell.zone.shape}/${spell.zone.size}`)
+              .join(', ')
+        )
+      }
 
       // An element left unticked silently removes every spell that uses it.
       const ticked = settings.elements ?? []

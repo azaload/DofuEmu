@@ -471,6 +471,81 @@ export interface PlacementChoice {
  * safe one: the first turn opens with a spell instead of a walk. Which of
  * those wins then depends on how the character fights — at range or in contact.
  */
+/**
+ * The cells the game is offering to start the fight on.
+ *
+ * They normally arrive as a message during the preparation phase, but a mod
+ * that loads late — or a build that names the message differently — never sees
+ * it. So the client is asked directly as well, and what could not be found is
+ * reported with the keys it does expose, which is what makes a missing one
+ * fixable rather than a mystery.
+ */
+export interface PlacementCells {
+  cells: number[]
+  source: string
+  /** Fields that look related, listed when nothing was found. */
+  hints: string[]
+}
+
+const PLACEMENT_FIELDS = [
+  'possiblePlacementCells',
+  'placementCells',
+  '_placementCells',
+  'placementPositions',
+  'possiblePositions',
+  'fightSpawnCells',
+  'spawnCells'
+]
+
+const PLACEMENT_METHODS = ['getPossiblePlacementCells', 'getPlacementCells', 'getSpawnCells']
+
+function asCellList(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null
+  const cells = value
+    .map((entry) => (typeof entry === 'number' ? entry : asNumber(asDict(entry)?.cellId)))
+    .filter((cellId): cellId is number => cellId !== null && cellId >= 0)
+  return cells.length > 0 ? cells : null
+}
+
+export function readPlacementCells(gameWindow: DofusWindow): PlacementCells {
+  const gui = asDict(gameWindow.gui)
+  const isoEngine = asDict(gameWindow.isoEngine)
+  const owners: Array<[string, Dict | null]> = [
+    ['fightManager', asDict(gui?.fightManager)],
+    ['mapRenderer', asDict(isoEngine?.mapRenderer)],
+    ['actorManager', asDict(isoEngine?.actorManager)],
+    ['gui', gui]
+  ]
+
+  for (const [label, owner] of owners) {
+    if (!owner) continue
+
+    for (const field of PLACEMENT_FIELDS) {
+      const cells = asCellList(owner[field])
+      if (cells) return { cells, source: `${label}.${field}`, hints: [] }
+    }
+
+    for (const method of PLACEMENT_METHODS) {
+      const fn = owner[method]
+      if (typeof fn !== 'function') continue
+      try {
+        const cells = asCellList((fn as () => unknown).call(owner))
+        if (cells) return { cells, source: `${label}.${method}()`, hints: [] }
+      } catch {}
+    }
+  }
+
+  const hints: string[] = []
+  for (const [label, owner] of owners) {
+    if (!owner) continue
+    for (const key of Object.keys(owner)) {
+      if (/placement|spawn|position|cells/i.test(key)) hints.push(`${label}.${key}`)
+    }
+  }
+
+  return { cells: [], source: 'nothing', hints: hints.slice(0, 12) }
+}
+
 export function choosePlacementCell(
   gameWindow: DofusWindow,
   cells: number[],
@@ -478,8 +553,6 @@ export function choosePlacementCell(
 ): PlacementChoice | null {
   const enemies = getEnemies(gameWindow)
   if (cells.length === 0) return null
-
-  const keepDistance = (options.positioning ?? 'keep-distance') === 'keep-distance'
 
   const scored: PlacementChoice[] = cells
     .filter((cellId) => cellId >= 0)
@@ -505,14 +578,19 @@ export function choosePlacementCell(
     })
 
   const better = (a: PlacementChoice, b: PlacementChoice): boolean => {
-    // A straight line to an enemy first: the fight opens with a cast.
+    // Distance to the nearest monster decides: only a handful of cells are on
+    // offer, and starting the fight next to the pack is what puts the first
+    // turn in reach. A cell with no monster in sight of it at all (-1) is the
+    // worst of the lot, never the best.
+    const reach = (choice: PlacementChoice) =>
+      choice.distanceToClosestEnemy < 0 ? Number.MAX_SAFE_INTEGER : choice.distanceToClosestEnemy
+
+    if (reach(a) !== reach(b)) return reach(a) < reach(b)
+
+    // Between two cells the same distance away, a straight line to an enemy
+    // opens the fight with a cast.
     if ((a.alignedWith.length > 0) !== (b.alignedWith.length > 0)) return a.alignedWith.length > 0
     if ((a.sees.length > 0) !== (b.sees.length > 0)) return a.sees.length > 0
-    if (a.distanceToClosestEnemy !== b.distanceToClosestEnemy) {
-      return keepDistance
-        ? a.distanceToClosestEnemy > b.distanceToClosestEnemy
-        : a.distanceToClosestEnemy < b.distanceToClosestEnemy
-    }
     return a.sees.length > b.sees.length
   }
 

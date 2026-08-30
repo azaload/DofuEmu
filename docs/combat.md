@@ -234,6 +234,12 @@ is reported with no life left rather than absent. Anything at zero life, and any
 fight has announced dead, is left alone: a spell aimed at a corpse lands on whatever else
 the area covers.
 
+The starting cell chosen is the **closest offered cell to a monster**, so the fight opens
+within reach; between two cells equally close, a clear straight line to an enemy decides.
+The cells come from the preparation message, and when that is missed — a build that names it
+differently, a mod loaded a moment too late — they are read off the client instead, with the
+source named in the log.
+
 Starting cells are taken once the game has both offered them and placed the monsters — they
 arrive in no fixed order, and choosing before either is known scores every cell the same and
 takes the first one. Each outcome is written to the log: the cell taken and why, or that

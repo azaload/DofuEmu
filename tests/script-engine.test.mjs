@@ -1896,18 +1896,24 @@ async function testPlacementAndLineOfSight() {
   state.fighters[1].data.disposition.cellId = 336
   state.fighters[2].data.disposition.cellId = 336
 
-  // A cell lined up with the enemy beats a merely safe one.
+  // Only a handful of cells are offered: the closest one to a monster wins,
+  // so the fight opens within reach instead of across the map.
   const aligned = 322
   const offLine = 267
   assert.ok(areCellsAligned(aligned, 336), 'the first candidate is on the enemy line')
   const choice = choosePlacementCell(gameWindow, [offLine, aligned], { positioning: 'keep-distance' })
-  assert.strictEqual(choice.cellId, aligned, 'the lined-up starting cell wins')
+  assert.strictEqual(choice.cellId, aligned, 'the starting cell closest to the monster wins')
 
-  // A blocked line must not count as aligned, or the AI stands behind a wall.
+  // Distance decides even when the far cell is the one lined up.
+  const far = choosePlacementCell(gameWindow, [aligned, 308], { positioning: 'keep-distance' })
+  assert.strictEqual(far.cellId, aligned, 'and a closer cell is never given up for a line')
+
+  // Between two cells the same distance away, a clear line decides — and a
+  // blocked one is worth nothing, or the AI starts behind a wall.
   gameWindow.isoEngine.mapRenderer.isInLineOfSight = (from, to) =>
     !(from === aligned && to === 336)
-  const blocked = choosePlacementCell(gameWindow, [offLine, aligned], { positioning: 'keep-distance' })
-  assert.strictEqual(blocked.cellId, offLine, 'a blocked line is worth nothing')
+  const blocked = choosePlacementCell(gameWindow, [350, aligned], { positioning: 'keep-distance' })
+  assert.strictEqual(blocked.cellId, 350, 'a blocked line loses the tie')
 
   const move = findPositionCell(
     gameWindow,
