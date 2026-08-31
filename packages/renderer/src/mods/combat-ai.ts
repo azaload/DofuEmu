@@ -121,6 +121,14 @@ export function initCombatAi(
   let lastTurnOwner: number | null = null
   /** Both emitters announce a fight start; the second one is an echo. */
   let lastFightStartAt = 0
+  /**
+   * A walk this turn was refused or cut short.
+   *
+   * The way is blocked and will still be blocked a moment later: asking again
+   * is the burst of one-cell steps that reads as a bot. One failure ends the
+   * walking for the turn.
+   */
+  let walkBlocked = false
   /** Our own turn number in the current fight, starting at 1. */
   let myTurn = 0
   /**
@@ -292,25 +300,29 @@ export function initCombatAi(
    * One move, followed to its end: asking again while the engine is still
    * walking is what made the character crawl one cell at a time.
    */
-  const positionForTurn = async (settings: CombatSettings, combo: CombatSpell[]) => {
-    if (!settings.approachEnemies) return
+  const positionForTurn = async (
+    settings: CombatSettings,
+    combo: CombatSpell[],
+    purpose: 'approach' | 'retreat'
+  ): Promise<'arrived' | 'stopped' | 'none'> => {
+    if (!settings.approachEnemies) return 'none'
 
     const spellRange = comboRange(settings, combo)
-    if (!spellRange) return
+    if (!spellRange) return 'none'
 
     const me = getMyFighter(gameWindow)
-    if (!me || me.cellId === null) return
+    if (!me || me.cellId === null) return 'none'
 
     const movementPoints = me.mp ?? 0
     const target = pickTarget(gameWindow, settings.targetStrategy)
-    if (!target || target.cellId === null) return
+    if (!target || target.cellId === null) return 'none'
 
     const distance = cellDistance(me.cellId, target.cellId)
     const { range, source } = spellRange
 
     if (movementPoints <= 0) {
       if (distance > range) log(`Target ${distance} cell(s) away, range ${range} (${source}), no MP left`)
-      return
+      return 'none'
     }
 
     const tacklers = tacklingEnemies(getEnemies(gameWindow), me.cellId)
@@ -326,16 +338,18 @@ export function initCombatAi(
     const move = findPositionCell(gameWindow, target, range, movementPoints, {
       preferLineUp: settings.preferLineUp || needsLine,
       positioning: settings.positioning,
-      tackleAware: settings.tackleAware
+      tackleAware: settings.tackleAware,
+      purpose
     })
 
     if (!move) {
+      if (purpose === 'retreat') return 'none'
       if (tacklers.length > 0 && settings.tackleAware) {
         log(`Held by ${tacklers.length} monster(s) in contact: not moving, casting from here`)
       } else if (distance > range) {
         log(`Target ${distance} cell(s) away, range ${range} (${source}), nowhere better within ${movementPoints} MP`)
       }
-      return
+      return 'none'
     }
 
     // What the move actually does, not what the setting asks for: a log that
@@ -362,7 +376,7 @@ export function initCombatAi(
     const sent = sendFightMove(gameWindow, move.path)
     if (!sent && !requestMoveToCell(gameWindow, move.cellId)) {
       log('No way to move on this build — run api.inspect() from a script')
-      return
+      return 'none'
     }
 
     const outcome = await waitForMove(move.cellId)
@@ -378,15 +392,18 @@ export function initCombatAi(
           ? `The server refused the move to cell ${move.cellId} — back on ${landedOn}`
           : `The move to cell ${move.cellId} was local only — back on ${landedOn}`
       )
-      return
+      walkBlocked = true
+      return 'none'
     }
 
     if (outcome === 'no-move') {
       log('The character did not move — blocked, or the engine refused the path')
-      return
+      walkBlocked = true
+      return 'none'
     }
     if (outcome === 'stopped-short') {
       log(`Stopped on cell ${currentCell()} instead of ${move.cellId} — the way is blocked`)
+      walkBlocked = true
     }
 
     // What the tackle actually cost, which no formula here can predict.
@@ -406,6 +423,8 @@ export function initCombatAi(
         log('Still in contact after the move')
       }
     }
+
+    return outcome === 'arrived' ? 'arrived' : 'stopped'
   }
 
   /** The steps to walk from `from` to `to`, or null when nothing legal leads there. */
@@ -583,7 +602,21 @@ export function initCombatAi(
       log(message)
     }
 
-    for (const spell of combo) {
+    // A monster killed mid-combo leaves the next spell with nothing in reach
+    // while the movement points are still untouched. Walking then — once per
+    // entry, so a combo cannot pace the map — is what carries the rest of the
+    // turn onto another monster.
+    const approached = new Set<number>()
+    const walkTowardsATarget = async (index: number): Promise<boolean> => {
+      if (walkBlocked || approached.has(index)) return false
+      approached.add(index)
+      // A walk the engine cut short will be cut short again: retrying then is
+      // the burst of one-cell steps this AI is not allowed to play.
+      return (await positionForTurn(settings, combo, 'approach')) === 'arrived'
+    }
+
+    for (let index = 0; index < combo.length; index++) {
+      const spell = combo[index]
       if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
       // Spells flagged "on me" need no target and no approach.
@@ -628,10 +661,15 @@ export function initCombatAi(
           log('No enemy left, stopping the combo')
           break
         }
+        if (await walkTowardsATarget(index)) {
+          index -= 1
+          continue
+        }
         sayOnce(`Skipping ${spell.name || spell.id}: nothing within ${range} cell(s)`)
         continue
       }
 
+      let retry = false
       for (const chosen of targets) {
         if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
@@ -650,6 +688,10 @@ export function initCombatAi(
         if (here !== null) {
           const distance = cellDistance(here, target.cellId)
           if (distance > range) {
+            if (await walkTowardsATarget(index)) {
+              retry = true
+              break
+            }
             sayOnce(
               `Skipping ${spell.name || spell.id}: ${target.name ?? target.id} is ${distance} cell(s) away, range ${range}`
             )
@@ -714,6 +756,9 @@ export function initCombatAi(
         // Let the spell animation play out before the next action.
         await waitForIdle()
       }
+
+      // The walk changed what is in reach: this entry is worth another look.
+      if (retry) index -= 1
     }
   }
 
@@ -999,10 +1044,25 @@ export function initCombatAi(
     await breakMeleeWithPush(settings, combo)
     if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
-    if (settings.spellMode !== 'auto') await positionForTurn(settings, combo)
+    walkBlocked = false
+
+    // Movement is spent in two halves: what a cast needs before the combo, and
+    // what safety wants after it. A monster killed in between frees the points
+    // for reaching another one, which is the whole reason not to back away
+    // before the spells have been played.
+    if (settings.spellMode !== 'auto') await positionForTurn(settings, combo, 'approach')
     if (!stillOurTurn() || !isFightStarted(gameWindow)) return
 
     await castForTurn(settings, combo, label, turn, rules, stillOurTurn)
+
+    if (
+      settings.spellMode !== 'auto' &&
+      settings.positioning === 'keep-distance' &&
+      stillOurTurn() &&
+      isFightStarted(gameWindow)
+    ) {
+      await positionForTurn(settings, combo, 'retreat')
+    }
 
     if (!stillOurTurn()) return
     if (settings.endTurnAfterCombo) {

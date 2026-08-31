@@ -262,6 +262,13 @@ where the area still covers it, and among the cells that cover the named target 
 catching the most enemies wins. Spells the client does not describe keep the configured
 range and are aimed as before.
 
+Movement is spent in two halves. Before the combo, only for what a cast needs — getting in
+range, or onto a line. After it, and only then, for backing away: a monster killed in
+between frees those points for reaching another one, which is why keeping your distance
+waits for the spells to be played. A combo entry with nothing in reach may walk once to
+find a target, and a walk the game refuses or cuts short ends the walking for that turn
+rather than being asked again a cell at a time.
+
 **Keeping your distance** applies to closing in as much as to backing off. With nothing
 castable from anywhere in reach — the pack too far, or the line blocked — walking as close
 as the points allow puts a ranged character in contact and costs the next turn to a tackle.

@@ -297,6 +297,16 @@ export interface PositionOptions {
    * fails outright — so the turn is spent casting instead.
    */
   tackleAware?: boolean
+  /**
+   * What this move is for.
+   *
+   * "approach" only moves for something a cast needs — getting in range, or
+   * onto a line — and leaves the points alone otherwise. "retreat" only backs
+   * away, and only while staying in range. Splitting the two lets a turn spend
+   * its action points first and its movement afterwards, when it knows which
+   * monsters are left standing.
+   */
+  purpose?: 'approach' | 'retreat' | 'both'
 }
 
 export interface PositionResult {
@@ -457,6 +467,12 @@ export function findPositionCell(
   // points and invites melee.
   const gainsAlignment = preferLineUp && best.aligned && !startAligned
   const gainsDistance = keepDistance && best.distanceToClosestEnemy > startEnemyDistance
+  const purpose = options.purpose ?? 'both'
+
+  // Backing away is worth movement points only once the spells are spent: a
+  // monster killed in the meantime frees the points for reaching another one.
+  if (purpose === 'approach' && !gainsAlignment && startInRange && best.inRange) return null
+  if (purpose === 'retreat' && (!gainsDistance || !best.inRange)) return null
 
   if (startInRange && best.inRange && !gainsAlignment && !gainsDistance) return null
 

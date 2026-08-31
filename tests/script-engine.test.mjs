@@ -1063,7 +1063,11 @@ async function testRangeAndShortWalk() {
   state.startTurn(7)
   await new Promise((resolve) => setTimeout(resolve, 1500))
 
-  assert.strictEqual(state.moves.length, 1, 'one move per turn, never a burst of small steps')
+  assert.strictEqual(
+    state.moves.length,
+    1,
+    `one move per turn, never a burst of small steps (${state.moves.join(',')}) ${logs.join(' | ')}`
+  )
   assert.ok(
     logs.some((line) => line.includes('Stopped on cell 294')),
     'a walk cut short by an obstacle is reported'
@@ -3914,6 +3918,101 @@ async function testComboSurvivesAKill() {
   console.log('ok - a kill mid-combo moves the next spell to another target')
 }
 
+/**
+ * Movement is spent after the spells, not before them.
+ *
+ * Backing away at the start of a turn spends the points that a kill has not
+ * happened yet to justify. When the target falls to the first arrow and
+ * action points remain, those points are what carry the next arrow to another
+ * monster — so keeping one's distance waits until the combo is played out.
+ */
+async function testRetreatWaitsForTheCasts() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellFromCoordinates, cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  const logs = []
+  const combatSettings = {
+    ...combatDefaults,
+    combo: [{ id: 9, name: 'Arrow' }, { id: 9, name: 'Arrow' }],
+    targetStrategy: 'weakest',
+    spreadCasts: false,
+    approachEnemies: true,
+    positioning: 'keep-distance',
+    preferLineUp: false
+  }
+
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    9: {
+      id: 9,
+      spell: { nameId: 'Arrow' },
+      spellLevel: {
+        apCost: 3,
+        range: 5,
+        minRange: 0,
+        rangeCanBeBoosted: false,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 100, diceNum: 20, diceSide: 20, zoneSize: 0 }]
+      }
+    }
+  }
+
+  // The weak one is in range; the other sits one cell beyond it.
+  const me = cellFromCoordinates(10, 10)
+  const weak = cellFromCoordinates(14, 10)
+  const far = cellFromCoordinates(16, 10)
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+  state.fighters[1].data.disposition.cellId = weak
+  state.fighters[1].data.stats.lifePoints = 10
+  state.fighters[2].data.disposition.cellId = far
+  state.fighters[2].data.stats.lifePoints = 300
+  state.mpPerTurn = 3
+  assert.strictEqual(cellDistance(me, far), 6, 'the second monster is one cell out of range')
+
+  // The first arrow kills the weak one, as it would in the game.
+  let cast = 0
+  const sendMessage = gameWindow.dofus.sendMessage
+  gameWindow.dofus.sendMessage = (name, data) => {
+    sendMessage(name, data)
+    if (name !== 'GameActionFightCastRequestMessage') return
+    cast += 1
+    if (cast === 1) {
+      setTimeout(() => {
+        state.fighters[1].data.stats.lifePoints = 0
+        state.emit('GameActionFightDeathMessage', { targetId: 20 })
+      }, 2)
+    }
+  }
+
+  state.startFight()
+  const dispose = initCombatAi(gameWindow, 'tab-retreat', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 1200))
+
+  const casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.strictEqual(casts.length, 2, `both arrows are fired (${logs.join(' | ')})`)
+  assert.strictEqual(casts[0].data.cellId, weak, 'the first at the weak one')
+  assert.strictEqual(
+    casts[1].data.cellId,
+    far,
+    'and the second at the one the movement was kept for'
+  )
+
+  dispose()
+  console.log('ok - movement waits for the spells, and carries the next one')
+}
+
 async function testChallengeRules() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-state.ts'))
   const { deriveChallengeRules } = await import(
@@ -4257,6 +4356,7 @@ async function main() {
   await testLineSpellDrivesThePosition()
   await testEscalatingSpellIsRepriced()
   await testComboSurvivesAKill()
+  await testRetreatWaitsForTheCasts()
   await testChallengeRules()
   await testTurnPlanValidation()
   await testConnectionCheck()
