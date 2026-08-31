@@ -258,6 +258,15 @@ export function initCombatAi(
     if (typeof spell.range === 'number' && spell.range >= 0) {
       return { range: spell.range, source: 'spell setting' }
     }
+
+    // The spellbook, not the raw level: a boostable spell reaches as far as
+    // the character's Portée takes it, and reading the printed number alone
+    // makes the combo skip targets it could hit.
+    const details = readSpellCatalogue(gameWindow).find(
+      (entry) => entry.id === spell.id && entry.detailed
+    )
+    if (details) return { range: details.range, source: 'the spellbook' }
+
     const fromGame = getSpellRange(gameWindow, spell.id)
     if (fromGame !== null) return { range: fromGame, source: 'game data' }
     return { range: settings.defaultSpellRange, source: 'fallback' }
@@ -613,13 +622,27 @@ export function initCombatAi(
             )
 
       if (targets.length === 0) {
-        log('No target left, stopping the combo')
-        break
+        // Nothing for this spell is not nothing for the combo: the next entry
+        // may reach further, or hit an enemy this one cannot.
+        if (getEnemies(gameWindow).length === 0) {
+          log('No enemy left, stopping the combo')
+          break
+        }
+        sayOnce(`Skipping ${spell.name || spell.id}: nothing within ${range} cell(s)`)
+        continue
       }
 
-      for (const target of targets) {
+      for (const chosen of targets) {
         if (!stillOurTurn() || !isFightStarted(gameWindow)) return
-        if (target.cellId === null) continue
+
+        // The list was drawn before the first cast of this entry: a monster
+        // killed since is gone, and one pushed since has moved. Both are read
+        // again here rather than aimed at where they used to be.
+        const target = getEnemies(gameWindow).find((enemy) => enemy.id === chosen.id)
+        if (!target || target.cellId === null) {
+          sayOnce(`${chosen.name ?? chosen.id} is down: moving on to the next target`)
+          continue
+        }
 
         // The combo is a fixed list, so it can name a target the spell cannot
         // possibly reach. Casting anyway wastes the turn and reads as a bug.

@@ -251,6 +251,11 @@ A move says what it really does — `closing on Piou Vert, 19 to 14 cell(s)`, `b
 range. A combo holding a spell that must be thrown along an axis lines the character up
 whatever the setting says: from off the line that spell can only ever be skipped.
 
+The combo measures its reach against the spellbook, Portée included, rather than the printed
+range, and re-reads its targets before every cast: one killed by the entry before is dropped
+for the next monster instead of ending the combo, and one pushed since is aimed at where it
+now stands. An entry with nothing in reach is skipped, not the whole combo.
+
 In the manual combo, a spell is aimed by its own rules rather than at the target's cell: one
 with a minimum range cannot be thrown at a monster in melee, so the cast is placed beside it
 where the area still covers it, and among the cells that cover the named target the one

@@ -3787,6 +3787,102 @@ async function testEscalatingSpellIsRepriced() {
   console.log('ok - a spell that grows with use is re-priced, not dropped')
 }
 
+/**
+ * A kill mid-combo does not end the combo.
+ *
+ * The targets are chosen before the first cast of an entry. When one dies to
+ * it, the entries that follow were skipped outright — "no target left" — even
+ * with another monster standing well within range. And the range they were
+ * measured against was the printed one, without the character's Portée, so
+ * monsters in reach counted as out of it.
+ */
+async function testComboSurvivesAKill() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellFromCoordinates, cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  const logs = []
+  const combatSettings = {
+    ...combatDefaults,
+    combo: [{ id: 7, name: 'Harcelante' }, { id: 7, name: 'Harcelante' }],
+    targetStrategy: 'weakest',
+    spreadCasts: false,
+    approachEnemies: false,
+    defaultSpellRange: 1
+  }
+
+  // Printed range 4, boostable, and three points of Portée on the fighter:
+  // the real reach is seven.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    7: {
+      id: 7,
+      spell: { nameId: 'Harcelante' },
+      spellLevel: {
+        apCost: 2,
+        range: 4,
+        minRange: 0,
+        rangeCanBeBoosted: true,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 100, diceNum: 15, diceSide: 15, zoneSize: 0 }]
+      }
+    }
+  }
+  state.fighters[0].data.stats.range = 3
+
+  const me = cellFromCoordinates(10, 10)
+  const dying = cellFromCoordinates(12, 10)
+  const other = cellFromCoordinates(16, 10)
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+  state.fighters[1].data.disposition.cellId = dying
+  state.fighters[1].data.stats.lifePoints = 10
+  state.fighters[2].data.disposition.cellId = other
+  state.fighters[2].data.stats.lifePoints = 300
+  assert.strictEqual(cellDistance(me, other), 6, 'the second monster is beyond the printed range')
+
+  // The first arrow kills the weakest, as it would in the game.
+  let cast = 0
+  const sendMessage = gameWindow.dofus.sendMessage
+  gameWindow.dofus.sendMessage = (name, data) => {
+    sendMessage(name, data)
+    if (name !== 'GameActionFightCastRequestMessage') return
+    cast += 1
+    if (cast === 1) {
+      setTimeout(() => {
+        state.fighters[1].data.stats.lifePoints = 0
+        state.emit('GameActionFightDeathMessage', { targetId: 20 })
+      }, 2)
+    }
+  }
+
+  state.startFight()
+  const dispose = initCombatAi(gameWindow, 'tab-kill', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 900))
+
+  const casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.strictEqual(casts.length, 2, `both combo entries are played (${logs.join(' | ')})`)
+  assert.strictEqual(casts[0].data.cellId, dying, 'the first goes to the weakest')
+  assert.strictEqual(
+    casts[1].data.cellId,
+    other,
+    'and the second to the monster still standing, six cells away on a printed range of four'
+  )
+
+  dispose()
+  console.log('ok - a kill mid-combo moves the next spell to another target')
+}
+
 async function testChallengeRules() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-state.ts'))
   const { deriveChallengeRules } = await import(
@@ -4129,6 +4225,7 @@ async function main() {
   await testCorpsesAreNotTargeted()
   await testLineSpellDrivesThePosition()
   await testEscalatingSpellIsRepriced()
+  await testComboSurvivesAKill()
   await testChallengeRules()
   await testTurnPlanValidation()
   await testConnectionCheck()
