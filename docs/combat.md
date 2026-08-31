@@ -262,6 +262,12 @@ where the area still covers it, and among the cells that cover the named target 
 catching the most enemies wins. Spells the client does not describe keep the configured
 range and are aimed as before.
 
+**Keeping your distance** applies to closing in as much as to backing off. With nothing
+castable from anywhere in reach — the pack too far, or the line blocked — walking as close
+as the points allow puts a ranged character in contact and costs the next turn to a tackle.
+It therefore walks to the **edge of its own range** instead, and never ends a step in
+another monster's contact for the sake of one cell.
+
 Movement points left at the end of a turn are spent backing out of the monsters' reach —
 each one's own movement decides how far that is — but never past the character's own range,
 since leaving the fight only postpones it. Short of a kill, arrows go to the monster closest

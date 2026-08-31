@@ -1010,6 +1010,50 @@ async function main() {
     console.log('ok - arrows go to the monster closest to death')
   }
 
+  // --- closing in stops at the edge of our range ---
+  // Nothing can be cast: the monster is too far to reach this turn. Walking
+  // as close as the points allow puts a ranged character in contact, and the
+  // next turn is spent tackled instead of shooting. The cell wanted is the
+  // one at the edge of its own range.
+  {
+    const world = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 8,
+      movementPoints: 11,
+      characteristics: strengthCra,
+      spells: { 3: craSpells()[3] },
+      monsters: [
+        { cellId: cellFromCoordinates(22, 10), life: 500, behaviour: 'static', mp: 3, name: 'Piou Bleu' }
+      ]
+    })
+
+    const catalogue = readSpellCatalogue(world.gameWindow)
+    const reach = catalogue.find((spell) => spell.id === 3).range
+
+    const plan = planTurn(world.gameWindow, {
+      turn: 1,
+      actionPoints: 8,
+      movementPoints: 11,
+      elements: [],
+      lastCastTurn: new Map(),
+      canMove: true,
+      keepDistance: true
+    })
+
+    const ending = plan.actions.reduce(
+      (cell, action) => (action.type === 'move' ? action.cellId : cell),
+      cellFromCoordinates(10, 10)
+    )
+    const gap = cellDistance(ending, cellFromCoordinates(22, 10))
+
+    assert.ok(gap < 12, `the turn closes in (12 to ${gap} cells)`)
+    assert.ok(
+      gap >= reach,
+      `and stops at the edge of its own range rather than walking into contact (${gap} against ${reach})`
+    )
+    console.log('ok - closing in stops at the edge of our range')
+  }
+
   // --- no action points at all ---
   {
     const world = createWorld({

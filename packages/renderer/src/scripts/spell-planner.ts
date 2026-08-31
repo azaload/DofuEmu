@@ -648,6 +648,15 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
   let movementPoints = context.canMove ? context.movementPoints : 0
   let total = 0
 
+  // How far the character can shoot from: the band it wants to fight in, and
+  // the limit on how far it may back away.
+  const ownReach = Math.max(
+    ...spells
+      .filter((spell) => spell.kind === 'damage')
+      .map((spell) => spell.range + (spell.rangeBoostable ? state.rangeBonus : 0)),
+    1
+  )
+
   const distanceToEnemies = (cellId: number) =>
     enemies.reduce(
       (closest, enemy) => Math.min(closest, cellDistance(cellId, enemy.cellId as number)),
@@ -669,6 +678,10 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
       return castValue + (context.keepDistance ? distance * DISTANCE_BONUS : 0)
     }
 
+    // Nothing can be cast from anywhere in reach. Closing in is right; closing
+    // all the way is not — a ranged character that ends its turn in contact
+    // spends the next one tackled. The cell wanted is the edge of our range.
+    if (context.keepDistance) return -Math.abs(distance - ownReach) * APPROACH_WEIGHT
     return -distance * APPROACH_WEIGHT
   }
 
@@ -770,12 +783,6 @@ export function planTurn(gameWindow: DofusWindow, context: PlanContext): TurnPla
 
     // Backing away past our own range is not safety, it is leaving the fight:
     // next turn would open with a walk instead of a cast.
-    const ownReach = Math.max(
-      ...spells
-        .filter((spell) => spell.kind === 'damage')
-        .map((spell) => spell.range + (spell.rangeBoostable ? state.rangeBonus : 0)),
-      0
-    )
 
     const threats = (cellId: number) =>
       enemies.filter((enemy) => cellDistance(cellId, enemy.cellId as number) <= reachOf(enemy)).length

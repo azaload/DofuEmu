@@ -411,8 +411,20 @@ export function findPositionCell(
     if (anyInRange && a.inRange !== b.inRange) return a.inRange
 
     if (!anyInRange) {
-      // Nothing reaches: close as much distance as we can.
-      if (a.distanceToTarget !== b.distanceToTarget) return a.distanceToTarget < b.distanceToTarget
+      // Nothing reaches from anywhere we can walk to — the target is too far,
+      // or nothing sees it. Closing in is right, but closing all the way is
+      // not: a ranged character that walks into contact spends the next turn
+      // tackled instead of shooting. The cell wanted is the one at the edge
+      // of our own range, not the one nearest the monster.
+      const overshoot = (choice: PositionResult) =>
+        keepDistance ? Math.abs(choice.distanceToTarget - range) : choice.distanceToTarget
+
+      if (overshoot(a) !== overshoot(b)) return overshoot(a) < overshoot(b)
+      if (keepDistance && a.distanceToClosestEnemy !== b.distanceToClosestEnemy) {
+        // Never end a step inside another monster's arms for the sake of one.
+        const safe = (choice: PositionResult) => choice.distanceToClosestEnemy > 1
+        if (safe(a) !== safe(b)) return safe(a)
+      }
       if (preferLineUp && a.aligned !== b.aligned) return a.aligned
       return a.cost < b.cost
     }
