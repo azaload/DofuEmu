@@ -673,10 +673,15 @@ export function initCombatAi(
         const cellId = aim?.cellId ?? target.cellId
 
         if (details && !aim) {
+          // The number that matters is where the target stands against what
+          // the spell can reach, and what ruled the cells out.
+          const gap = mine?.cellId != null ? cellDistance(mine.cellId, target.cellId) : null
           sayOnce(
-            `Skipping ${spell.name || spell.id}: no cell in its ${details.minRange}-${details.range}` +
-              `${details.castInLine ? ' straight-line' : ''} reach covers ${target.name ?? target.id}` +
-              (details.castInLine ? ' — walk onto its line, or drop it from the combo' : '')
+            `Skipping ${spell.name || spell.id}: ${target.name ?? target.id}` +
+              (gap === null ? '' : ` is ${gap} cell(s) away`) +
+              `, reach ${details.minRange}-${Math.max(details.range, range)}` +
+              (details.castInLine ? ', straight line only' : '') +
+              (details.needsLineOfSight ? ', needs a clear line' : '')
           )
           continue
         }
@@ -728,7 +733,7 @@ export function initCombatAi(
     friends: Fighter[],
     /** Range configured for this combo entry, when the client's is unusable. */
     effectiveRange: number
-  ): { cellId: number; hits: Fighter[] } | null => {
+  ): { cellId: number; hits: Fighter[]; legal: number } | null => {
     const here = getMyFighter(gameWindow)?.cellId ?? null
     if (here === null || target.cellId === null) return null
 
@@ -740,8 +745,9 @@ export function initCombatAi(
 
     const reach = { ...spell, range: Math.max(spell.range, effectiveRange) }
 
+    const legal = castableCells(gameWindow, reach, here, occupied)
     let best: { cellId: number; hits: Fighter[]; score: number } | null = null
-    for (const cellId of castableCells(gameWindow, reach, here, occupied)) {
+    for (const cellId of legal) {
       const hits = hitsFrom(reach, here, cellId, enemies)
       // The combo names a target: a cell that catches somebody else instead is
       // not the same cast, however many it touches.
@@ -752,7 +758,7 @@ export function initCombatAi(
       if (!best || score > best.score) best = { cellId, hits, score }
     }
 
-    return best ? { cellId: best.cellId, hits: best.hits } : null
+    return best ? { cellId: best.cellId, hits: best.hits, legal: legal.length } : null
   }
 
   /**
@@ -1267,22 +1273,30 @@ export function initCombatAi(
    * which mode is running turns every question about a fight into a guess.
    */
   const describeSetup = (settings: CombatSettings) => {
-    if (settings.spellMode !== 'auto') {
-      log(
-        'Fight: manual combo mode — the spellbook planner is off ' +
-          '(set Spells to "AI chooses" for ranges, areas and damage)'
-      )
-      return
-    }
+    const manual = settings.spellMode !== 'auto'
 
     try {
       const catalogue = readSpellCatalogue(gameWindow)
       const usable = catalogue.filter(
         (spell) => spell.kind === 'damage' || spell.kind === 'heal' || spell.kind === 'boost'
       )
+
+      // The manual combo needs the range and the Portée as much as the planner
+      // does — it is what decides whether a monster counts as reachable — so
+      // both modes report what they are working from.
       log(
-        `Fight: automatic mode, ${settings.brain} brain, Portée +${readRangeBonus(gameWindow)}, ` +
-          `${catalogue.length} spell(s) read, ${usable.length} usable`
+        manual
+          ? 'Fight: manual combo mode — the spellbook planner is off ' +
+            '(set Spells to "AI chooses" for areas, damage and sequencing)'
+          : `Fight: automatic mode, ${settings.brain} brain, ` +
+            `${catalogue.length} spell(s) read, ${usable.length} usable`
+      )
+
+      // Portée against the spells that take it: the two together are what a
+      // "range 5" in a skip message really means.
+      const boosted = catalogue.filter((spell) => spell.rangeBoostable).length
+      log(
+        `Portée +${readRangeBonus(gameWindow)}, added to ${boosted} of ${catalogue.length} spell(s)`
       )
 
       // Which characteristic feeds which element decides every choice below.
@@ -1315,7 +1329,7 @@ export function initCombatAi(
       }
 
       // An element left unticked silently removes every spell that uses it.
-      const ticked = settings.elements ?? []
+      const ticked = manual ? [] : (settings.elements ?? [])
       if (ticked.length > 0) {
         const disabled = usable.filter(
           (spell) =>

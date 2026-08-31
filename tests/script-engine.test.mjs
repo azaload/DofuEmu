@@ -3256,6 +3256,37 @@ async function testRangeAndItsBoost() {
   assert.strictEqual(catalogue.find((spell) => spell.id === 1).range, 8, 'a boostable spell takes the Portée')
   assert.strictEqual(catalogue.find((spell) => spell.id === 2).range, 5, 'a fixed one does not')
 
+  // Most spells take the Portée and the ones that do not say so, so a build
+  // that never mentions the flag must not lose the bonus in silence.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    3: { id: 3, ...arrow({}) }
+  }
+  assert.strictEqual(
+    readSpellCatalogue(gameWindow).find((spell) => spell.id === 3).range,
+    8,
+    'a spell whose build never mentions the flag is treated as taking it'
+  )
+
+  // And a build that works the range out itself is the authority on it.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    4: {
+      id: 4,
+      ...arrow({ rangeCanBeBoosted: true }),
+      getRange: () => 12
+    }
+  }
+  assert.strictEqual(
+    readSpellCatalogue(gameWindow).find((spell) => spell.id === 4).range,
+    12,
+    'the range the client computes wins over the sum'
+  )
+
+  // Back to the pair the rest of this test plans with.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: { id: 1, ...arrow({ rangeCanBeBoosted: true }) },
+    2: { id: 2, ...arrow({ rangeCanBeBoosted: false }) }
+  }
+
   // Only the boostable arrow reaches: it is the one that must be cast.
   const me = cellFromCoordinates(10, 10)
   const enemy = cellFromCoordinates(17, 10)

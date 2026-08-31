@@ -216,6 +216,42 @@ function readName(dict: Dict, spell: Dict | null): string | null {
 }
 
 /** Everything the character can cast, with the numbers a plan needs. */
+/**
+ * Whether the character's Portée adds to this spell's range.
+ *
+ * Most spells take it; the ones that do not say so. A build that does not
+ * expose the flag at all is therefore read as taking it: over-reaching costs
+ * a refusal the turn now recovers from and reports, while under-reaching
+ * silently skips targets that were in range all along.
+ */
+/**
+ * A range the build works out itself, Portée and all.
+ *
+ * Some clients expose the effective range on the spell rather than leaving it
+ * to be recomputed. When they do, it is the authority — it knows about every
+ * bonus, including the ones this code has no name for.
+ */
+function computedRange(owners: Array<Dict | null>): number | null {
+  for (const owner of owners) {
+    if (!owner) continue
+    for (const name of ['getRange', 'getRealRange', 'getMaxRange', 'computeRange']) {
+      const fn = owner[name]
+      if (typeof fn !== 'function') continue
+      try {
+        const value = asNumber((fn as () => unknown).call(owner))
+        if (value !== null && value > 0) return value
+      } catch {}
+    }
+  }
+  return null
+}
+
+function boostable(level: Dict | null): boolean {
+  const flag = level?.rangeCanBeBoosted
+  if (typeof flag === 'boolean') return flag
+  return true
+}
+
 export function readSpellCatalogue(gameWindow: DofusWindow): SpellDetails[] {
   const playerData = asDict(asDict(gameWindow.gui)?.playerData)
   const spellData =
@@ -283,12 +319,13 @@ export function readSpellCatalogue(gameWindow: DofusWindow): SpellDetails[] {
       apCost: asNumber(level?.apCost) ?? asNumber(dict.apCost),
       detailed: (asNumber(level?.range) ?? asNumber(dict.range)) !== null,
       // Boostable spells reach as far as the character's Portée takes them,
-      // which is what makes a range buff worth casting before an attack.
+      // which is what makes a range buff worth casting before an attack. A
+      // range the build works out itself wins over that sum.
       range:
-        (asNumber(level?.range) ?? asNumber(dict.range) ?? 1) +
-        (asBoolean(level?.rangeCanBeBoosted, false) ? rangeBonus : 0),
+        computedRange([level, dict, spell]) ??
+        (asNumber(level?.range) ?? asNumber(dict.range) ?? 1) + (boostable(level) ? rangeBonus : 0),
       minRange: asNumber(level?.minRange) ?? asNumber(dict.minRange) ?? 0,
-      rangeBoostable: asBoolean(level?.rangeCanBeBoosted, false),
+      rangeBoostable: boostable(level),
 
       castInLine: asBoolean(level?.castInLine, false),
       castInDiagonal: asBoolean(level?.castInDiagonal, false),

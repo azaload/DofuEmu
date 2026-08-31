@@ -306,7 +306,10 @@ the spells cast were chosen or configured.
 | Cooldown, casts per turn, casts per target | when a spell is available again, and on whom |
 | Effects | damage per element, healing, boosts, pushes, summons |
 
-A spell's printed range is only its base. Everything the game flags **boostable** reaches
+A range the build works out for itself — a spell exposing `getRange()` and the like — is
+taken as the authority, since it knows about bonuses this code has no name for. Failing
+that, a spell's printed range is only its base. Everything the game flags **boostable** — and everything whose build never mentions the flag,
+since the spells that do not take the Portée are the ones that say so — reaches
 as far as the character's **Portée** takes it, gear and fight buffs included, so a bow
 mastery that grants range is worth casting before shooting rather than after: the plan
 knows what the buff opens up and uses it in the same turn.
