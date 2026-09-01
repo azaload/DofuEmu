@@ -1,7 +1,12 @@
 # Combat AI
 
-The Combat AI plays fight turns for you. In its current form it does one thing, on every
-turn, on every connected tab: cast a fixed spell combo on a target, then pass the turn.
+The Combat AI plays fight turns for you, on every connected tab: it takes a starting cell,
+reads the character's spellbook, and plans each turn from it — where to stand, what to
+throw, at which cell, and in what order — then passes the turn.
+
+It can also be told to cast a fixed combo instead, or to hand the choice to a small model
+running on your own machine. All three go through the same engine: the same geometry, the
+same spell reading, the same legality checks.
 
 Configure it in **Settings → Combat**. The crossed-swords button in the title bar, between
 the scripts button and the settings gear, turns it on and off at a glance — gold when it is
@@ -9,16 +14,21 @@ playing, struck through when it is paused. `Ctrl+Shift+F` does the same from the
 
 ## How a turn is played
 
-1. A fight starts — if **Ready up automatically** is on, the AI sends the ready signal.
+1. A fight starts — the AI takes a starting cell (see [Choosing a starting
+   cell](#choosing-a-starting-cell)), then, if **Ready up automatically** is on, sends the
+   ready signal.
 2. Your character's turn begins. The AI waits for the server to declare the turn playable
-   and for any animation still running, picks the combo for that turn number (see below),
-   then waits **turn start delay** milliseconds.
-3. For each spell of the combo, in order: pick a target with the configured strategy,
-   walk closer if it is out of range, cast, then wait **cast delay** milliseconds.
-4. Once the combo is done, the turn is passed (unless **End turn after the combo** is off).
+   and for any animation still running, then waits **turn start delay** milliseconds.
+3. It plans the turn, plays the first action, and **plans again from what the game now
+   reports** — so a monster that died, a push that moved one, or points a boost handed back
+   are all taken into account. Between two actions it waits **cast delay** milliseconds.
+4. When nothing is left worth doing, the turn is passed (unless **End turn after the
+   combo** is off).
 
-Settings are read at the start of every turn, so editing the combo mid-fight applies from
-the next turn — nothing to restart.
+In manual mode step 3 is the configured combo instead, cast in order.
+
+Settings are read at the start of every turn, so editing them mid-fight applies from the
+next turn — nothing to restart.
 
 ### Pauses
 
@@ -96,39 +106,56 @@ the ones after that are the speed you will get in fights.
 
 ### What the model receives
 
-Not the raw fight — a snapshot where the hard parts are already solved:
+Not the raw fight, and not geometry to work out: a snapshot where **every legal
+action has already been computed and given a key**. The model picks keys.
 
-- your cell, life, action and movement points, **who holds you in contact** and whether
-  moving is allowed at all
-- the spells of the combo, with their range, whether they push their target, and, for each,
-  **the enemies it can actually hit right now** (range and line of sight already checked)
-- every enemy and ally with position, life, distance, line of sight and alignment
-- **the cells you can reach this turn**, each with its cost in movement points, its
-  distance to the closest enemy, and which enemies it sees or lines up with — the list is
-  empty while a monster holds you, so a move cannot even be considered
-- the fight's challenges when the client exposes them
+- **`me`** — cell, life, action and movement points, the Portée already added to the
+  spell ranges, who holds it in contact, and whether moving is allowed at all.
+- **`enemies`** and **`allies`** — position, life and life percentage, distance, line of
+  sight, whether they are lined up, how far each one can move *and hit* next turn, and
+  the percentage each of them resists per element.
+- **`spells`** — every spell the character owns: action-point cost, range as min-max,
+  area shape and size, straight line, line of sight, cooldown, casts left this turn,
+  whether it is a mastery, why it cannot be cast when it cannot — and, for each enemy,
+  **the damage it would really take off that one**, resistances applied.
+- **`casts`** — every legal cast from where the character stands, each with a key, the
+  cell it is aimed at, its cost, the enemies its area covers, the allies it would catch,
+  the damage, and which enemies it finishes off.
+- **`moves`** — every cell worth walking to, with its cost, the distance to the closest
+  monster from there, how many monsters could reach that cell next turn, and **the casts
+  that become possible once standing there**, each with its own key.
+- **`notes`** — a line or two in plain words: held in contact, nothing in reach, the
+  mastery is ready.
+- The fight's challenges, when the client exposes them and **Play the challenges** is on.
 
-A one- or two-billion-parameter model cannot work out geometry on its own; it can pick from
-a list of legal options. That is the whole design.
+A one- or two-billion-parameter model cannot work out geometry: ask it which cell an
+area spell should land on and it will invent one. Nothing is left for it to invent.
 
 ### What comes back
 
-A plan: an ordered list of `move` and `cast` actions. Enemies are numbered 1, 2, 3 in the
-snapshot and the model aims with those numbers, which small models handle far better than
-raw fighter ids.
+A list of keys:
 
-Every action is checked against the snapshot before anything reaches the game — a cell that is not reachable, a spell that is
-not in the combo, a target out of reach or unknown — and what is dropped is written to the
-activity log. A cast is never dropped for a bad target: a model that invents one, or aims out of reach,
-has its cast **re-aimed** at an enemy the spell can actually hit. A turn spent attacking the
-wrong monster still ends the fight; a turn spent doing nothing does not.
+```json
+{"plan":["m2","m2c1","m2c3"],"why":"walk out of reach, then hit both"}
+```
 
-And a plan that only walks does not end the turn: the configured combo is cast on top of it.
-Whatever the model decides, a turn where an enemy is in reach ends with an attack.
+At most one move, and it comes first; after a move, only the casts listed inside that
+move may be used. The action points spent may not exceed what the turn has. Every key is
+checked against the snapshot it came from before anything reaches the game, and what is
+dropped is written to the activity log with the reason.
+
+**A model that hallucinates cannot produce an illegal turn.** The worst it can do is
+choose a worse legal one — and the cells it casts at were computed here, so an area
+spell it picks still lands where that area covers the most.
+
+The older answer shape — `{"actions":[{"type":"cast","spellId":161,"targetId":2}]}` — is
+still understood and mapped onto the best matching precomputed cast, so a model prompted
+by an earlier version of this app keeps working.
 
 If the model does not answer within **Answer timeout**, answers nothing usable, or is not
-running at all, the built-in rules play the turn instead. A fight is never lost to a model
-that stalls.
+running at all, the built-in rules play the turn instead. A turn where the model only
+walked is finished on the rules rather than passed: points left at the end of a turn are
+points thrown away.
 
 ### Challenges
 
@@ -144,8 +171,8 @@ built-in rules ignore them entirely.
 
 - A small model on CPU answers in roughly half a second to two seconds. Fast, not instant.
 - It is asked once per turn, and plans the whole turn at once.
-- The rules remain the safety net, and the validation the guardrail: the model chooses,
-  it never bypasses what the game allows.
+- It chooses; it never computes. Every option it is offered was worked out by the same
+  code the rules use, and the rules remain the safety net when it stalls.
 
 ## A different combo on a given turn
 
@@ -161,39 +188,61 @@ number next to **Add turn** and fill the list that appears.
 
 ## Positioning
 
-With **Move in fights** on (the default), the AI places the character **once per turn**,
-before casting anything — one move, followed to its end. Asking again while the engine is
-still walking is what made a character cross three cells one step at a time.
+With **Move in fights** on (the default), the movement points are part of the plan rather
+than a step before it: the AI compares the best run of casts it can make where it stands
+against what a step sideways would unlock, and does whichever is worth more. So the points
+may be spent before the first spell, between two of them, or not at all.
 
 Two modes:
 
 - **Keep your distance** (default) — stand as far from every enemy as the spells still
-  allow, so the character fights at range instead of drifting into melee. Once a monster
-  *is* in contact, see **Tackle** below: the AI stays and casts.
+  allow, so the character fights at range instead of drifting into melee. Distance is only
+  worth anything from a cell a spell can be cast from: with nothing in reach anywhere, the
+  character closes in — to the **edge of its own range**, never into contact.
 - **Close in on the target** — walk up to the target instead, for melee builds.
 
-The range used for the decision is the **shortest** range in the combo, so every spell can
-still reach from where the character ends up. It comes from the range set on the spell, then
-the game's own value, then the **Fallback range** setting.
-
-**Line up with the target** (on by default) comes first among the cells that can cast: a
-line spell that cannot be thrown makes the safest cell worthless. Distance from the enemies
-then decides between the cells that are lined up.
-
-Already in range, the AI only moves for something the cast needs — lining up, or backing
-away from the enemies. It does not walk closer for its own sake: that spends points and
-invites melee.
+Whatever is left at the end of the turn is spent backing out of the monsters' reach. Each
+monster's own movement decides how far that is, and a cell no monster can reach next turn
+is worth more than one extra cell of distance. Never past the character's own range,
+though: leaving the fight only postpones it, and the next turn would open with a walk.
 
 ### Choosing a starting cell
 
 **Choose a starting cell** (on by default) uses the placement phase instead of readying
-where the fight dropped you. Among the cells offered, the AI prefers one that sees an enemy
-**in a straight line** — the fight then opens with a spell rather than a walk — then one
-that simply sees an enemy, and finally the distance your positioning mode asks for.
+where the fight dropped you. This is a rules decision, never the model's.
 
-A line that a wall blocks does not count as a line. That check runs everywhere now: a cell
-aligned with an enemy but with no clear sight is treated as unaligned, in placement and in
-movement alike, so the AI walks around the obstacle instead of standing behind it.
+The cell wanted is **the furthest one the fight can still be opened from**. In order:
+
+1. **It must open the fight.** From the cell itself, or from anywhere the **first turn's
+   movement points** can walk to, at least one of the character's spells must legally reach
+   a monster — range, minimum range, straight line and a clear line of sight all checked.
+   A cell that cannot is taken last, however safe it looks: it costs a whole turn.
+2. **Out of the pack's first-turn reach.** A monster's movement plus its one cell of melee
+   is how far it gets on its own first turn. A cell no monster reaches is worth more than
+   one more cell of distance.
+3. **As far back as those two allow.** Among the cells that qualify, the furthest wins.
+4. Then a cell that shoots without walking, then one that sees more monsters, then one
+   lined up with one, then the cheapest opening walk.
+
+The movement points are read from the fighter, and before the first turn — when the fight
+has not handed them out yet — from the character sheet. Placement that ignores them stands
+several cells closer than it needs to: a cell two steps short of a bow's range still opens
+the fight, and it is two cells further from the pack.
+
+*Close in on the target* reverses the order and nothing else: the closest cell that can
+still open the fight.
+
+The choice is written to the activity log in full — `Taking starting cell 267 of 8 from
+the preparation message: as far back as it can still shoot: 8 cell(s) from the closest
+monster, shooting after 2 MP, out of their first-turn reach, seeing 2 (3 MP on turn one,
+5 spell(s) to open with)` — so a placement that looks wrong can be argued with rather than
+guessed at.
+
+The cells come from the preparation message, and when that is missed — a build that names
+it differently, a mod loaded a moment too late — they are read off the client instead, with
+the source named in the log. They are taken once the game has both offered them **and**
+placed the monsters: choosing before either is known scores every cell the same and takes
+the first one, which is what "the placement does nothing" looks like from the outside.
 
 ### Tackle
 
@@ -234,17 +283,8 @@ is reported with no life left rather than absent. Anything at zero life, and any
 fight has announced dead, is left alone: a spell aimed at a corpse lands on whatever else
 the area covers.
 
-The starting cell chosen is the **closest offered cell to a monster**, so the fight opens
-within reach; between two cells equally close, a clear straight line to an enemy decides.
-The cells come from the preparation message, and when that is missed — a build that names it
-differently, a mod loaded a moment too late — they are read off the client instead, with the
-source named in the log.
-
-Starting cells are taken once the game has both offered them and placed the monsters — they
-arrive in no fixed order, and choosing before either is known scores every cell the same and
-takes the first one. Each outcome is written to the log: the cell taken and why, or that
-none was offered, that no monster was placed yet, or that the game kept the character where
-it stood.
+The starting cell is chosen by the rules described under [Choosing a starting
+cell](#choosing-a-starting-cell), from the spells this mode will actually be casting.
 
 A move says what it really does — `closing on Piou Vert, 19 to 14 cell(s)`, `backing off`,
 `sidestepping` — rather than repeating the positioning setting, and whether it ended in
@@ -289,6 +329,47 @@ A cooldown counts the turns to wait **between** casts, so a spell without one ma
 again on the same turn — twice, three times, as long as the points last. A spell that grows
 with use, costing a point more on each cast, is re-priced from what the game accepts rather
 than dropped after its first refusal.
+
+### Keeping the mastery up
+
+A **mastery** is a boost the character puts on itself that makes the spells after it hit
+harder or reach further — a bow mastery, a Portée buff. It is read as one when it is cast
+on its own cell and raises the range or the damage of what follows.
+
+With **Keep the mastery up** on (the default), it is cast **first, every time its cooldown
+allows it** — but only when the action points left after it still pay for an attack. That
+last clause is the whole of the adaptation to the points available:
+
+| Action points | 2-point mastery, 4-point arrow | What is played |
+|---------------|-------------------------------|----------------|
+| 4 | one arrow, or the mastery and nothing | the arrow |
+| 6 | the mastery and one arrow | the mastery, then the arrow |
+| 8 | the mastery and two arrows | the mastery, then both |
+
+It is skipped on the turn everything is going to die anyway — a buff that outlives the
+fight is a wasted cast — and while its cooldown is running, which the turn says outright.
+The range it grants is applied to the rest of the same turn, so the casts it puts in reach
+are planned with it, not after it: a buffed turn is one plan, not a buff and then a shrug.
+
+Turn the setting off and a boost is weighed like any other cast — it then loses to an area
+spell that catches three monsters, and wins when nothing better is available.
+
+### Hitting as many as possible
+
+A cast is aimed at a **cell**, never at a fighter. Every cell a spell may legally be thrown
+at is considered — range, minimum range, straight line, diagonal, line of sight, free or
+occupied cell — and the one whose area covers the most monsters wins.
+
+That is what lets an area spell aimed at empty ground catch two monsters that no cell on
+either of them could cover, and what lets a spell with a minimum range be thrown *beside*
+a monster in contact rather than skipped. Between two casts of equal damage the one
+touching more monsters wins; a cast that would catch an ally loses to one that does not,
+even when it touches fewer monsters.
+
+Pushes and pulls are part of the plan: a spell that shoves its targets a cell back moves
+them for every cast that follows, and a pull that groups a scattered pack makes the area
+cast after it worth more — which the search sees, because it plans the sequence rather
+than the next cast.
 
 Statistics are looked for by what they contain rather than by where they should be: the
 first object carrying the primary characteristics wins, and the path it was found at is
@@ -422,15 +503,21 @@ the next enemy.
 
 ## Current limits
 
-This is deliberately the basic version:
+What the automatic mode still does not do:
 
-- No line of sight or action-point checks — a cast the server refuses is simply skipped,
-  and the AI moves on to the next spell.
-- One placement per turn: no repositioning between two casts of the same turn.
-- No line-of-sight or cover reasoning — "keep your distance" maximises raw distance from
-  enemies, nothing more.
-- No spell conditions (cooldowns, states) beyond the turn-number combos above.
-- The AI does not look for fights: pair it with the hunt script below to farm.
+- **The manual combo is deliberately dumber.** It casts the list as written; ranges, areas
+  and the Portée are honoured, but nothing is weighed. Switch **Spells** to *Choose from my
+  spells* for the planner.
+- **One turn at a time.** The plan is redone after every action from the points the game
+  really reports, but nothing is held back for the turn after — no saving a mastery for a
+  better moment, no keeping points for an escape.
+- **Monsters are read, not predicted.** Their reach next turn is worked out from their
+  movement points; what they will actually cast is not.
+- **States and effects this code cannot name are left alone.** A spell whose effects are
+  unrecognised is never cast by the planner, and is listed as such in the log rather than
+  played blind.
+- **Challenges are reported, never enforced.**
+- **The AI does not look for fights**: pair it with the hunt script below to farm.
 
 ## Chaining fights automatically
 
@@ -461,21 +548,49 @@ See [scripting.md](scripting.md) for the full `api.fight` reference.
 
 ## Tests
 
-`pnpm test` runs three suites. `test:scripts` covers the controller against a stub game
-window: ready-up, combo order, target
-selection, passing the turn, ignoring other fighters' turns, and doing nothing while
-disabled. `test:main` covers the local file server, and `test:fights` plays whole fights
-out.
+`pnpm test` runs four suites.
+
+- **`test:scripts`** covers the controller against a stub game window: ready-up, combo
+  order, target selection, passing the turn, ignoring other fighters' turns, the placement
+  step, the model brain and its fallback, and doing nothing while disabled.
+- **`test:main`** covers the local file server.
+- **`test:fights`** plays whole fights out (below).
+- **`test:combat`** hammers the combat core (below).
 
 ### Whole fights
 
 `test:fights` runs the planner against monsters that behave differently — one that stands
 still, one that closes in, one that runs faster than the character, a mixed group, a wall in
-the way, and a turn with a single action point. This file plays the part of the server: it
-refuses what the game would refuse and records it, so a turn spending more action points
-than it has, a spell thrown out of range or past a wall, or a character walking through a
-monster fails the run.
+the way, and a turn with a single action point — plus a Crâ off the game's own spell sheets
+against a group of Pious, with and without earth resistance. This file plays the part of the
+server: it refuses what the game would refuse and records it, so a turn spending more action
+points than it has, a spell thrown out of range or past a wall, or a character walking
+through a monster fails the run.
 
 It also checks the shape of the fight, not just its legality: the group is worked through,
 the character never walks in circles without casting, and it never backs away from a fight
 it cannot yet reach — which is how it used to end up in a corner.
+
+### The combat core
+
+`test:combat` checks each layer against an answer worked out independently of it, over
+**generated fights** — three seeds by default, and `COMBAT_SEED=1234 pnpm test:combat`
+replays any one of them.
+
+| What | Checked against |
+|------|-----------------|
+| Range bands | a sweep of all 560 cells, 400 times a seed |
+| Area shapes | every cell they cover, against the reach the aiming searches within |
+| Walks | every reachable cell's path: adjacent steps, no walls, no fighters, cost = length |
+| Aiming | an exhaustive search of every legal cell on the map, over ~180 arrangements a seed |
+| Placement | a reference walk of the first turn's movement points, over ~170 offers a seed |
+| The model's options | every offered cast re-checked for range, sight and cost |
+| The model's answers | random and invented key lists — nothing illegal may come out |
+| The mastery | cast, skipped, on cooldown, and with the setting off |
+| Whole fights | 200 generated fights a seed, refereed action by action |
+| Speed | a six-monster, eight-spell turn planned in under 100 ms |
+
+The generated fights are the important ones: random walls, one to four monsters, one to
+four spells with random shapes, costs, ranges, lines and cast limits, random statistics,
+and six turns each. Anything the referee would refuse — a point overspent, a wall walked
+through, a claimed hit that lands on nobody — fails the run and prints the seed to replay.

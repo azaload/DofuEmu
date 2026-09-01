@@ -18,7 +18,7 @@ Unofficial desktop client for Dofus Touch.
 - Auto-group — followers auto-follow across maps
 - Auto-invite — automatic party invitations
 - Automation scripts — movement paths, resource circuits and custom JS per tab ([docs](docs/scripting.md))
-- Combat AI — casts a configured spell combo each turn, then passes, or lets a local Ollama model plan the turn ([docs](docs/combat.md))
+- Combat AI — takes a starting cell, plans each turn from your spellbook (areas, resistances, masteries, line of sight), or casts a configured combo, or lets a local Ollama model choose from the legal options ([docs](docs/combat.md))
 - Map-circuit hunting — chains fights over a chosen list of maps ([docs](docs/scripting.md))
 - Stay connected — keeps the session alive while a script plays, and closes the inactivity warning
 - Drag-to-reorder tabs

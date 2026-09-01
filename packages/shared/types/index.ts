@@ -80,8 +80,8 @@ export interface CombatSettings {
   turnStartDelayMs: number
   castDelayMs: number
   /**
-   * Take a starting cell before pressing ready: one lined up with an enemy
-   * opens the fight with a spell instead of a walk.
+   * Take a starting cell before pressing ready: the furthest one the fight
+   * can still be opened from, rather than wherever the game dropped you.
    */
   placeBeforeReady: boolean
   /** Pause before pressing ready at the start of a fight. */
@@ -110,6 +110,12 @@ export interface CombatSettings {
   spreadCasts: boolean
   /** Which spells the built-in AI casts: the combo, or its own choice. */
   spellMode: CombatSpellMode
+  /**
+   * Put the mastery back up whenever its cooldown allows and the action
+   * points left still buy an attack. A mastery lasting several turns is worth
+   * more than the one cast it delays.
+   */
+  keepMasteryUp: boolean
   /** Elements it may use when choosing on its own. */
   elements: CombatElement[]
   /** Who decides the turn: the built-in rules, or a local model. */

@@ -504,21 +504,6 @@ export function sendPlacementMove(gameWindow: DofusWindow, cellId: number): void
   sendMessage(gameWindow, 'GameFightPlacementPositionRequestMessage', { cellId })
 }
 
-export interface PlacementChoice {
-  cellId: number
-  /** Enemies this cell can cast at, by fighter id. */
-  sees: number[]
-  alignedWith: number[]
-  distanceToClosestEnemy: number
-}
-
-/**
- * Best starting cell among those offered.
- *
- * A placement cell that sees an enemy in a straight line is worth more than a
- * safe one: the first turn opens with a spell instead of a walk. Which of
- * those wins then depends on how the character fights — at range or in contact.
- */
 /**
  * The cells the game is offering to start the fight on.
  *
@@ -592,55 +577,4 @@ export function readPlacementCells(gameWindow: DofusWindow): PlacementCells {
   }
 
   return { cells: [], source: 'nothing', hints: hints.slice(0, 12) }
-}
-
-export function choosePlacementCell(
-  gameWindow: DofusWindow,
-  cells: number[],
-  options: { positioning?: CombatPositioning } = {}
-): PlacementChoice | null {
-  const enemies = getEnemies(gameWindow)
-  if (cells.length === 0) return null
-
-  const scored: PlacementChoice[] = cells
-    .filter((cellId) => cellId >= 0)
-    .map((cellId) => {
-      const sees: number[] = []
-      const alignedWith: number[] = []
-      let closest = Number.MAX_SAFE_INTEGER
-
-      for (const enemy of enemies) {
-        if (enemy.cellId === null) continue
-        closest = Math.min(closest, cellDistance(cellId, enemy.cellId))
-        if (!hasLineOfSight(gameWindow, cellId, enemy.cellId)) continue
-        sees.push(enemy.id)
-        if (areCellsAligned(cellId, enemy.cellId)) alignedWith.push(enemy.id)
-      }
-
-      return {
-        cellId,
-        sees,
-        alignedWith,
-        distanceToClosestEnemy: closest === Number.MAX_SAFE_INTEGER ? -1 : closest
-      }
-    })
-
-  const better = (a: PlacementChoice, b: PlacementChoice): boolean => {
-    // Distance to the nearest monster decides: only a handful of cells are on
-    // offer, and starting the fight next to the pack is what puts the first
-    // turn in reach. A cell with no monster in sight of it at all (-1) is the
-    // worst of the lot, never the best.
-    const reach = (choice: PlacementChoice) =>
-      choice.distanceToClosestEnemy < 0 ? Number.MAX_SAFE_INTEGER : choice.distanceToClosestEnemy
-
-    if (reach(a) !== reach(b)) return reach(a) < reach(b)
-
-    // Between two cells the same distance away, a straight line to an enemy
-    // opens the fight with a cast.
-    if ((a.alignedWith.length > 0) !== (b.alignedWith.length > 0)) return a.alignedWith.length > 0
-    if ((a.sees.length > 0) !== (b.sees.length > 0)) return a.sees.length > 0
-    return a.sees.length > b.sees.length
-  }
-
-  return scored.reduce((best, candidate) => (better(candidate, best) ? candidate : best))
 }

@@ -15,9 +15,10 @@
     "typecheck": "tsc --noEmit",
     "test:scripts": "node tests/script-engine.test.mjs",
     "test:main": "node tests/static-file.test.mjs",
-    "test": "npm run test:scripts && npm run test:main && npm run test:fights",
+    "test": "npm run test:scripts && npm run test:main && npm run test:fights && npm run test:combat",
     "clean": "node scripts/clean-release.mjs",
-    "test:fights": "node tests/fight-simulation.test.mjs"
+    "test:fights": "node tests/fight-simulation.test.mjs",
+    "test:combat": "node tests/combat-core.test.mjs"
   },
   "build": {
     "appId": "com.dofemu.app",

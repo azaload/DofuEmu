@@ -36,6 +36,16 @@ function asDict(value: unknown): Dict | null {
   return value && typeof value === 'object' ? (value as Dict) : null
 }
 
+/**
+ * A characteristic, wherever the sheet keeps it.
+ *
+ * Exported because the placement needs the movement points the character will
+ * open the fight with, and before the first turn the fighter reports none.
+ */
+export function readCharacteristic(source: unknown, name: string): number {
+  return characteristic(asDict(source), name)
+}
+
 /** A characteristic is spread over base, gear and buffs: they all count. */
 function characteristic(source: Dict | null, name: string): number {
   const raw = source?.[name]
@@ -195,12 +205,36 @@ export function readResistances(fighter: Fighter): Resistances {
  * Every damaging effect is costed separately, since a spell can carry two
  * elements and a monster rarely resists both the same way.
  */
+export interface DamageBoost {
+  /** Percentage a mastery cast this turn adds to every element. */
+  damagePercent?: number
+  /** Flat damage it adds to each hit. */
+  flat?: number
+}
+
 export function damageAgainst(
   spell: SpellDetails,
-  target: Fighter,
-  profile: DamageProfile
+  target: Fighter | { stats: unknown },
+  profile: DamageProfile,
+  boost?: DamageBoost
 ): number {
-  const resistances = readResistances(target)
+  return damageWith(spell, readResistances(target as Fighter), profile, boost)
+}
+
+/**
+ * The same sum against resistances that have already been read.
+ *
+ * Planning a turn costs this call thousands of times, and reading a fighter's
+ * resistances out of the client is by far the expensive half of it.
+ */
+export function damageWith(
+  spell: SpellDetails,
+  resistances: Resistances,
+  profile: DamageProfile,
+  boost?: DamageBoost
+): number {
+  const extraPercent = boost?.damagePercent ?? 0
+  const extraFlat = boost?.flat ?? 0
   let total = 0
 
   for (const effect of spell.effects) {
@@ -210,8 +244,10 @@ export function damageAgainst(
     // Damage that lands on a later turn is worth less than damage now.
     const timing = effect.delay > 0 ? 0.6 : 1
     const boosted =
-      effect.average * (1 + (profile.stat[element] + profile.damagePercent) / 100) +
-      profile.flat[element]
+      effect.average *
+        (1 + (profile.stat[element] + profile.damagePercent + extraPercent) / 100) +
+      profile.flat[element] +
+      extraFlat
 
     const afterPercent = boosted * (1 - resistances.percent[element] / 100)
     const afterFlat = afterPercent - resistances.flat[element]

@@ -4,3 +4,4 @@ release
 .env
 *.tsbuildinfo
 tests/.tmp
+tests/.tmp-core

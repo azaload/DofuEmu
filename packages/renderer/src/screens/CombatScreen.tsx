@@ -498,6 +498,17 @@ export function CombatScreen() {
             </div>
           </Row>
         )}
+        {combat.spellMode === 'auto' && (
+          <Row
+            label="Keep the mastery up"
+            desc="Recast it whenever its cooldown allows and the points left still buy an attack"
+          >
+            <Toggle
+              checked={combat.keepMasteryUp !== false}
+              onChange={(v) => setCombatSettings({ keepMasteryUp: v })}
+            />
+          </Row>
+        )}
         <Row label="Decides the turn" desc="The built-in rules, or a local model">
           <Select
             value={combat.brain}
@@ -625,7 +636,7 @@ export function CombatScreen() {
         </Row>
         <Row
           label="Choose a starting cell"
-          desc="Take a placement cell lined up with an enemy before readying"
+          desc="Start as far back as the first turn can still open a fight from"
         >
           <Toggle
             checked={combat.placeBeforeReady}
@@ -670,9 +681,9 @@ export function CombatScreen() {
       <CombatLog />
 
       <div style={{ fontSize: 10, color: colors.textDesc, lineHeight: 1.5, padding: '8px 0 4px' }}>
-        The combo is cast as-is every turn: no line of sight, range or action-point check is done
-        yet, so a cast the server refuses is simply skipped. Check your server rules before
-        automating fights.
+        In "AI chooses" the turn is planned from your spellbook — range, line of sight, areas,
+        resistances and action points all weighed. The manual combo is cast as written, and only
+        skips what it cannot reach. Check your server rules before automating fights.
       </div>
     </>
   )

@@ -1,7 +1,6 @@
 import type { CombatSettings, CombatSpell } from '@dofemu/shared'
 import { closeUiPopups } from '@/scripts/ui-bridge'
 import {
-  buildFightState,
   deriveChallengeRules,
   readChallengeTexts,
   type FightChallenge
@@ -15,7 +14,6 @@ import {
   sendFightMove,
   sendPlacementMove,
   tacklingEnemies,
-  choosePlacementCell,
   finishTurn,
   getEnemies,
   getFighters,
@@ -32,9 +30,17 @@ import {
 } from '@/scripts/fight-bridge'
 import { requestMoveToCell } from '@/scripts/game-bridge'
 import { reachableCells } from '@/scripts/cells'
-import { planTurn as planSpellTurn, castableCells, hitsFrom } from '@/scripts/spell-planner'
+import { planTurn as planSpellTurn } from '@/scripts/spell-planner'
+import {
+  aimAtTarget,
+  buildSnapshot,
+  choosePlacement,
+  readBattlefield,
+  weaponsFromCombo,
+  weaponsFromSpellbook
+} from '@/scripts/combat'
 import { readRangeBonus, readSpellCatalogue, type SpellDetails } from '@/scripts/spell-catalogue'
-import { findCharacterSheet, readDamageProfile } from '@/scripts/damage'
+import { findCharacterSheet, readCharacteristic, readDamageProfile } from '@/scripts/damage'
 import type { DofusWindow } from '@/types/dofus-window'
 
 /**
@@ -78,8 +84,6 @@ const MOVE_POLL_MS = 60
 const MOVE_START_TIMEOUT_MS = 700
 /** A position held this long means the walk is over. */
 const MOVE_SETTLE_MS = 250
-/** How many times to re-try closing in during one spell. */
-const MAX_APPROACH_STEPS = 2
 
 /** How long to wait for the server to declare our turn playable. */
 const TURN_PLAYABLE_TIMEOUT_MS = 2500
@@ -449,25 +453,49 @@ export function initCombatAi(
     turn: number,
     stillOurTurn: () => boolean
   ): Promise<'played' | 'no-cast' | 'unavailable'> => {
-    const state = buildFightState(gameWindow, {
+    const me = getMyFighter(gameWindow)
+    if (!me || me.cellId === null) return 'unavailable'
+
+    const held = settings.tackleAware && tacklingEnemies(getEnemies(gameWindow), me.cellId).length > 0
+    const challenges = withChallengeTexts()
+
+    // In manual mode the combo is what the turn is meant to play, so it is
+    // also all the model may choose from. In automatic mode it gets the whole
+    // spellbook, which is the point of the automatic mode.
+    const catalogue =
+      settings.spellMode === 'auto'
+        ? undefined
+        : weaponsFromCombo(gameWindow, combo, settings.defaultSpellRange, { includeSelf: true })
+
+    const snapshot = buildSnapshot(gameWindow, {
       turn,
-      combo,
-      fallbackRange: settings.defaultSpellRange,
-      tackleAware: settings.tackleAware,
-      challenges: withChallengeTexts()
+      elements: settings.elements ?? [],
+      lastCastTurn,
+      actionPoints: me.ap ?? 0,
+      movementPoints: me.mp ?? 0,
+      canMove: settings.approachEnemies && !held,
+      ignoreFighters: deadFighters,
+      challenges,
+      catalogue
     })
 
-    if (state.challenges.length > 0) {
-      log(
-        `Challenges: ${state.challenges
-          .map((challenge) => challenge.name ?? `#${challenge.id}`)
-          .join(', ')}`
-      )
+    if (!snapshot) {
+      log('The fight state could not be read for the model, playing the rules')
+      return 'unavailable'
     }
+
+    if (challenges.length > 0) {
+      log(`Challenges: ${challenges.map((challenge) => challenge.name ?? `#${challenge.id}`).join(', ')}`)
+    }
+
+    log(
+      `Model asked: ${snapshot.casts.length} cast(s) and ${snapshot.moves.length} move(s) offered, ` +
+        `${snapshot.enemies.length} enemy(ies)`
+    )
 
     let result
     try {
-      result = await planTurnWithOllama(state, settings)
+      result = await planTurnWithOllama(snapshot, settings)
     } catch (err) {
       log(`Model unreachable (${err instanceof Error ? err.message : String(err)}), playing the rules`)
       return 'unavailable'
@@ -495,47 +523,55 @@ export function initCombatAi(
       if (!stillOurTurn() || !isFightStarted(gameWindow)) return 'played'
 
       if (action.type === 'move') {
-        const cell = state.cells.find((candidate) => candidate.cellId === action.cellId)
-        if (!cell) continue
-        if (settings.tackleAware && tacklingEnemies(getEnemies(gameWindow), state.me.cellId ?? -1).length > 0) {
+        const here = getMyFighter(gameWindow)?.cellId ?? null
+        if (settings.tackleAware && here !== null && tacklingEnemies(getEnemies(gameWindow), here).length > 0) {
           log('Model asked to move while held in contact — skipped')
           continue
         }
 
-        const path = reachablePath(state.me.cellId, cell.cellId)
+        const path = reachablePath(here, action.cellId)
         if (!path) {
-          log(`No path to cell ${cell.cellId} — move skipped`)
+          log(`No path to cell ${action.cellId} — move skipped`)
           continue
         }
 
-        log(`Moving to cell ${cell.cellId} (${cell.cost} MP, model)`)
+        log(`Moving to cell ${action.cellId} (${action.cost} MP, model)`)
         if (sendFightMove(gameWindow, path)) {
-          await waitForMove(cell.cellId)
+          await waitForMove(action.cellId)
           await waitForIdle()
           await humanSleep(0)
         }
         continue
       }
 
-      const target = action.targetId !== undefined
-        ? getEnemies(gameWindow).find((enemy) => enemy.id === action.targetId)
-        : getMyFighter(gameWindow)
-      const cellId = target?.cellId ?? null
-      if (cellId === null) continue
-
+      // The cell was worked out here, area and all: the model only chose it.
+      const confirmedBefore = castsConfirmed
       try {
-        castSpell(gameWindow, action.spellId, cellId)
-        casts += 1
-        log(`Cast ${action.spellId} on ${target?.name ?? target?.id ?? 'myself'} (model)`)
+        castSpell(gameWindow, action.spellId, action.cellId)
       } catch (err) {
         log(`Cast failed: ${err instanceof Error ? err.message : String(err)}`)
+        continue
       }
+
+      if (!(await waitFor(() => castsConfirmed > confirmedBefore, CAST_CONFIRM_MS))) {
+        refusedCasts.add(`${action.spellId}:${action.cellId}`)
+        log(`The game refused ${action.name} on cell ${action.cellId} (sight or a state)`)
+        continue
+      }
+
+      casts += 1
+      lastCastTurn.set(action.spellId, turn)
+      log(
+        `Cast ${action.name} on cell ${action.cellId}` +
+          (action.hits.length > 0 ? `, ${action.hits.length} enemy(ies) in the area` : '') +
+          ' (model)'
+      )
 
       await humanSleep(settings.castDelayMs)
       await waitForIdle()
     }
 
-    // A turn that only walks does not end a fight. The combo is played on top.
+    // A turn that only walks does not end a fight. The rules cast on top.
     return casts > 0 ? 'played' : 'no-cast'
   }
 
@@ -708,10 +744,7 @@ export function initCombatAi(
         const details = readSpellCatalogue(gameWindow).find(
           (entry) => entry.id === spell.id && entry.detailed
         )
-        const aim =
-          details && mine
-            ? aimFor(details, target, getEnemies(gameWindow), [mine, ...getAllies(gameWindow)], range)
-            : null
+        const aim = details && mine ? aimFor(details, target, range) : null
         const cellId = aim?.cellId ?? target.cellId
 
         if (details && !aim) {
@@ -748,7 +781,7 @@ export function initCombatAi(
             : null
         log(
           `Cast ${spell.name || spell.id} on ${target.name ?? target.id}` +
-            (aim && aim.hits.length > 1 ? ` and ${aim.hits.length - 1} more in the area` : '') +
+            (aim && aim.hits > 1 ? ` and ${aim.hits - 1} more in the area` : '') +
             (distance !== null ? ` from ${distance} cell(s)` : '')
         )
 
@@ -774,36 +807,28 @@ export function initCombatAi(
   const aimFor = (
     spell: SpellDetails,
     target: Fighter,
-    enemies: Fighter[],
-    friends: Fighter[],
     /** Range configured for this combo entry, when the client's is unusable. */
     effectiveRange: number
-  ): { cellId: number; hits: Fighter[]; legal: number } | null => {
-    const here = getMyFighter(gameWindow)?.cellId ?? null
-    if (here === null || target.cellId === null) return null
+  ): { cellId: number; hits: number } | null => {
+    const field = readBattlefield(gameWindow, { turn: myTurn, ignore: deadFighters })
+    if (!field || target.cellId === null) return null
 
-    const occupied = new Set(
-      [...enemies, ...friends]
-        .map((fighter) => fighter.cellId)
-        .filter((cellId): cellId is number => cellId !== null)
-    )
+    const aimed = field.enemies.find((enemy) => enemy.id === target.id)
+    if (!aimed) return null
 
-    const reach = { ...spell, range: Math.max(spell.range, effectiveRange) }
-
-    const legal = castableCells(gameWindow, reach, here, occupied)
-    let best: { cellId: number; hits: Fighter[]; score: number } | null = null
-    for (const cellId of legal) {
-      const hits = hitsFrom(reach, here, cellId, enemies)
-      // The combo names a target: a cell that catches somebody else instead is
-      // not the same cast, however many it touches.
-      if (!hits.some((enemy) => enemy.id === target.id)) continue
-
-      const friendlyHits = hitsFrom(reach, here, cellId, friends).length
-      const score = hits.length * 10 - friendlyHits * 5
-      if (!best || score > best.score) best = { cellId, hits, score }
+    const context = {
+      grid: field.grid,
+      rangeBonus: 0,
+      occupied: field.occupied,
+      enemies: field.enemies,
+      friends: [field.me, ...field.allies]
     }
 
-    return best ? { cellId: best.cellId, hits: best.hits, legal: legal.length } : null
+    // The combo may carry a range the client never described; the spell's own
+    // is only raised by it, never lowered.
+    const reach = { ...spell, range: Math.max(spell.range, effectiveRange) }
+    const best = aimAtTarget(context, reach, field.me.cellId, aimed)
+    return best ? { cellId: best.cellId, hits: best.enemies.length } : null
   }
 
   /**
@@ -864,6 +889,7 @@ export function initCombatAi(
         lastCastTurn,
         canMove: settings.approachEnemies && !held,
         keepDistance: settings.positioning === 'keep-distance',
+        keepMasteryUp: settings.keepMasteryUp !== false,
         blockedCasts: refusedCasts,
         ignoreFighters: deadFighters,
         apCosts,
@@ -1160,6 +1186,22 @@ export function initCombatAi(
     placementCells = message.positions
   }
 
+  /**
+   * The movement points the character will open the fight with.
+   *
+   * Before the first turn the fighter reports none — the fight has not given
+   * them out yet — so the character sheet is read instead. Placement without
+   * them is placement that ignores half of what the first turn can do.
+   */
+  const openingMovementPoints = (): number => {
+    const mine = getMyFighter(gameWindow)
+    if (mine?.mp && mine.mp > 0) return mine.mp
+
+    const sheet = findCharacterSheet(gameWindow).stats
+    const fromSheet = readCharacteristic(sheet, 'movementPoints')
+    return fromSheet > 0 ? fromSheet : 3
+  }
+
   const takePlacementCell = async () => {
     const settings = callbacks.getSettings()
     if (disposed || placed || !settings.enabled || !settings.placeBeforeReady) return
@@ -1191,8 +1233,19 @@ export function initCombatAi(
       return
     }
 
-    const choice = choosePlacementCell(gameWindow, offer.cells, {
-      positioning: settings.positioning
+    // What the character will actually be able to throw on turn one, and how
+    // far it can walk to throw it: both decide where it is worth standing.
+    const weapons =
+      settings.spellMode === 'auto'
+        ? weaponsFromSpellbook(gameWindow, settings.elements ?? [])
+        : weaponsFromCombo(gameWindow, comboForTurn(settings, 1).combo, settings.defaultSpellRange)
+
+    const movementPoints = openingMovementPoints()
+
+    const choice = choosePlacement(gameWindow, offer.cells, {
+      positioning: settings.positioning,
+      movementPoints,
+      weapons
     })
     if (!choice) {
       log('Placement: none of the offered cells could be scored')
@@ -1202,22 +1255,18 @@ export function initCombatAi(
     const current = getMyFighter(gameWindow)?.cellId ?? null
     if (choice.cellId === current) {
       placed = true
-      log(`Placement: already on the best of ${offer.cells.length} starting cell(s) from ${offer.source}`)
+      log(
+        `Placement: already on the best of ${offer.cells.length} starting cell(s) from ${offer.source} — ${choice.reason}`
+      )
       return
     }
 
     placed = true
     try {
       sendPlacementMove(gameWindow, choice.cellId)
-      const why =
-        `${choice.distanceToClosestEnemy} cell(s) from the closest monster` +
-        (choice.alignedWith.length > 0
-          ? `, lined up with ${choice.alignedWith.length}`
-          : choice.sees.length > 0
-            ? `, seeing ${choice.sees.length}`
-            : '')
       log(
-        `Taking starting cell ${choice.cellId} of ${offer.cells.length} from ${offer.source}: ${why}`
+        `Taking starting cell ${choice.cellId} of ${offer.cells.length} from ${offer.source}: ${choice.reason}` +
+          ` (${movementPoints} MP on turn one, ${weapons.length} spell(s) to open with)`
       )
 
       // The server can refuse the cell — someone else took it first.
@@ -1372,6 +1421,21 @@ export function initCombatAi(
         log(
           'Stats: the character sheet was not found — every element scores the same, ' +
             'so the hardest hitter is picked on printed dice alone'
+        )
+      }
+
+      // The masteries, and that they will be kept up: a turn that opens with a
+      // buff instead of an arrow is the single most surprising thing this AI
+      // does, so it is announced before it happens.
+      const masteries = catalogue.filter((spell) => spell.isMastery)
+      if (!manual) {
+        log(
+          masteries.length === 0
+            ? 'Masteries: none read from this spellbook'
+            : `Masteries: ${masteries.map((spell) => spell.name ?? spell.id).join(', ')} — ` +
+              (settings.keepMasteryUp === false
+                ? 'weighed like any other cast'
+                : 'recast whenever the cooldown allows and the points left still buy an attack')
         )
       }
 

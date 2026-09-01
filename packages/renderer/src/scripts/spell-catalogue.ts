@@ -26,6 +26,8 @@ export interface SpellEffect {
   zone: ZoneDescription
   /** Effects that only fire later in the fight are worth less now. */
   delay: number
+  /** Turns the effect holds for. 0 for anything that lands and is over. */
+  duration: number
 }
 
 export interface SpellDetails {
@@ -73,6 +75,30 @@ export interface SpellDetails {
   pushDistance: number
   /** Cells it pulls them in by, towards the cell it was aimed at. */
   pullDistance: number
+
+  /** Action points the spell hands back, when it hands any. */
+  apGain: number
+  /** Movement points it grants. */
+  mpGain: number
+  /**
+   * How much a boost raises what the character hits for, in whatever unit the
+   * effect uses. Only the magnitude matters here: it says a mastery is worth
+   * more than a minor buff, not by how much exactly.
+   */
+  powerBoost: number
+  /** Turns the longest boost on this spell lasts. */
+  buffTurns: number
+  /** Cast on our own cell and nowhere else — every mastery is one. */
+  selfOnly: boolean
+  /**
+   * A mastery: a boost the character puts on itself that makes the spells
+   * after it hit harder or reach further.
+   *
+   * The one spell a turn must never forget. It is kept up whenever its
+   * cooldown allows and the action points left still buy an attack, which is
+   * what "adapting to the points available" means in practice.
+   */
+  isMastery: boolean
 }
 
 /**
@@ -102,9 +128,27 @@ const PULL_EFFECTS = new Set([7, 8])
 const SUMMON_EFFECTS = new Set([181, 185])
 /** Boosts that widen the range of every boostable spell — "Portée". */
 const RANGE_EFFECTS = new Set([117])
+/** Boosts that hand action points back. */
+const AP_EFFECTS = new Set([111])
+/** Boosts that hand movement points back. */
+const MP_EFFECTS = new Set([128])
+/**
+ * Boosts that make what follows hit harder — a characteristic, flat damage,
+ * a damage percentage. Together with the range ones they are what makes a
+ * spell a mastery rather than a utility.
+ */
+const POWER_EFFECTS = new Set([112, 115, 118, 119, 120, 122, 123, 124, 125, 126, 127, 138, 178, 182, 265])
 const BOOST_EFFECTS = new Set([
   111, 112, 115, 117, 118, 119, 120, 122, 123, 124, 125, 126, 127, 128, 138, 178, 182, 265
 ])
+/**
+ * The most points a single boost is believed to grant.
+ *
+ * A build that packs something else into the same field — a percentage, a
+ * duration — would otherwise read as "this spell gives thirty movement
+ * points", and the turn would be planned around points that never arrive.
+ */
+const MAX_POINT_GAIN = 6
 
 function asDict(value: unknown): Dict | null {
   return value && typeof value === 'object' ? (value as Dict) : null
@@ -200,7 +244,8 @@ function readEffect(raw: unknown): SpellEffect | null {
       size: asNumber(dict.zoneSize) ?? 0,
       minSize: asNumber(dict.zoneMinSize) ?? 0
     },
-    delay: asNumber(dict.delay) ?? 0
+    delay: asNumber(dict.delay) ?? 0,
+    duration: asNumber(dict.duration) ?? 0
   }
 }
 
@@ -321,20 +366,42 @@ export function readSpellCatalogue(gameWindow: DofusWindow): SpellDetails[] {
         { shape: 'point', size: 0, minSize: 0 }
       )
 
+    const gainOf = (ids: Set<number>) => {
+      const raw = effects
+        .filter((effect) => effect.effectId !== null && ids.has(effect.effectId))
+        .reduce((total, effect) => total + effect.average, 0)
+      // A value that could not possibly be points is not points.
+      return raw > 0 && raw <= MAX_POINT_GAIN ? Math.round(raw) : 0
+    }
+
+    const rangeBoost = effects
+      .filter((effect) => effect.effectId !== null && RANGE_EFFECTS.has(effect.effectId))
+      .reduce((total, effect) => total + effect.average, 0)
+    const powerBoost = effects
+      .filter((effect) => effect.effectId !== null && POWER_EFFECTS.has(effect.effectId))
+      .reduce((total, effect) => total + effect.average, 0)
+    const buffTurns = effects
+      .filter((effect) => effect.kind === 'boost')
+      .reduce((longest, effect) => Math.max(longest, effect.duration), 0)
+
+    // Boostable spells reach as far as the character's Portée takes them,
+    // which is what makes a range buff worth casting before an attack. A
+    // range the build works out itself wins over that sum.
+    const range =
+      computedRange([level, dict, spell]) ??
+      (asNumber(level?.range) ?? asNumber(dict.range) ?? 1) + (boostable(level) ? rangeBonus : 0)
+    const minRange = asNumber(level?.minRange) ?? asNumber(dict.minRange) ?? 0
+    const printedRange = asNumber(level?.range) ?? asNumber(dict.range) ?? null
+
     catalogue.push({
       id,
       name: readName(dict, spell),
       level: asNumber(level?.grade) ?? asNumber(dict.level),
 
       apCost: asNumber(level?.apCost) ?? asNumber(dict.apCost),
-      detailed: (asNumber(level?.range) ?? asNumber(dict.range)) !== null,
-      // Boostable spells reach as far as the character's Portée takes them,
-      // which is what makes a range buff worth casting before an attack. A
-      // range the build works out itself wins over that sum.
-      range:
-        computedRange([level, dict, spell]) ??
-        (asNumber(level?.range) ?? asNumber(dict.range) ?? 1) + (boostable(level) ? rangeBonus : 0),
-      minRange: asNumber(level?.minRange) ?? asNumber(dict.minRange) ?? 0,
+      detailed: printedRange !== null,
+      range,
+      minRange,
       rangeBoostable: boostable(level),
 
       castInLine: asBoolean(level?.castInLine, false),
@@ -343,9 +410,7 @@ export function readSpellCatalogue(gameWindow: DofusWindow): SpellDetails[] {
       needsFreeCell: asBoolean(level?.needFreeCell, false),
       needsTakenCell: asBoolean(level?.needTakenCell, false),
 
-      rangeBoost: effects
-        .filter((effect) => effect.effectId !== null && RANGE_EFFECTS.has(effect.effectId))
-        .reduce((total, effect) => total + effect.average, 0),
+      rangeBoost,
 
       cooldown: asNumber(level?.minCastInterval) ?? 0,
       maxCastsPerTurn: asNumber(level?.maxCastPerTurn),
@@ -369,7 +434,16 @@ export function readSpellCatalogue(gameWindow: DofusWindow): SpellDetails[] {
         .reduce((most, effect) => Math.max(most, Math.round(effect.average)), 0),
       pullDistance: effects
         .filter((effect) => effect.kind === 'pull')
-        .reduce((most, effect) => Math.max(most, Math.round(effect.average)), 0)
+        .reduce((most, effect) => Math.max(most, Math.round(effect.average)), 0),
+
+      apGain: gainOf(AP_EFFECTS),
+      mpGain: gainOf(MP_EFFECTS),
+      powerBoost,
+      buffTurns,
+      // A spell that reaches no further than its own cell can only be cast on
+      // the character itself, whatever else it does.
+      selfOnly: range <= 0 && minRange <= 0,
+      isMastery: kind === 'boost' && range <= 0 && (rangeBoost > 0 || powerBoost > 0)
     })
   }
 

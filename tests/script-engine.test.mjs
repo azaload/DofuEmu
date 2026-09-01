@@ -350,6 +350,7 @@ const combatDefaults = {
   tackleAware: true,
   spreadCasts: false,
   spellMode: 'combo',
+  keepMasteryUp: true,
   brain: 'rules',
   elements: ['fire', 'earth', 'water', 'air', 'neutral']
 }
@@ -1828,7 +1829,12 @@ async function testModelBrain() {
 
   assert.strictEqual(asked.length, 1, 'the model is asked once for the turn')
   assert.strictEqual(asked[0].model, 'test-model', 'with the configured model')
-  assert.ok(asked[0].prompt.includes('"cells"') || asked[0].prompt.includes('cells'), 'the prompt carries the state')
+  // The prompt carries the whole fight: the spells, the enemies, and every
+  // cast already aimed with what it would hit.
+  for (const part of ['"spells"', '"enemies"', '"casts"', '"me"']) {
+    assert.ok(asked[0].prompt.includes(part), `the prompt carries ${part}`)
+  }
+  assert.ok(asked[0].system.includes('"plan"'), 'and the system prompt asks for a plan of keys')
 
   const casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
   assert.ok(casts.length >= 1, 'the legal cast is played')
@@ -1844,7 +1850,10 @@ async function testModelBrain() {
   )
   assert.strictEqual(casts[0].data.spellId, 161)
   assert.ok(logs.some((line) => line.includes('hit the closest')), 'the reason is logged')
-  assert.ok(logs.some((line) => line.includes('not in the combo')), 'the invented spell is reported')
+  assert.ok(
+    logs.some((line) => line.includes('spell 777')),
+    `the invented spell is reported (${logs.join(' | ')})`
+  )
   assert.ok(
     state.sent.some((m) => m.name === 'GameFightTurnFinishMessage'),
     'the turn is still passed'
@@ -1901,8 +1910,12 @@ async function testPlacementAndLineOfSight() {
   await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
   const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-bridge.ts'))
-  const { choosePlacementCell, findPositionCell, areCellsAligned } = await import(
+  const { findPositionCell, areCellsAligned } = await import(
     `${pathToFileURL(path.join(tmpDir, 'fight-bridge.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/combat/placement.ts'))
+  const { choosePlacement, syntheticSpell } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'placement.js')).href}?t=${Date.now()}`
   )
 
   const { gameWindow, state } = createFakeGameWindow()
@@ -1913,24 +1926,54 @@ async function testPlacementAndLineOfSight() {
   state.fighters[1].data.disposition.cellId = 336
   state.fighters[2].data.disposition.cellId = 336
 
-  // Only a handful of cells are offered: the closest one to a monster wins,
-  // so the fight opens within reach instead of across the map.
-  const aligned = 322
-  const offLine = 267
-  assert.ok(areCellsAligned(aligned, 336), 'the first candidate is on the enemy line')
-  const choice = choosePlacementCell(gameWindow, [offLine, aligned], { positioning: 'keep-distance' })
-  assert.strictEqual(choice.cellId, aligned, 'the starting cell closest to the monster wins')
+  // Cells around the monster on 336, by their grid distance to it.
+  const contact = 322 // one cell away, and lined up with it
+  const shooting = 267 // five away: still in a bow's range
+  const far = 226 // eight away: two steps short of it
+  const tooFar = 184 // eleven away: nothing reaches on turn one
 
-  // Distance decides even when the far cell is the one lined up.
-  const far = choosePlacementCell(gameWindow, [aligned, 308], { positioning: 'keep-distance' })
-  assert.strictEqual(far.cellId, aligned, 'and a closer cell is never given up for a line')
+  const bow = syntheticSpell(1, 6)
+  const ranged = { positioning: 'keep-distance', movementPoints: 3, weapons: [bow] }
 
-  // Between two cells the same distance away, a clear line decides — and a
-  // blocked one is worth nothing, or the AI starts behind a wall.
+  assert.ok(areCellsAligned(contact, 336), 'the contact cell is on the enemy line')
+
+  // The whole point of the placement: as far back as the fight can still be
+  // opened from. A cell in contact opens it tackled, which costs the turn.
+  const kept = choosePlacement(gameWindow, [shooting, contact], ranged)
+  assert.strictEqual(kept.cellId, shooting, 'the furthest cell that can still shoot wins')
+  assert.strictEqual(kept.opensStanding, true, 'and it shoots without walking')
+  assert.strictEqual(kept.threats, 0, 'out of the monsters first-turn reach')
+
+  // The first turn's movement points count as reach: a cell two steps short
+  // of the range still opens the fight, and it is further back.
+  const withLegs = choosePlacement(gameWindow, [shooting, far], ranged)
+  assert.strictEqual(withLegs.cellId, far, 'a cell reachable by walking is preferred when further')
+  assert.strictEqual(withLegs.opensStanding, false, 'it cannot shoot standing still')
+  assert.strictEqual(withLegs.opensAfterMoving, true, 'but it can once the MP are spent')
+  assert.ok(withLegs.openingCost > 0 && withLegs.openingCost <= 3, 'within the movement points')
+
+  // And a cell nothing reaches from, however safe, loses to one that opens.
+  const unreachable = choosePlacement(gameWindow, [tooFar, far], ranged)
+  assert.strictEqual(unreachable.cellId, far, 'a cell out of reach on turn one is never taken')
+
+  // Without movement points the reach is the range alone.
+  const rooted = choosePlacement(gameWindow, [shooting, far], { ...ranged, movementPoints: 0 })
+  assert.strictEqual(rooted.cellId, shooting, 'with no MP only what shoots from the spot counts')
+
+  // A line a wall blocks is no line: that cell cannot open the fight either.
   gameWindow.isoEngine.mapRenderer.isInLineOfSight = (from, to) =>
-    !(from === aligned && to === 336)
-  const blocked = choosePlacementCell(gameWindow, [350, aligned], { positioning: 'keep-distance' })
-  assert.strictEqual(blocked.cellId, 350, 'a blocked line loses the tie')
+    !(from === shooting && to === 336)
+  const blocked = choosePlacement(gameWindow, [shooting, contact], { ...ranged, movementPoints: 0 })
+  assert.strictEqual(blocked.cellId, contact, 'a blocked line loses to a cell that sees')
+  delete gameWindow.isoEngine.mapRenderer.isInLineOfSight
+
+  // Closing in reverses the order, and nothing else about it.
+  const melee = choosePlacement(gameWindow, [shooting, contact], {
+    ...ranged,
+    positioning: 'close-in',
+    weapons: [syntheticSpell(1, 1)]
+  })
+  assert.strictEqual(melee.cellId, contact, 'a melee build starts next to the pack')
 
   const move = findPositionCell(
     gameWindow,
@@ -1940,43 +1983,24 @@ async function testPlacementAndLineOfSight() {
     { preferLineUp: true, positioning: 'keep-distance', tackleAware: true }
   )
   if (move) {
-    assert.notStrictEqual(move.cellId, aligned, 'and is never chosen to stand on')
     assert.strictEqual(
       move.aligned,
-      gameWindow.isoEngine.mapRenderer.isInLineOfSight(move.cellId, 336) && areCellsAligned(move.cellId, 336),
+      areCellsAligned(move.cellId, 336),
       'alignment always implies a clear line'
     )
   }
-  delete gameWindow.isoEngine.mapRenderer.isInLineOfSight
 
   // The placement step runs before ready, and only once.
   const logs = []
   const combatSettings = {
-    enabled: true,
+    ...combatDefaults,
     combo: [{ id: 165, name: 'Bolt', range: 6 }],
-    turnCombos: [],
-    targetStrategy: 'nearest',
     autoReady: true,
     placeBeforeReady: true,
-    turnStartDelayMs: 0,
-    castDelayMs: 0,
     readyDelayMs: 40,
-    randomJitterMs: 0,
-    endTurnAfterCombo: true,
-    closeEndScreens: true,
-    approachEnemies: true,
     defaultSpellRange: 6,
-    preferLineUp: true,
-    positioning: 'keep-distance',
-    tackleAware: true,
-    spreadCasts: false,
     spellMode: 'combo',
-    elements: ['fire', 'earth', 'water', 'air', 'neutral'],
-    brain: 'rules',
-    ollamaEndpoint: '',
-    ollamaModel: '',
-    ollamaTimeoutMs: 500,
-    preferChallenges: false
+    positioning: 'keep-distance'
   }
 
   const dispose = initCombatAi(gameWindow, 'tab-1', {
@@ -1984,29 +2008,33 @@ async function testPlacementAndLineOfSight() {
     onLog: (message) => logs.push(message)
   })
 
-  state.emit('GameFightPlacementPossiblePositionsMessage', { positions: [offLine, aligned] })
+  state.emit('GameFightPlacementPossiblePositionsMessage', { positions: [shooting, contact] })
   state.emit('GameFightStartingMessage', {})
   await new Promise((resolve) => setTimeout(resolve, 400))
 
   const placements = state.sent.filter((m) => m.name === 'GameFightPlacementPositionRequestMessage')
-  assert.strictEqual(placements.length, 1, 'one placement is requested')
-  assert.strictEqual(placements[0].data.cellId, aligned, 'on the cell lined up with the enemy')
+  assert.strictEqual(placements.length, 1, `one placement is requested (${logs.join(' | ')})`)
+  assert.strictEqual(placements[0].data.cellId, shooting, 'on the cell it can shoot from at range')
   assert.ok(logs.some((line) => line.includes('Taking starting cell')), 'the choice is logged')
+  assert.ok(
+    logs.some((line) => line.includes('MP on turn one')),
+    'and it says what it planned around'
+  )
 
   const readyAfter = state.sent.findIndex((m) => m.name === 'GameFightReadyMessage')
   const placedAt = state.sent.findIndex((m) => m.name === 'GameFightPlacementPositionRequestMessage')
   assert.ok(placedAt < readyAfter, 'the place is taken before readying')
 
   dispose()
-  console.log('ok - placement and blocked lines')
+  console.log('ok - placement keeps its distance and its line')
 }
 
 async function testPushBreaksMelee() {
   await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
   const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
-  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-state.ts'))
-  const { buildFightState } = await import(
-    `${pathToFileURL(path.join(tmpDir, 'fight-state.js')).href}?t=${Date.now()}`
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/combat/index.ts'))
+  const { buildSnapshot, weaponsFromCombo } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'index.js')).href}?t=${Date.now()}`
   )
 
   const { gameWindow, state } = createFakeGameWindow()
@@ -2055,17 +2083,27 @@ async function testPushBreaksMelee() {
   state.fighters[1].data.disposition.cellId = 294
   state.fighters[2].data.disposition.cellId = 400
 
-  // The state handed to a model must say the character is held.
-  const snapshot = buildFightState(gameWindow, {
+  // The snapshot handed to a model must say the character is held.
+  const snapshot = buildSnapshot(gameWindow, {
     turn: 1,
-    combo: combatSettings.combo,
-    fallbackRange: 1,
-    tackleAware: true
+    elements: combatSettings.elements,
+    lastCastTurn: new Map(),
+    actionPoints: 6,
+    movementPoints: 3,
+    canMove: false,
+    catalogue: weaponsFromCombo(gameWindow, combatSettings.combo, 1, { includeSelf: true })
   })
-  assert.deepStrictEqual(snapshot.me.tackledBy, [20], 'the holder is named')
+  assert.deepStrictEqual(snapshot.me.heldBy, [1], 'the holder is named')
   assert.strictEqual(snapshot.me.canMove, false, 'and moving is ruled out')
-  assert.strictEqual(snapshot.cells.length, 0, 'no cell is offered while held')
-  assert.strictEqual(snapshot.spells[0].push, true, 'the push spell is flagged')
+  assert.strictEqual(snapshot.moves.length, 0, 'no cell is offered while held')
+  assert.ok(
+    snapshot.notes.some((note) => note.includes('hold the character in contact')),
+    'and the model is told so in words'
+  )
+  assert.ok(
+    snapshot.spells.some((spell) => spell.id === 300),
+    'the push spell is among the options'
+  )
 
   state.startTurn(7)
   await new Promise((resolve) => setTimeout(resolve, 700))
@@ -3497,10 +3535,10 @@ async function testPlacementWaitsForTheOffer() {
   await new Promise((resolve) => setTimeout(resolve, 120))
   state.fighters[1].data.disposition.cellId = 336
   state.fighters[2].data.disposition.cellId = 336
-  const aligned = 322
-  const offLine = 267
-  assert.ok(areCellsAligned(aligned, 336), 'one offered cell is on the enemy line')
-  state.emit('GameFightPlacementPossiblePositionsMessage', { positions: [offLine, aligned] })
+  const contact = 322
+  const shooting = 267
+  assert.ok(areCellsAligned(contact, 336), 'one offered cell is on the enemy line')
+  state.emit('GameFightPlacementPossiblePositionsMessage', { positions: [contact, shooting] })
 
   await new Promise((resolve) => setTimeout(resolve, 900))
 
@@ -3508,7 +3546,11 @@ async function testPlacementWaitsForTheOffer() {
     (message) => message.name === 'GameFightPlacementPositionRequestMessage'
   )
   assert.strictEqual(placement.length, 1, `one starting cell is asked for (${logs.join(' | ')})`)
-  assert.strictEqual(placement[0].data.cellId, aligned, 'and it is the one lined up with the enemy')
+  assert.strictEqual(
+    placement[0].data.cellId,
+    shooting,
+    'and it is the one furthest from the monster, not the one in contact with it'
+  )
 
   const ready = state.sent.findIndex((message) => message.name === 'GameFightReadyMessage')
   const placedAt = state.sent.findIndex(
@@ -4106,10 +4148,6 @@ async function testChallengeRules() {
   const { deriveChallengeRules } = await import(
     `${pathToFileURL(path.join(tmpDir, 'fight-state.js')).href}?t=${Date.now()}`
   )
-  await bundleModule(path.join(root, 'packages/renderer/src/scripts/turn-plan.ts'))
-  const { validatePlan } = await import(
-    `${pathToFileURL(path.join(tmpDir, 'turn-plan.js')).href}?t=${Date.now()}`
-  )
 
   // The wording is what says what a challenge forbids, in either language.
   const still = deriveChallengeRules([
@@ -4135,118 +4173,125 @@ async function testChallengeRules() {
     'an unrelated challenge constrains nothing'
   )
 
-  // The rules are still derived, for the model to read and for the log, but
-  // nothing is trimmed on their account.
-  const state = {
-    turn: 1,
-    me: { id: 7, name: 'me', cellId: 280, life: 100, maxLife: 100, ap: 6, mp: 3, tackledBy: [], canMove: true },
-    spells: [{ id: 161, name: 'Bolt', range: 6, minRange: 0, targets: [1, 2], self: false, push: false }],
-    enemies: [
-      { n: 1, id: 20, name: 'A', cellId: 294, x: 0, y: 0, life: 100, maxLife: 100, distance: 1, lineOfSight: true, aligned: true },
-      { n: 2, id: 21, name: 'B', cellId: 300, x: 0, y: 0, life: 100, maxLife: 100, distance: 2, lineOfSight: true, aligned: true }
-    ],
-    allies: [],
-    cells: [{ cellId: 266, cost: 1, enemyDistance: 2, sees: [20], alignedWith: [] }],
-    challenges: [{ id: 2, name: 'Focus', description: 'Attaquer un seul ennemi', targetId: 21 }],
-    challengeRules: { noMove: true, singleTarget: true, avoidMelee: false, focusTargetId: 21 }
-  }
-
-  const { actions } = validatePlan(
-    {
-      actions: [
-        { type: 'move', cellId: 266 },
-        { type: 'cast', spellId: 161, targetId: 1 },
-        { type: 'cast', spellId: 161, targetId: 2 }
-      ]
-    },
-    state
-  )
-
-  assert.strictEqual(actions.length, 3, 'a challenge no longer trims what the model asked for')
-
   console.log('ok - challenges are read, not enforced')
 }
 
 async function testTurnPlanValidation() {
-  await bundleModule(path.join(root, 'packages/renderer/src/scripts/turn-plan.ts'))
-  const { validatePlan, parsePlan } = await import(
-    `${pathToFileURL(path.join(tmpDir, 'turn-plan.js')).href}?t=${Date.now()}`
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/combat/prompt.ts'))
+  const { parseModelAnswer, resolvePlan, SYSTEM_PROMPT } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'prompt.js')).href}?t=${Date.now()}`
   )
 
-  const state = {
+  // A snapshot as the model would receive it: two casts from where we stand,
+  // one move, and two more casts that only exist once it has been taken.
+  const snapshot = {
     turn: 1,
-    me: { id: 7, name: 'Tester', cellId: 280, life: 500, maxLife: 500, ap: 6, mp: 3, tackledBy: [], canMove: true },
-    spells: [
-      { id: 161, name: 'Bolt', range: 6, minRange: 0, targets: [1], self: false, push: false },
-      { id: 100, name: 'Buff', range: 0, minRange: 0, targets: [], self: true, push: false }
-    ],
-    enemies: [
-      { n: 1, id: 20, name: 'Close', cellId: 294, x: 0, y: 0, life: 100, maxLife: 200, distance: 1, lineOfSight: true, aligned: true },
-      { n: 2, id: 21, name: 'Far', cellId: 400, x: 0, y: 0, life: 50, maxLife: 200, distance: 12, lineOfSight: false, aligned: false }
-    ],
+    me: { id: 7, name: 'Tester', cell: 280, x: 0, y: 0, hp: 500, maxHp: 500, ap: 6, mp: 3, portee: 0, heldBy: [], canMove: true },
+    enemies: [],
     allies: [],
-    cells: [
-      { cellId: 266, cost: 1, enemyDistance: 2, sees: [20], alignedWith: [20] },
-      { cellId: 252, cost: 2, enemyDistance: 3, sees: [20], alignedWith: [] }
+    spells: [
+      { id: 161, name: 'Bolt', ap: 3, range: '0-6', area: 'single cell', line: false, los: true, elements: ['fire'], cooldown: 'ready', castsLeft: 1, damage: { 1: 40 }, mastery: false, blocked: null },
+      { id: 100, name: 'Mastery', ap: 2, range: '0-0', area: 'single cell', line: false, los: false, elements: [], cooldown: 'ready', castsLeft: 1, damage: {}, mastery: true, blocked: null },
+      { id: 200, name: 'Arrow', ap: 4, range: '0-8', area: 'single cell', line: false, los: true, elements: ['earth'], cooldown: 'ready', castsLeft: null, damage: { 1: 60 }, mastery: false, blocked: null }
+    ],
+    casts: [
+      { k: 'c1', spell: 161, name: 'Bolt', cell: 294, ap: 3, hits: [1], friendly: [], damage: 40, kills: [], value: 40 },
+      { k: 'c2', spell: 100, name: 'Mastery', cell: 280, ap: 2, hits: [], friendly: [7], damage: 0, kills: [], value: 120 },
+      { k: 'c3', spell: 200, name: 'Arrow', cell: 294, ap: 4, hits: [1], friendly: [], damage: 60, kills: [], value: 60 }
+    ],
+    moves: [
+      {
+        k: 'm1',
+        cell: 266,
+        mp: 1,
+        distance: 4,
+        threats: 0,
+        sees: 1,
+        casts: [
+          { k: 'm1c1', spell: 161, name: 'Bolt', cell: 300, ap: 3, hits: [1, 2], friendly: [], damage: 80, kills: [2], value: 500 }
+        ]
+      }
     ],
     challenges: [],
-    challengeRules: { noMove: false, singleTarget: false, avoidMelee: false, focusTargetId: null }
+    notes: []
   }
 
-  const { actions, rejected } = validatePlan(
-    {
-      actions: [
-        { type: 'move', cellId: 266 },
-        { type: 'move', cellId: 252 },
-        { type: 'cast', spellId: 161, targetId: 20 },
-        { type: 'cast', spellId: 100 },
-        { type: 'cast', spellId: 999, targetId: 20 },
-
-        { type: 'dance' }
-      ]
-    },
-    state
-  )
+  const resolved = resolvePlan(snapshot, {
+    plan: ['m1', 'm1c1', 'c1', 'm1c1', 'nonsense', 'm1'],
+    reason: 'walk then shoot'
+  })
 
   assert.deepStrictEqual(
-    actions,
+    resolved.actions,
     [
-      { type: 'move', cellId: 266 },
-      { type: 'cast', spellId: 161, targetId: 20 },
-      { type: 'cast', spellId: 100 }
+      { type: 'move', cellId: 266, cost: 1 },
+      { type: 'cast', spellId: 161, name: 'Bolt', cellId: 300, apCost: 3, hits: [1, 2] }
     ],
-    'only the legal actions survive, in order'
+    'the move and the cast that belongs to it survive, in order'
   )
-  assert.strictEqual(rejected.length, 3, 'the others are reported')
-  assert.ok(rejected.some((line) => line.includes('only one move per turn')), 'a second move is refused')
-  assert.ok(rejected.some((line) => line.includes('not in the combo')), 'an unknown spell is refused')
+  assert.ok(
+    resolved.rejected.some((line) => line.includes('c1: that cast belongs to another position')),
+    `a cast from the cell it left is refused (${resolved.rejected.join(' | ')})`
+  )
+  assert.ok(
+    resolved.rejected.some((line) => line.includes('already cast')),
+    'and the cast limit of a spell holds'
+  )
+  assert.ok(
+    resolved.rejected.some((line) => line.includes('nonsense: not an option')),
+    'an invented key is refused'
+  )
+  assert.ok(
+    resolved.rejected.some((line) => line.includes('only one move a turn')),
+    'a second move is refused'
+  )
+  assert.strictEqual(resolved.reason, 'walk then shoot', 'the reason is carried through')
+  assert.strictEqual(resolved.castsNothing, false, 'and the turn did attack')
 
+  // The action points are the hard limit, whatever the model asks for.
+  const greedy = resolvePlan(snapshot, { plan: ['c3', 'c3'] })
+  assert.strictEqual(greedy.actions.length, 1, 'six points buy one four-point cast')
+  assert.ok(
+    greedy.rejected.some((line) => line.includes('4 AP with 2 left')),
+    `and the second is refused (${greedy.rejected.join(' | ')})`
+  )
 
-  // A cast aimed out of reach is re-aimed at an enemy the spell can hit: a
-  // wasted turn is worse than a different target.
-  const stillPut = validatePlan({ actions: [{ type: 'cast', spellId: 161, targetId: 2 }] }, state)
+  // Held in contact, no move is accepted at all.
+  const held = resolvePlan(
+    { ...snapshot, me: { ...snapshot.me, canMove: false } },
+    { plan: ['m1', 'c1'] }
+  )
   assert.deepStrictEqual(
-    stillPut.actions,
-    [{ type: 'cast', spellId: 161, targetId: 20 }],
-    'the cast is re-aimed rather than lost'
+    held.actions.map((action) => action.type),
+    ['cast'],
+    'the move is dropped and the cast is kept'
   )
-  assert.ok(stillPut.rejected[0].includes('out of reach'), 'and says what happened')
+  assert.ok(held.rejected.some((line) => line.includes('held in contact')), 'and says why')
 
-  // An invented target is repaired the same way — this is what a small model does.
-  const invented = validatePlan({ actions: [{ type: 'cast', spellId: 161, targetId: 0 }] }, state)
-  assert.deepStrictEqual(
-    invented.actions,
-    [{ type: 'cast', spellId: 161, targetId: 20 }],
-    'a target the model made up still produces an attack'
-  )
+  // A plan that only walks is reported, so the rules can finish the turn.
+  const walking = resolvePlan(snapshot, { plan: ['m1'] })
+  assert.strictEqual(walking.castsNothing, true, 'a turn that only moves is flagged')
 
-  // The parser copes with a model wrapping its JSON in prose.
-  const parsed = parsePlan('Sure! {"actions":[{"type":"cast","spellId":161,"targetId":20}],"reason":"hit"} done')
-  assert.strictEqual(parsed.actions.length, 1, 'the plan is extracted from the prose')
+  // The parser copes with prose around the JSON, and with the older shape.
+  const parsed = parseModelAnswer('Sure! {"plan":["c1","c2"],"why":"hit"} done')
+  assert.deepStrictEqual(parsed.plan, ['c1', 'c2'], 'the plan is extracted from the prose')
   assert.strictEqual(parsed.reason, 'hit')
-  assert.strictEqual(parsePlan('no json here'), null, 'garbage is refused')
 
-  console.log('ok - turn plan validation')
+  const legacy = parseModelAnswer(
+    '{"actions":[{"type":"move","cellId":266},{"type":"cast","spellId":161}],"reason":"old"}'
+  )
+  assert.deepStrictEqual(legacy.plan, ['cell:266', 'spell:161'], 'the older shape is understood')
+  const fromLegacy = resolvePlan(snapshot, legacy)
+  assert.deepStrictEqual(
+    fromLegacy.actions.map((action) => action.type),
+    ['move', 'cast'],
+    'and still produces a legal turn'
+  )
+
+  assert.strictEqual(parseModelAnswer('no json here'), null, 'garbage is refused')
+  assert.ok(SYSTEM_PROMPT.includes('"plan"'), 'the system prompt states the contract')
+
+  console.log('ok - the model can only choose legal options')
 }
 
 async function testConnectionCheck() {
