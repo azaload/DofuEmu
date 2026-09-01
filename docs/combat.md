@@ -269,6 +269,11 @@ waits for the spells to be played. A combo entry with nothing in reach may walk 
 find a target, and a walk the game refuses or cuts short ends the walking for that turn
 rather than being asked again a cell at a time.
 
+A wall between the character and the pack is walked around: a clear line is worth a move on
+its own, whichever side of the obstacle it turns up on, and when nothing within reach can
+see the target at all the character closes in until something opens up — from contact there
+is always a line. Holding the right distance behind cover is holding still for the fight.
+
 **Keeping your distance** applies to closing in as much as to backing off. With nothing
 castable from anywhere in reach — the pack too far, or the line blocked — walking as close
 as the points allow puts a ranged character in contact and costs the next turn to a tackle.

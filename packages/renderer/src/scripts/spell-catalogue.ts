@@ -144,9 +144,19 @@ function characteristic(source: Dict | null, name: string): number | null {
   const dict = asDict(raw)
   if (!dict) return null
 
+  for (const key of ['total', 'value', 'totalValue']) {
+    if (typeof dict[key] === 'number') return dict[key] as number
+  }
+
   // The protocol spells it "additionnal"; some builds use the English one.
-  return ['base', 'additional', 'additionnal', 'objectsAndMountBonus', 'alignGiftBonus', 'contextModif']
+  const known = ['base', 'additional', 'additionnal', 'objectsAndMountBonus', 'alignGiftBonus', 'contextModif']
     .map((key) => (typeof dict[key] === 'number' ? (dict[key] as number) : 0))
+    .reduce((total, value) => total + value, 0)
+  if (known !== 0) return known
+
+  // Whatever this build calls the parts, they add up to the characteristic.
+  return Object.values(dict)
+    .filter((value): value is number => typeof value === 'number')
     .reduce((total, value) => total + value, 0)
 }
 

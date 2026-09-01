@@ -313,7 +313,9 @@ export interface PositionResult {
   cellId: number
   /** Cells to walk through, ready for sendFightMove(). */
   path: number[]
-  /** The target is within range from there. */
+  /** Nothing blocks the view of the target from there. */
+  sees: boolean
+  /** The target is within range from there, with a clear line. */
   inRange: boolean
   aligned: boolean
   /** Movement points the move costs. */
@@ -396,17 +398,21 @@ export function findPositionCell(
   const startEnemyDistance = closestEnemyDistance(enemies, from)
   const startAligned = areCellsAligned(from, to) && startSees
 
-  const score = (cellId: number, cost: number, path: number[]): PositionResult => ({
-    cellId,
-    path,
+  const score = (cellId: number, cost: number, path: number[]): PositionResult => {
     // Being in range is not enough: a spell needs to see its target, so a cell
     // whose line is blocked is no better than one out of reach.
-    inRange: cellDistance(cellId, to) <= range && hasLineOfSight(gameWindow, cellId, to),
-    aligned: areCellsAligned(cellId, to) && hasLineOfSight(gameWindow, cellId, to),
-    cost,
-    distanceToTarget: cellDistance(cellId, to),
-    distanceToClosestEnemy: closestEnemyDistance(enemies, cellId)
-  })
+    const sees = hasLineOfSight(gameWindow, cellId, to)
+    return {
+      cellId,
+      path,
+      sees,
+      inRange: cellDistance(cellId, to) <= range && sees,
+      aligned: areCellsAligned(cellId, to) && sees,
+      cost,
+      distanceToTarget: cellDistance(cellId, to),
+      distanceToClosestEnemy: closestEnemyDistance(enemies, cellId)
+    }
+  }
 
   const candidates: PositionResult[] = []
   for (const entry of reachable.values()) {
@@ -415,19 +421,25 @@ export function findPositionCell(
   }
 
   const anyInRange = candidates.some((candidate) => candidate.inRange)
+  const anySees = candidates.some((candidate) => candidate.sees)
 
   const better = (a: PositionResult, b: PositionResult): boolean => {
     // Being able to cast comes first.
     if (anyInRange && a.inRange !== b.inRange) return a.inRange
 
     if (!anyInRange) {
-      // Nothing reaches from anywhere we can walk to — the target is too far,
-      // or nothing sees it. Closing in is right, but closing all the way is
-      // not: a ranged character that walks into contact spends the next turn
-      // tackled instead of shooting. The cell wanted is the one at the edge
-      // of our own range, not the one nearest the monster.
+      // Nothing can be cast from anywhere we can walk to. A clear line is then
+      // the only thing worth walking for: a wall between us and the pack is
+      // stepped around, whatever the map looks like, rather than stood behind
+      // for the rest of the fight.
+      if (a.sees !== b.sees) return a.sees
+
+      // Closing in is right, but closing all the way is not: a ranged
+      // character that walks into contact spends the next turn tackled
+      // instead of shooting. The cell wanted is the one at the edge of our
+      // own range, not the one nearest the monster.
       const overshoot = (choice: PositionResult) =>
-        keepDistance ? Math.abs(choice.distanceToTarget - range) : choice.distanceToTarget
+        keepDistance && anySees ? Math.abs(choice.distanceToTarget - range) : choice.distanceToTarget
 
       if (overshoot(a) !== overshoot(b)) return overshoot(a) < overshoot(b)
       if (keepDistance && a.distanceToClosestEnemy !== b.distanceToClosestEnemy) {
@@ -459,19 +471,27 @@ export function findPositionCell(
 
   if (best.cellId === from) return null
 
-  // Never give up a castable position, and never move for nothing.
-  if (startInRange && !best.inRange) return null
-  if (!startInRange && !best.inRange && best.distanceToTarget >= startDistance) return null
   // Already able to cast: only move for something the cast needs — lining up,
   // or backing away from the enemies. Walking closer for its own sake spends
   // points and invites melee.
   const gainsAlignment = preferLineUp && best.aligned && !startAligned
   const gainsDistance = keepDistance && best.distanceToClosestEnemy > startEnemyDistance
+  // Stepping out from behind cover is worth the walk on its own, whichever
+  // way it takes us: without a line there is nothing to cast at all.
+  const gainsSight = best.sees && !startSees
   const purpose = options.purpose ?? 'both'
+
+  // Never give up a castable position, and never move for nothing.
+  if (startInRange && !best.inRange) return null
+  if (!startInRange && !best.inRange && !gainsSight && best.distanceToTarget >= startDistance) {
+    return null
+  }
 
   // Backing away is worth movement points only once the spells are spent: a
   // monster killed in the meantime frees the points for reaching another one.
-  if (purpose === 'approach' && !gainsAlignment && startInRange && best.inRange) return null
+  if (purpose === 'approach' && !gainsAlignment && !gainsSight && startInRange && best.inRange) {
+    return null
+  }
   if (purpose === 'retreat' && (!gainsDistance || !best.inRange)) return null
 
   if (startInRange && best.inRange && !gainsAlignment && !gainsDistance) return null

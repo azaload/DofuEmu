@@ -4013,6 +4013,94 @@ async function testRetreatWaitsForTheCasts() {
   console.log('ok - movement waits for the spells, and carries the next one')
 }
 
+/**
+ * A wall between the character and the pack is walked around.
+ *
+ * With the line blocked, nothing can be cast from where we stand — and every
+ * cell at the same distance is just as blind, so "already at the right
+ * distance" left the character standing behind the wall turn after turn,
+ * casting nothing. A clear line is worth the walk on its own, whichever side
+ * of the obstacle it turns up on.
+ */
+async function testWalksAroundCover() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-bridge.ts'))
+  const { findPositionCell } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-bridge.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellFromCoordinates, cellCoordinates, cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const me = cellFromCoordinates(10, 10)
+  const monster = cellFromCoordinates(16, 10)
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+  state.fighters[1].data.disposition.cellId = monster
+  state.fighters[2].data.disposition.cellId = cellFromCoordinates(30, 30)
+
+  // A long wall: every cell near the character is blind, and the way around
+  // it leads away from the monster rather than towards it — which is what
+  // made "never move away from the target" freeze the character behind it.
+  const blindRows = (cellId) => {
+    const { y } = cellCoordinates(cellId)
+    return y >= 5 && y <= 15
+  }
+  gameWindow.isoEngine.mapRenderer.isInLineOfSight = (from, to) =>
+    to !== monster || !blindRows(from)
+
+  const target = {
+    id: 20,
+    teamId: 1,
+    alive: true,
+    cellId: monster,
+    life: 200,
+    maxLife: 200,
+    ap: 6,
+    mp: 3,
+    name: 'Le Ouassingue'
+  }
+
+  const move = findPositionCell(gameWindow, target, 14, 6, {
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    purpose: 'approach'
+  })
+
+  assert.ok(move, 'the character walks rather than standing behind the wall')
+  assert.ok(move.sees, 'and lands where it can see the monster')
+  assert.ok(!blindRows(move.cellId), 'having stepped out of the wall\'s shadow')
+  assert.ok(cellDistance(move.cellId, monster) <= 14, 'within the range it shoots from')
+
+  // And when the wall hides the monster from every cell in reach, standing at
+  // the right distance behind it is standing still for the fight: the
+  // character closes in until something opens up, since contact always sees.
+  // Sight opens up only right next to the monster, and the character cannot
+  // walk that far this turn: nothing it can reach sees anything.
+  gameWindow.isoEngine.mapRenderer.isInLineOfSight = (from, to) =>
+    to !== monster || cellDistance(from, monster) <= 2
+
+  const blind = findPositionCell(gameWindow, target, 11, 3, {
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    purpose: 'approach'
+  })
+
+  assert.ok(blind, 'a wall nothing can see past still gets a move')
+  assert.ok(
+    cellDistance(blind.cellId, monster) < cellDistance(me, monster),
+    `and it closes in rather than holding its distance (${cellDistance(me, monster)} to ${cellDistance(blind.cellId, monster)})`
+  )
+
+  delete gameWindow.isoEngine.mapRenderer.isInLineOfSight
+  console.log('ok - a blocked line is walked around, not stood behind')
+}
+
 async function testChallengeRules() {
   await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-state.ts'))
   const { deriveChallengeRules } = await import(
@@ -4357,6 +4445,7 @@ async function main() {
   await testEscalatingSpellIsRepriced()
   await testComboSurvivesAKill()
   await testRetreatWaitsForTheCasts()
+  await testWalksAroundCover()
   await testChallengeRules()
   await testTurnPlanValidation()
   await testConnectionCheck()

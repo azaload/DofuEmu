@@ -44,9 +44,23 @@ function characteristic(source: Dict | null, name: string): number {
   const dict = asDict(raw)
   if (!dict) return 0
 
+  // A build that already totals it up has the last word.
+  for (const key of ['total', 'value', 'totalValue']) {
+    if (typeof dict[key] === 'number') return dict[key] as number
+  }
+
   // The protocol spells it "additionnal"; some builds use the English one.
-  return ['base', 'additional', 'additionnal', 'objectsAndMountBonus', 'alignGiftBonus', 'contextModif']
+  const known = ['base', 'additional', 'additionnal', 'objectsAndMountBonus', 'alignGiftBonus', 'contextModif']
     .map((key) => (typeof dict[key] === 'number' ? (dict[key] as number) : 0))
+    .reduce((total, value) => total + value, 0)
+  if (known !== 0) return known
+
+  // None of the names this code knows carried anything. A characteristic is a
+  // handful of numbers that add up to it, whatever they are called here, so
+  // they are added up — reading zero for every statistic makes every element
+  // score the same and is worse than a name this code cannot recognise.
+  return Object.values(dict)
+    .filter((value): value is number => typeof value === 'number')
     .reduce((total, value) => total + value, 0)
 }
 
