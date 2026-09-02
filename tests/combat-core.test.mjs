@@ -2029,6 +2029,104 @@ async function runSuite(combat, SEED) {
     console.log('ok - a cast limit of zero is no limit, and a real one survives the re-plans')
   }
 
+  /* --- 19. why the turn moves on to another monster --- */
+  {
+    const context = (over) => ({
+      turn: 1,
+      actionPoints: 6,
+      movementPoints: 0,
+      elements: [],
+      lastCastTurn: new Map(),
+      canMove: false,
+      keepDistance: true,
+      ...over
+    })
+
+    // A big character: three hundred strength, so an arrow takes a couple of
+    // hundred off. Everything positional has to stay worth something at that
+    // scale, and a flat bonus does not.
+    const strong = {
+      strength: { base: 300 },
+      intelligence: { base: 0 },
+      chance: { base: 0 },
+      agility: { base: 0 }
+    }
+    const arrow = spellOf(1, {
+      name: 'Flèche',
+      apCost: 3,
+      range: 8,
+      effects: [{ effectId: 97, diceNum: 60, diceSide: 60, zoneSize: 0 }]
+    })
+
+    // Two monsters, one already down to two fifths of its life — and the
+    // healthy one is the softer target, so raw damage points the wrong way by
+    // forty-eight. Finishing what is started has to be worth more than that,
+    // and a flat forty on a character hitting for two hundred and forty is
+    // not — sixty per cent of it is twenty-four, and the turn goes and shoots
+    // the healthy one instead.
+    const wounded = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 6,
+      movementPoints: 0,
+      monsters: [
+        { cellId: cellFromCoordinates(15, 10), life: 5000, maxLife: 5000, name: 'Sain' },
+        {
+          cellId: cellFromCoordinates(15, 12),
+          life: 2000,
+          maxLife: 5000,
+          name: 'Blessé',
+          resists: { earthElementResistPercent: 20 }
+        }
+      ],
+      spells: { 1: arrow },
+      characteristics: strong
+    })
+
+    const focused = planTurn(wounded.gameWindow, context({}))
+    assert.strictEqual(focused.casts.length, 2, 'both points are spent')
+    assert.ok(
+      focused.casts.every((cast) => cast.hits.includes(wounded.monsters[1].id)),
+      `both arrows go to the wounded one (${focused.casts.map((cast) => cast.reason).join(', ')})`
+    )
+
+    // Unless the spell may only be thrown at a monster once a turn. That is
+    // the commonest reason a turn hits one monster, fails to kill it, and
+    // moves on — and it now says so rather than looking like a change of mind.
+    const limited = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 6,
+      movementPoints: 0,
+      monsters: [
+        { cellId: cellFromCoordinates(15, 10), life: 5000, maxLife: 5000, name: 'Sain' },
+        { cellId: cellFromCoordinates(15, 12), life: 2000, maxLife: 5000, name: 'Blessé' }
+      ],
+      spells: {
+        1: spellOf(1, {
+          name: 'Flèche',
+          apCost: 3,
+          range: 8,
+          maxCastPerTarget: 1,
+          effects: [{ effectId: 97, diceNum: 60, diceSide: 60, zoneSize: 0 }]
+        })
+      },
+      characteristics: strong
+    })
+
+    const moved = planTurn(limited.gameWindow, context({}))
+    assert.strictEqual(moved.casts.length, 2, 'the turn still spends both points')
+    assert.strictEqual(
+      new Set(moved.casts.map((cast) => cast.cellId)).size,
+      2,
+      'on two different monsters, because one cast each is all the spell allows'
+    )
+    assert.ok(
+      moved.notes.some((note) => note.includes('cast(s) on') && note.includes('what is left')),
+      `and the turn says why it moved on (${moved.notes.join(' | ')})`
+    )
+
+    console.log('ok - the wounded one is finished, and moving on is explained')
+  }
+
   console.log(`— seed ${SEED} clear —`)
 }
 

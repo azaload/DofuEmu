@@ -881,6 +881,28 @@ export function planTurn(gameWindow: DofusWindow, plan: PlanContext): TurnPlan |
     position = retreat.cellId
   }
 
+  /**
+   * Why the turn moved on to another monster.
+   *
+   * A spell the game allows once or twice per target is the commonest reason
+   * a turn attacks one monster, fails to kill it, and attacks another — and
+   * from the log alone it looks like the AI simply lost interest. Saying it
+   * outright is the difference between a rule and a mystery.
+   */
+  for (const entry of book.states) {
+    const limit = entry.spell.maxCastsPerTarget
+    if (limit === null) continue
+
+    for (const enemy of field.enemies) {
+      const used = state.castsPerTarget.get(`${entry.spell.id}:${enemy.id}`) ?? 0
+      if (used < limit) continue
+      notes.push(
+        `${entry.spell.name ?? entry.spell.id} has had its ${limit} cast(s) on ${enemy.name} ` +
+          'this turn: what is left goes to the others'
+      )
+    }
+  }
+
   const castIds = new Set(casts.map((cast) => cast.spellId))
   const atEnd = { ...state, occupied: new Set(state.occupied) }
   atEnd.occupied.delete(field.me.cellId)

@@ -17,13 +17,20 @@ import { cellCoordinates, cellDistance, cellFromCoordinates, type Grid } from '.
 /** What one point of damage is worth against everything else. */
 export const KILL_BONUS = 400
 /**
- * How much finishing a wounded monster is worth beyond the damage itself.
+ * How much finishing a wounded monster is worth beyond the damage itself,
+ * counted in casts.
  *
  * Spreading damage evenly leaves every monster alive and hitting back. The
  * one closest to death is the one worth another arrow: a dead monster stops
  * playing altogether, which is the cheapest defence there is.
+ *
+ * Counted in casts for the same reason as the rest: a flat forty is most of a
+ * hit on a starting character and one part in six of a hit on one with four
+ * hundred strength — and on that character the turn stops caring which monster
+ * it is shooting, which is exactly what it looks like from the outside when an
+ * arrow lands on one monster and the next lands on another.
  */
-export const FOCUS_BONUS = 40
+export const FOCUS_CASTS = 0.5
 /**
  * What each extra monster caught in the same area is worth.
  *
@@ -247,7 +254,8 @@ export function scoreCast(
       // client reporting more life than the maximum — a shield, a stale
       // reading — must not turn the bonus into a penalty.
       const full = enemy.maxLife > 0 ? enemy.maxLife : enemy.life
-      value += Math.min(1, Math.max(0, 1 - enemy.life / full)) * FOCUS_BONUS
+      const hurt = Math.min(1, Math.max(0, 1 - enemy.life / full))
+      value += hurt * context.castDamage * FOCUS_CASTS
     }
 
     value += Math.max(0, damage.size - 1) * MULTI_HIT_BONUS
