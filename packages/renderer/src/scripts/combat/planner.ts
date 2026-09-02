@@ -2,6 +2,7 @@ import type { CombatElement } from '@dofemu/shared'
 import type { DofusWindow } from '@/types/dofus-window'
 import type { SpellDetails } from '../spell-catalogue'
 import { readBattlefield, type Battlefield, type Combatant } from './battlefield'
+import type { DamageProfile } from '../damage'
 import { readSpellbook, explain, type Spellbook, type SpellState } from './spellbook'
 import { aimCandidates, effectiveRange, type AimContext } from './aiming'
 import {
@@ -400,6 +401,31 @@ function toPlannedCast(cast: ScoredCast): PlannedSpell {
 }
 
 /**
+ * What a cast really takes off, as the scale for everything positional.
+ *
+ * Grouping a pack and shoving a monster out of contact are both worth "about
+ * a cast", and a cast is worth two hundred and fifty on one character and
+ * thirty on another. Measuring them against this is what keeps them worth the
+ * same thing on both.
+ */
+function damageReference(
+  book: Spellbook,
+  enemies: Combatant[],
+  profile: DamageProfile,
+  areaOnly: boolean
+): number {
+  let best = 0
+  for (const entry of book.usable) {
+    if (entry.spell.kind !== 'damage') continue
+    if (areaOnly && entry.spell.zone.size <= 0) continue
+    for (const enemy of enemies) {
+      best = Math.max(best, damageTo(entry.spell, enemy, profile))
+    }
+  }
+  return best
+}
+
+/**
  * How far apart two monsters may stand and still be caught by one cast.
  *
  * Twice the widest area, not once: a cross of one reaches a cell either side
@@ -705,7 +731,9 @@ export function planTurn(gameWindow: DofusWindow, plan: PlanContext): TurnPlan |
             keepDistance: plan.keepDistance,
             summonsLast: plan.summonsLast !== false,
             heldBy: new Set<number>(),
-            groupRadius: 0
+            groupRadius: 0,
+            areaDamage: 0,
+            castDamage: 0
           }
         )?.damage.get(enemy.id) ?? 0
       )
@@ -727,7 +755,9 @@ export function planTurn(gameWindow: DofusWindow, plan: PlanContext): TurnPlan |
         .filter((enemy) => cellDistance(field.me.cellId, enemy.cellId) === 1)
         .map((enemy) => enemy.id)
     ),
-    groupRadius: groupingRadius(book)
+    groupRadius: groupingRadius(book),
+    areaDamage: damageReference(book, state.enemies, field.profile, true),
+    castDamage: damageReference(book, state.enemies, field.profile, false)
   }
 
   /**

@@ -626,9 +626,10 @@ async function main() {
   // --- real conditions: a Crâ against a group of Pious ---
   // The spells are the ones off the game's own sheets: Barrage 4 AP, range
   // 1-6, straight line only, perpendicular bar, 26-29 earth; Concentration
-  // 3 AP, range 2-4, boostable, cross, 20-22 earth; the two single-target
-  // arrows in water and air. A strength character must reach for the earth
-  // ones, and for the areas when the birds stand together.
+  // 3 AP, range 2-4, boostable, cross, 20-22 earth; Transfusion single
+  // target, earth, with life back; and an air arrow to compare against. A
+  // strength character must reach for the earth ones, and for the areas when
+  // the birds stand together.
   const craSpells = () => ({
     1: {
       id: 1,
@@ -678,8 +679,9 @@ async function main() {
         apCost: 3,
         range: 8,
         rangeCanBeBoosted: true,
+        // Earth, single target, and it gives life back on top.
         effects: [
-          { effectId: 98, diceNum: 16, diceSide: 18, zoneSize: 0 },
+          { effectId: 97, diceNum: 16, diceSide: 18, zoneSize: 0 },
           { effectId: 108, diceNum: 8, diceSide: 10, zoneSize: 0 }
         ]
       })

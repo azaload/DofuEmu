@@ -16,6 +16,7 @@ import {
 import { areCellsAligned, cellCoordinates, cellDistance } from './geometry'
 import type { FightChallenge } from '../fight-state'
 import type { SpellDetails } from '../spell-catalogue'
+import type { DamageProfile } from '../damage'
 
 /**
  * The fight, written out for a model to read.
@@ -203,6 +204,22 @@ function describeFighter(
   }
 }
 
+/** The scale grouping and contact are measured against: what a cast takes off. */
+function reference(
+  book: Spellbook,
+  enemies: Combatant[],
+  profile: DamageProfile,
+  areaOnly: boolean
+): number {
+  let best = 0
+  for (const entry of book.usable) {
+    if (entry.spell.kind !== 'damage') continue
+    if (areaOnly && entry.spell.zone.size <= 0) continue
+    for (const enemy of enemies) best = Math.max(best, damageTo(entry.spell, enemy, profile))
+  }
+  return best
+}
+
 function areaOf(size: number, shape: string): string {
   return size > 0 ? `${shape}/${size}` : 'single cell'
 }
@@ -386,7 +403,9 @@ export function buildSnapshot(
     groupRadius:
       book.usable
         .filter((entry) => entry.spell.kind === 'damage')
-        .reduce((most, entry) => Math.max(most, entry.spell.zone.size), 0) * 2
+        .reduce((most, entry) => Math.max(most, entry.spell.zone.size), 0) * 2,
+    areaDamage: reference(book, state.enemies, field.profile, true),
+    castDamage: reference(book, state.enemies, field.profile, false)
   }
 
   const summonsLast = options.summonsLast !== false

@@ -304,10 +304,10 @@ spells* (the default). In the second mode it reads the character's spellbook fro
 and plans the whole turn itself — where to stand, what to throw, and in which order.
 
 A fight also reports **which element each attack was read as**, with the effect ids it was
-read from — `Elements read: Flèche de Barrage=earth[97], Flèche de Transfusion=earth[96]`.
-It is the one thing that cannot be checked from the outside: a water spell read as earth is
-scored on a strength character's four hundred strength and wins every turn, and nothing
-else in the log would say so. Compare it against the spell sheets in game.
+read from — `Elements read: <spell>=earth[97], <spell>=air[99], ...`. It is the one thing
+that cannot be checked from the outside: an element read wrong is scored against the wrong
+characteristic, so a spell can win every turn for a bonus the character does not have, and
+nothing else in the log would say so. Compare it against the spell sheets in game.
 
 A fight also reports the statistics behind the choice — `Stats: earth 110, fire 0, water 0,
 air 20` — and which elements are ticked, naming every spell that ticking disables. All
@@ -421,10 +421,21 @@ cast that *sets up* the next one never looks best on the spot — it does less d
 the arrow beside it, and what it buys lands later.
 
 So grouping has a value of its own. After every push and pull, the AI counts how many
-**pairs of monsters end up close enough for one cast to catch both**, and the increase is
-worth about one extra cast's damage per pair. A Concentration that drags a bird into range
-of its neighbours is therefore taken over a transfusion arrow that hits half again as hard,
-and the cross that follows catches two instead of one.
+**pairs of monsters end up close enough for one cast to catch both**, and each pair gained
+is worth what the area spell takes off one more monster. A pull that drags a bird into
+range of its neighbours is therefore taken over a single-target arrow that hits harder, and
+the cross that follows catches two instead of one.
+
+Counted in **casts, not in points**. A flat bonus is a different thing to different
+characters: thirty-five is most of a hit on a starting Crâ and nothing at all on one with
+four hundred strength, whose arrows take two hundred and fifty off — the grouping play
+would simply never be chosen again once the character grew into it. The same goes for
+shoving a monster out of contact, which is worth about a cast and a half.
+
+One cast's worth per pair, and no more: the monsters take their own turn in between and the
+group may not last. Catching one more monster **now** is certain, so it still wins — an
+area is aimed at the cell covering the most, and the setup only wins when it is not
+competing with an immediate hit.
 
 - The distance that counts is **twice** the widest area the character can throw, not once:
   a cross of one reaches a cell either side of where it lands, so two monsters two cells

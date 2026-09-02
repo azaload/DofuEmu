@@ -54,15 +54,20 @@ export const HEAL_VALUE = 2
  */
 export const POINTLESS_CAST = 0.01
 /**
- * What shoving a monster out of contact is worth.
+ * What shoving a monster out of contact is worth, counted in casts.
  *
  * For a ranged character it is the difference between a turn spent tackled
  * and a turn spent shooting: the walk that follows costs its own points
- * instead of double, and the monster spends its next turn walking back.
- * Pitched below a kill and above a single hit, so it is preferred to one more
- * arrow but never to finishing something off.
+ * instead of double, and the monster spends its next turn walking back. A
+ * cast and a half is about what that comes to.
+ *
+ * Counted in casts rather than in points on purpose. A flat number is a
+ * different thing to different characters: ninety is most of a hit on a
+ * starting Crâ and background noise on one with four hundred strength, whose
+ * arrows take two hundred and fifty off — and the shove would never be
+ * chosen again.
  */
-export const BREAK_CONTACT = 90
+export const BREAK_CONTACT_CASTS = 1.5
 /**
  * How much of the damage done to a summon counts.
  *
@@ -73,7 +78,7 @@ export const BREAK_CONTACT = 90
  */
 export const SUMMON_DISCOUNT = 0.1
 /**
- * What bringing two monsters within one area of each other is worth.
+ * How many area casts a grouped pair is expected to pay back.
  *
  * A pull that drags a pack into a cross, or a push that shoves one monster
  * into the next, is worth far more than the damage it happens to do: every
@@ -82,10 +87,11 @@ export const SUMMON_DISCOUNT = 0.1
  * arrow scores best on the spot — which is how a Crâ ends up spending five
  * turns on transfusion arrows while the birds stand two cells apart.
  *
- * Pitched at about one extra cast's worth of damage, which is what the second
- * monster in the area really is.
+ * Measured in casts of the area spell itself, for the same reason as above:
+ * what one more monster in the area is worth is whatever that spell takes off
+ * one monster, and that is a different number on every character.
  */
-export const GROUPING_BONUS = 35
+export const GROUPING_TURNS = 1
 
 /** What a spell would really take off a fighter, after everything. */
 export function damageTo(
@@ -140,10 +146,20 @@ export interface ScoreContext {
   heldBy: ReadonlySet<number>
   /**
    * How far apart two monsters may stand and still be caught by the same
-   * cast: the widest area the character can throw. Zero with no area spell,
-   * and then grouping the pack buys nothing.
+   * cast: twice the widest area the character can throw. Zero with no area
+   * spell, and then grouping the pack buys nothing.
    */
   groupRadius: number
+  /**
+   * What the widest area spell takes off one monster right now, and what the
+   * best cast of any kind takes off one.
+   *
+   * The scale everything positional is measured against, so that grouping a
+   * pack and breaking a hold stay worth the same *relative* to a hit whatever
+   * the character's statistics are.
+   */
+  areaDamage: number
+  castDamage: number
 }
 
 export interface ScoredCast {
@@ -397,17 +413,18 @@ function displacementValue(
       if (!after) continue
 
       // Freed from a hold that was there when the turn opened.
-      if (context.heldBy.has(enemy.id) && holds(enemy) && !holds(after)) gained += BREAK_CONTACT
+      const worth = context.castDamage * BREAK_CONTACT_CASTS
+      if (context.heldBy.has(enemy.id) && holds(enemy) && !holds(after)) gained += worth
 
       // And a pull that drags one into melee costs exactly what breaking one
       // out of it is worth.
-      if (!holds(enemy) && holds(after)) gained -= BREAK_CONTACT
+      if (!holds(enemy) && holds(after)) gained -= worth
     }
   }
 
   // How much closer together the pack ends up, counted over everyone standing
   // — the monsters this cast never touched are part of the shape too.
-  gained += groupingGain(candidate, state, context) * GROUPING_BONUS
+  gained += groupingGain(candidate, state, context) * context.areaDamage * GROUPING_TURNS
 
   return gained
 }
