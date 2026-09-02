@@ -72,6 +72,20 @@ export const BREAK_CONTACT = 90
  * nothing else at all, and far too little to prefer one.
  */
 export const SUMMON_DISCOUNT = 0.1
+/**
+ * What bringing two monsters within one area of each other is worth.
+ *
+ * A pull that drags a pack into a cross, or a push that shoves one monster
+ * into the next, is worth far more than the damage it happens to do: every
+ * area cast for the rest of the fight catches one more. Without a value of
+ * its own that setup is invisible, and the turn goes to whatever single
+ * arrow scores best on the spot — which is how a Crâ ends up spending five
+ * turns on transfusion arrows while the birds stand two cells apart.
+ *
+ * Pitched at about one extra cast's worth of damage, which is what the second
+ * monster in the area really is.
+ */
+export const GROUPING_BONUS = 35
 
 /** What a spell would really take off a fighter, after everything. */
 export function damageTo(
@@ -124,6 +138,12 @@ export interface ScoreContext {
    * way back out, which is a fine trick and a terrible turn.
    */
   heldBy: ReadonlySet<number>
+  /**
+   * How far apart two monsters may stand and still be caught by the same
+   * cast: the widest area the character can throw. Zero with no area spell,
+   * and then grouping the pack buys nothing.
+   */
+  groupRadius: number
 }
 
 export interface ScoredCast {
@@ -215,7 +235,7 @@ export function scoreCast(
     }
 
     value += Math.max(0, damage.size - 1) * MULTI_HIT_BONUS
-    value += freedomGained(candidate, state, context)
+    value += displacementValue(candidate, state, context)
 
     for (const friend of candidate.friends) {
       const taken = damageWith(spell, friend.resistances, context.profile, boostOf(state))
@@ -320,37 +340,104 @@ export function scoreCast(
  * Counted as contacts before against contacts after, so a pull that drags a
  * monster *into* contact is charged for it rather than rewarded.
  */
-function freedomGained(
+/**
+ * Pairs of monsters close enough for one cast to catch both.
+ *
+ * The whole measure of how grouped a pack is, and the thing a pull is really
+ * for: three birds in a cross is three pairs, the same three strung out in a
+ * line is one.
+ */
+function pairsWithin(positions: Map<number, number>, radius: number): number {
+  if (radius <= 0) return 0
+
+  const cells = [...positions.values()]
+  let pairs = 0
+  for (let i = 0; i < cells.length; i++) {
+    for (let j = i + 1; j < cells.length; j++) {
+      if (cellDistance(cells[i], cells[j]) <= radius) pairs += 1
+    }
+  }
+  return pairs
+}
+
+/**
+ * What a cast buys by moving what it hits, beyond the damage it does.
+ *
+ * Two things, and the second is the one a Crâ's turn is built on:
+ *
+ * Fleeing on foot is tackled; shoving the monster away is not, so a spell
+ * that pushes is the way out of a hold.
+ *
+ * And a displacement **groups the pack**. Concentration pulls its targets
+ * towards the cell it was aimed at, barrage shoves them two cells off: either
+ * can bring two monsters within one area of each other, and every area cast
+ * after that catches both. That is worth paying for on its own — the cast
+ * that sets it up rarely looks best on the spot.
+ */
+function displacementValue(
   candidate: AimCandidate,
   state: PlanState,
   context: ScoreContext
 ): number {
-  if (!context.keepDistance) return 0
-
   const spell = candidate.spell
   if (spell.pushDistance <= 0 && spell.pullDistance <= 0) return 0
   if (candidate.enemies.length === 0) return 0
 
-  const holds = (fighter: Combatant) => cellDistance(candidate.from, fighter.cellId) === 1
   const moved = new Map(
     candidate.enemies.map((enemy) => [enemy.id, { ...enemy }] as const)
   )
   displace(context.grid, spell, candidate, [...moved.values()], new Set(state.occupied))
 
   let gained = 0
-  for (const enemy of candidate.enemies) {
-    const after = moved.get(enemy.id)
-    if (!after) continue
 
-    // Freed from a hold that was there when the turn opened.
-    if (context.heldBy.has(enemy.id) && holds(enemy) && !holds(after)) gained += BREAK_CONTACT
+  if (context.keepDistance) {
+    const holds = (fighter: Combatant) => cellDistance(candidate.from, fighter.cellId) === 1
+    for (const enemy of candidate.enemies) {
+      const after = moved.get(enemy.id)
+      if (!after) continue
 
-    // And a pull that drags one into melee costs exactly what breaking one
-    // out of it is worth.
-    if (!holds(enemy) && holds(after)) gained -= BREAK_CONTACT
+      // Freed from a hold that was there when the turn opened.
+      if (context.heldBy.has(enemy.id) && holds(enemy) && !holds(after)) gained += BREAK_CONTACT
+
+      // And a pull that drags one into melee costs exactly what breaking one
+      // out of it is worth.
+      if (!holds(enemy) && holds(after)) gained -= BREAK_CONTACT
+    }
   }
 
+  // How much closer together the pack ends up, counted over everyone standing
+  // — the monsters this cast never touched are part of the shape too.
+  gained += groupingGain(candidate, state, context) * GROUPING_BONUS
+
   return gained
+}
+
+/**
+ * How many more pairs of monsters end up within one area of each other.
+ *
+ * Positive for a pull that drags a pack together or a push that shoves one
+ * monster into the next; negative for a shove that scatters them. Reported to
+ * the local model as well, since a cast that sets up the next one never looks
+ * like the best cast on the spot.
+ */
+export function groupingGain(
+  candidate: AimCandidate,
+  state: PlanState,
+  context: ScoreContext
+): number {
+  const spell = candidate.spell
+  if (context.groupRadius <= 0 || state.enemies.length < 2) return 0
+  if (spell.pushDistance <= 0 && spell.pullDistance <= 0) return 0
+  if (candidate.enemies.length === 0) return 0
+
+  const moved = new Map(candidate.enemies.map((enemy) => [enemy.id, { ...enemy }] as const))
+  displace(context.grid, spell, candidate, [...moved.values()], new Set(state.occupied))
+
+  const before = new Map(state.enemies.map((enemy) => [enemy.id, enemy.cellId] as const))
+  const after = new Map(before)
+  for (const [id, fighter] of moved) after.set(id, fighter.cellId)
+
+  return pairsWithin(after, context.groupRadius) - pairsWithin(before, context.groupRadius)
 }
 
 /**

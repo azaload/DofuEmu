@@ -208,6 +208,19 @@ function asNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
+/**
+ * A cast limit, where zero means there is none.
+ *
+ * The protocol writes "no limit" as 0, not as a missing field. Reading it as
+ * a number disabled every spell the client is generous with — a turn would
+ * report "already cast 0 time(s), its limit for a turn" and leave the whole
+ * spellbook unusable but for the two or three spells that carry a real limit.
+ */
+function castLimit(value: unknown): number | null {
+  const limit = asNumber(value)
+  return limit === null || limit <= 0 ? null : limit
+}
+
 function asBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback
 }
@@ -413,8 +426,8 @@ export function readSpellCatalogue(gameWindow: DofusWindow): SpellDetails[] {
       rangeBoost,
 
       cooldown: asNumber(level?.minCastInterval) ?? 0,
-      maxCastsPerTurn: asNumber(level?.maxCastPerTurn),
-      maxCastsPerTarget: asNumber(level?.maxCastPerTarget),
+      maxCastsPerTurn: castLimit(level?.maxCastPerTurn),
+      maxCastsPerTarget: castLimit(level?.maxCastPerTarget),
 
       zone,
       effects,

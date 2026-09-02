@@ -6,6 +6,7 @@ import { aimCandidates, effectiveRange, type AimContext } from './aiming'
 import {
   damageTo,
   distanceToEnemies,
+  groupingGain,
   scoreCast,
   threatCount,
   type PlanState,
@@ -91,6 +92,11 @@ export interface SnapshotCast {
   damage: number
   kills: number[]
   value: number
+  /**
+   * How many more pairs of monsters end up within one area of each other once
+   * this cast has landed: what the pull or the push sets up for the next one.
+   */
+  setup: number
 }
 
 export interface SnapshotMove {
@@ -281,7 +287,9 @@ function castsFrom(
           ? state.friends.filter((friend) => friend.cellId === from)
           : state.enemies
 
-    for (const candidate of aimCandidates(aim, spell, from, against, 3)) {
+    // Enough cells per spell that the one which groups the pack is scored
+    // rather than cut: the ordering they arrive in knows nothing about it.
+    for (const candidate of aimCandidates(aim, spell, from, against, 8)) {
       const cast = scoreCast(candidate, entry.apCost, state, context)
       if (cast) scored.push(cast)
     }
@@ -323,7 +331,8 @@ function castsFrom(
       friendly: cast.candidate.friends.map((friend) => friend.id),
       damage: Math.round([...cast.damage.values()].reduce((total, value) => total + value, 0)),
       kills: cast.kills.map((id) => numbers.get(id) ?? id),
-      value: Math.round(cast.value)
+      value: Math.round(cast.value),
+      setup: groupingGain(cast.candidate, state, context)
     })
     if (casts.length >= limit) break
   }
@@ -371,7 +380,13 @@ export function buildSnapshot(
     cheapestAttack: book.cheapestAttack,
     keepDistance: true,
     summonsLast: options.summonsLast !== false,
-    heldBy: new Set(holdersOf(field, from).map((enemy) => enemy.id))
+    heldBy: new Set(holdersOf(field, from).map((enemy) => enemy.id)),
+    // Twice the widest area: two monsters that far apart are both caught by
+    // the cell between them.
+    groupRadius:
+      book.usable
+        .filter((entry) => entry.spell.kind === 'damage')
+        .reduce((most, entry) => Math.max(most, entry.spell.zone.size), 0) * 2
   }
 
   const summonsLast = options.summonsLast !== false

@@ -1806,6 +1806,229 @@ async function runSuite(combat, SEED) {
     console.log('ok - the turn finds the combination that spends every point best')
   }
 
+  /* --- 17. the pull that builds the group is worth more than the arrow --- */
+  {
+    const flat = {
+      strength: { base: 0 },
+      intelligence: { base: 0 },
+      chance: { base: 0 },
+      agility: { base: 0 }
+    }
+
+    // Concentration: a cross of one that pulls what it covers a cell towards
+    // the cell it was aimed at. Transfusion: a stronger single-target arrow
+    // for the same points, and the one a turn falls into spamming.
+    const concentration = spellOf(3, {
+      name: 'Flèche de Concentration',
+      apCost: 3,
+      range: 8,
+      effects: [
+        { effectId: 97, diceNum: 20, diceSide: 20, zoneShape: 43, zoneSize: 1 },
+        { effectId: 7, diceNum: 1, zoneShape: 43, zoneSize: 1 }
+      ]
+    })
+    const transfusion = spellOf(4, {
+      name: 'Flèche de Transfusion',
+      apCost: 3,
+      range: 8,
+      effects: [{ effectId: 97, diceNum: 45, diceSide: 45, zoneSize: 0 }]
+    })
+
+    // Three cells apart: no cross covers both, and no cast this turn can.
+    const apart = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 6,
+      movementPoints: 0,
+      monsters: [
+        { cellId: cellFromCoordinates(15, 10), life: 5000, name: 'Piou Bleu' },
+        { cellId: cellFromCoordinates(15, 13), life: 5000, name: 'Piou Rouge' }
+      ],
+      spells: { 3: concentration, 4: transfusion },
+      characteristics: flat
+    })
+
+    const context = (over) => ({
+      turn: 1,
+      actionPoints: 6,
+      movementPoints: 0,
+      elements: [],
+      lastCastTurn: new Map(),
+      canMove: false,
+      keepDistance: true,
+      ...over
+    })
+
+    const grouped = planTurn(apart.gameWindow, context({}))
+    assert.strictEqual(grouped.casts.length, 2, 'both points are spent')
+    assert.strictEqual(
+      grouped.casts[0].spellId,
+      3,
+      `the pull opens the turn rather than the harder arrow (${grouped.casts
+        .map((cast) => cast.name)
+        .join(', ')})`
+    )
+    assert.strictEqual(
+      grouped.casts[1].hits.length,
+      2,
+      'and the cast after it catches both, which is what the pull was for'
+    )
+
+    // The same two monsters, and no way to move them: the harder arrow wins,
+    // so the preference above really is about the grouping and not about the
+    // spell itself.
+    const still = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 6,
+      movementPoints: 0,
+      monsters: [
+        { cellId: cellFromCoordinates(15, 10), life: 5000, name: 'Piou Bleu' },
+        { cellId: cellFromCoordinates(15, 13), life: 5000, name: 'Piou Rouge' }
+      ],
+      spells: {
+        3: spellOf(3, {
+          name: 'Concentration sans attirance',
+          apCost: 3,
+          range: 8,
+          effects: [{ effectId: 97, diceNum: 20, diceSide: 20, zoneShape: 43, zoneSize: 1 }]
+        }),
+        4: transfusion
+      },
+      characteristics: flat
+    })
+    const nothingToGroup = planTurn(still.gameWindow, context({}))
+    assert.strictEqual(
+      nothingToGroup.casts[0].spellId,
+      4,
+      'without the pull, the stronger single-target arrow is the right answer'
+    )
+
+    // A lone monster: there is nobody to group it with, so the arrow again.
+    const solo = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 6,
+      movementPoints: 0,
+      monsters: [{ cellId: cellFromCoordinates(15, 10), life: 5000, name: 'Piou Bleu' }],
+      spells: { 3: concentration, 4: transfusion },
+      characteristics: flat
+    })
+    assert.strictEqual(
+      planTurn(solo.gameWindow, context({})).casts[0].spellId,
+      4,
+      'and grouping one monster with itself is worth nothing'
+    )
+
+    // The model is told what the pull sets up, or it has no way to see it.
+    const snapshot = buildSnapshot(apart.gameWindow, {
+      turn: 1,
+      elements: [],
+      lastCastTurn: new Map(),
+      actionPoints: 6,
+      movementPoints: 0,
+      canMove: false
+    })
+    const setup = snapshot.casts.filter((cast) => cast.setup > 0)
+    assert.ok(
+      setup.length > 0,
+      `a cast that groups the pack is offered with its setup named (${snapshot.casts
+        .map((cast) => `${cast.name}:${cast.setup}`)
+        .join(', ')})`
+    )
+    assert.ok(
+      setup.every((cast) => cast.spell === 3),
+      'and it is the pull, not the single-target arrow'
+    )
+
+    console.log('ok - the pack is pulled together before the turn is emptied into one monster')
+  }
+
+  /* --- 18. what the client writes as "no limit" --- */
+  {
+    const flat = {
+      strength: { base: 0 },
+      intelligence: { base: 0 },
+      chance: { base: 0 },
+      agility: { base: 0 }
+    }
+    const context = (over) => ({
+      turn: 1,
+      actionPoints: 9,
+      movementPoints: 0,
+      elements: [],
+      lastCastTurn: new Map(),
+      canMove: false,
+      keepDistance: true,
+      ...over
+    })
+
+    // The protocol writes "as often as you like" as 0, not as a missing
+    // field. Read as a number it says "zero casts left", which took the whole
+    // spellbook out of a real fight and left the turn repeating whichever two
+    // spells happened to carry a real limit.
+    const open = spellOf(1, {
+      name: 'Flèche Cinglante',
+      apCost: 3,
+      range: 8,
+      maxCastPerTurn: 0,
+      maxCastPerTarget: 0,
+      effects: [{ effectId: 97, diceNum: 30, diceSide: 30, zoneSize: 0 }]
+    })
+
+    const world = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 9,
+      movementPoints: 0,
+      monsters: [{ cellId: cellFromCoordinates(15, 10), life: 5000, name: 'Bouftou' }],
+      spells: { 1: open },
+      characteristics: flat
+    })
+
+    const details = readSpellCatalogue(world.gameWindow)[0]
+    assert.strictEqual(details.maxCastsPerTurn, null, 'zero casts a turn means no limit')
+    assert.strictEqual(details.maxCastsPerTarget, null, 'and so does zero casts a target')
+
+    const plan = planTurn(world.gameWindow, context({}))
+    assert.strictEqual(plan.casts.length, 3, 'nine points buy three casts of it')
+    assert.ok(
+      plan.leftOut.every((line) => !line.includes('its limit for a turn')),
+      `and nothing is refused for a limit that does not exist (${plan.leftOut.join(' | ')})`
+    )
+
+    // A limit that really is one still holds, and still holds across the
+    // re-plans: the turn is planned afresh after every cast, so what has
+    // already been thrown at whom has to be carried in.
+    const once = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 9,
+      movementPoints: 0,
+      monsters: [{ cellId: cellFromCoordinates(15, 10), life: 5000, name: 'Bouftou' }],
+      spells: {
+        1: spellOf(1, {
+          name: 'Flèche de Transfusion',
+          apCost: 3,
+          range: 8,
+          maxCastPerTarget: 1,
+          effects: [{ effectId: 97, diceNum: 30, diceSide: 30, zoneSize: 0 }]
+        })
+      },
+      characteristics: flat
+    })
+
+    const fresh = planTurn(once.gameWindow, context({}))
+    assert.strictEqual(fresh.casts.length, 1, 'one cast a target means one cast')
+
+    const already = planTurn(
+      once.gameWindow,
+      context({ castsPerTarget: new Map([[`1:${once.monsters[0].id}`, 1]]) })
+    )
+    assert.strictEqual(
+      already.casts.length,
+      0,
+      'and a cast played before the re-plan is not thrown at the same monster again'
+    )
+
+    console.log('ok - a cast limit of zero is no limit, and a real one survives the re-plans')
+  }
+
   console.log(`— seed ${SEED} clear —`)
 }
 

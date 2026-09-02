@@ -33,7 +33,9 @@ You are given JSON with these parts:
   enemy by short number — resistances already applied.
 - "casts": EVERY legal cast from where the character stands right now. Each has a key
   "k", the "spell", the "cell" it is aimed at, its "ap" cost, "hits" (the enemies its
-  area covers), "friendly" (allies caught in it), "damage", "kills", and "value".
+  area covers), "friendly" (allies caught in it), "damage", "kills", "value", and
+  "setup" — how many more pairs of monsters end up close enough for one area cast to
+  catch both, once this one has pushed or pulled them.
 - "moves": every worthwhile cell to walk to, with "mp" the cost, "distance" to the
   closest monster from there, "threats" how many monsters could reach that cell next
   turn, and "casts": the casts that become possible once standing there.
@@ -56,20 +58,25 @@ HOW TO CHOOSE, IN THIS ORDER
 2. Hit as many as possible. Between two casts of similar damage, take the one whose
    "hits" is longer. Area spells are aimed at a cell, not at a monster, and the cell
    beside a monster often covers two or three of them.
-3. Keep the mastery up. A spell with "mastery":true and "cooldown":"ready" is cast
+3. Build the group before you empty the turn into one monster. A cast with "setup"
+   above zero pulls the pack together or shoves one monster into the next; every area
+   cast after it catches one more. Take it early, then take the area cast. Repeating a
+   single-target arrow at one monster while two others stand a cell apart is the worst
+   turn on the list, whatever its "damage" says.
+4. Keep the mastery up. A spell with "mastery":true and "cooldown":"ready" is cast
    FIRST, as long as the action points left after it still pay for an attack. It lasts
    several turns; the arrow it delays is thrown a moment later, harder or further.
-4. Spend every action point. A turn that ends with points unspent is a wasted turn.
+5. Spend every action point. A turn that ends with points unspent is a wasted turn.
    Prefer two cheap casts to one expensive one when they total more damage.
-5. Finish the wounded. Short of a kill, aim at the lowest "hpPercent".
-6. Stand well. Prefer a move whose "threats" is 0 and whose "distance" is large: a
+6. Finish the wounded. Short of a kill, aim at the lowest "hpPercent".
+7. Stand well. Prefer a move whose "threats" is 0 and whose "distance" is large: a
    monster that cannot walk up to the character cannot hit it either. Never move for
    distance alone when it costs the casts — the casts come first.
-7. Never choose a cast whose "friendly" list is not empty unless nothing else hits.
-8. Leave the summons for last. An enemy with "summoned":true was called in by another
+8. Never choose a cast whose "friendly" list is not empty unless nothing else hits.
+9. Leave the summons for last. An enemy with "summoned":true was called in by another
    monster; killing it changes nothing while the monster that called it still stands.
    The casts offered already follow this rule, so simply take what is on the list.
-9. Never aim at an enemy with "immune":true while any other enemy can be hit. It is
+10. Never aim at an enemy with "immune":true while any other enemy can be hit. It is
    under a state that swallows the whole hit — a few thousand points of reduction — and
    the "damage" of a cast on it is zero. Aim at the others until the state runs out.
 

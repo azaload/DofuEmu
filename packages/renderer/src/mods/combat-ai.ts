@@ -907,6 +907,9 @@ export function initCombatAi(
     const noted = new Set<string>()
     refusedCasts = new Set()
     const castsPerSpell = new Map<number, number>()
+    // `spellId:fighterId`, so a spell limited to one cast per monster is not
+    // planned at the same one twice across two re-plans.
+    const castsPerTarget = new Map<string, number>()
 
     // What each spell really costs right now: the book's price, plus what a
     // spell known to grow with use has added since the turn began.
@@ -953,7 +956,8 @@ export function initCombatAi(
         blockedCasts: refusedCasts,
         ignoreFighters: deadFighters,
         apCosts,
-        castsThisTurn: castsPerSpell
+        castsThisTurn: castsPerSpell,
+        castsPerTarget
       })
 
       if (!plan) {
@@ -1042,6 +1046,10 @@ export function initCombatAi(
       lastCastTurn.set(action.spellId, turn)
       cast += 1
       castsPerSpell.set(action.spellId, (castsPerSpell.get(action.spellId) ?? 0) + 1)
+      for (const hit of action.hits) {
+        const key = `${action.spellId}:${hit}`
+        castsPerTarget.set(key, (castsPerTarget.get(key) ?? 0) + 1)
+      }
       spentAp += apCosts.get(action.spellId) ?? action.apCost
       log(
         `Cast ${action.name || action.spellId} on cell ${action.cellId}: ${action.reason}` +
@@ -1489,6 +1497,29 @@ export function initCombatAi(
         log(
           'Stats: the character sheet was not found — every element scores the same, ' +
             'so the hardest hitter is picked on printed dice alone'
+        )
+      }
+
+      // Which element each attack was read as, with the effect ids it was read
+      // from. This is the one thing that cannot be checked from the outside: a
+      // water spell read as earth is scored on a strength character's 400-odd
+      // strength and wins every turn, and nothing else in the log would say so.
+      // Compare it against the spell sheets in game — one wrong line here is
+      // worth a whole fight.
+      const attacks = catalogue.filter((spell) => spell.kind === 'damage')
+      if (attacks.length > 0) {
+        log(
+          'Elements read: ' +
+            attacks
+              .map((spell) => {
+                const ids = spell.effects
+                  .map((effect) => effect.effectId)
+                  .filter((id): id is number => id !== null)
+                  .slice(0, 3)
+                  .join('/')
+                return `${spell.name ?? spell.id}=${spell.elements.join('+') || 'unknown'}[${ids}]`
+              })
+              .join(', ')
         )
       }
 

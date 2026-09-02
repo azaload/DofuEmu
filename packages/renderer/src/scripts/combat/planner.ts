@@ -83,6 +83,14 @@ export interface PlanContext {
   /** Casts already played this turn, per spell, across the re-plans. */
   castsThisTurn?: ReadonlyMap<number, number>
   /**
+   * Casts already played this turn on each fighter, keyed `spellId:fighterId`.
+   *
+   * The turn is re-planned after every action, so a plan that starts with an
+   * empty record aims the same spell at the same monster again and again —
+   * and the server refuses it, silently, for a limit the plan had forgotten.
+   */
+  castsPerTarget?: ReadonlyMap<string, number>
+  /**
    * What a spell really costs this turn, when it is not what the book says.
    *
    * Some spells grow with use — each cast in the same turn costs a point more
@@ -146,8 +154,15 @@ const MAX_DEPTH = 8
 /** The same, for the cheaper search that only compares two positions. */
 const SCOUT_BRANCHES = 2
 const SCOUT_DEPTH = 3
-/** Aim cells kept per spell before they are scored. */
-const AIM_LIMIT = 5
+/**
+ * Aim cells kept per spell before they are scored.
+ *
+ * They arrive ordered by how many fighters the area covers, which says
+ * nothing about what a cast sets up: the cell that pulls a pack together
+ * covers one monster like a dozen others do. Keeping too few is how that cell
+ * gets cut before anything has looked at it.
+ */
+const AIM_LIMIT = 8
 /**
  * Nodes a single search may open.
  *
@@ -382,6 +397,21 @@ function toPlannedCast(cast: ScoredCast): PlannedSpell {
     value: cast.value,
     reason: cast.reason
   }
+}
+
+/**
+ * How far apart two monsters may stand and still be caught by one cast.
+ *
+ * Twice the widest area, not once: a cross of one reaches a cell either side
+ * of where it lands, so two monsters two cells apart are both covered by the
+ * cell between them. Measuring the radius instead of the span is what made a
+ * pull that brought a pack into range look like it had achieved nothing.
+ */
+function groupingRadius(book: Spellbook): number {
+  const widest = book.usable
+    .filter((entry) => entry.spell.kind === 'damage')
+    .reduce((most, entry) => Math.max(most, entry.spell.zone.size), 0)
+  return widest * 2
 }
 
 /** The reach the character fights at: the longest attack it can still throw. */
@@ -649,7 +679,7 @@ export function planTurn(gameWindow: DofusWindow, plan: PlanContext): TurnPlan |
     friends: friends.map((friend) => ({ ...friend })),
     occupied: new Set(field.occupied),
     castsThisTurn: new Map(plan.castsThisTurn ?? []),
-    castsPerTarget: new Map(),
+    castsPerTarget: new Map(plan.castsPerTarget ?? []),
     rangeBonus: 0,
     powerBonus: 0,
     buffsUp: new Set()
@@ -674,7 +704,8 @@ export function planTurn(gameWindow: DofusWindow, plan: PlanContext): TurnPlan |
             cheapestAttack: 0,
             keepDistance: plan.keepDistance,
             summonsLast: plan.summonsLast !== false,
-            heldBy: new Set<number>()
+            heldBy: new Set<number>(),
+            groupRadius: 0
           }
         )?.damage.get(enemy.id) ?? 0
       )
@@ -695,7 +726,8 @@ export function planTurn(gameWindow: DofusWindow, plan: PlanContext): TurnPlan |
       field.enemies
         .filter((enemy) => cellDistance(field.me.cellId, enemy.cellId) === 1)
         .map((enemy) => enemy.id)
-    )
+    ),
+    groupRadius: groupingRadius(book)
   }
 
   /**

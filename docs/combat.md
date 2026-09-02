@@ -122,7 +122,8 @@ action has already been computed and given a key**. The model picks keys.
   **the damage it would really take off that one**, resistances applied.
 - **`casts`** — every legal cast from where the character stands, each with a key, the
   cell it is aimed at, its cost, the enemies its area covers, the allies it would catch,
-  the damage, and which enemies it finishes off.
+  the damage, which enemies it finishes off, and **`setup`** — how many more pairs of
+  monsters a push or a pull leaves close enough for one area cast to catch both.
 - **`moves`** — every cell worth walking to, with its cost, the distance to the closest
   monster from there, how many monsters could reach that cell next turn, and **the casts
   that become possible once standing there**, each with its own key.
@@ -302,6 +303,12 @@ actually frees.
 spells* (the default). In the second mode it reads the character's spellbook from the game
 and plans the whole turn itself — where to stand, what to throw, and in which order.
 
+A fight also reports **which element each attack was read as**, with the effect ids it was
+read from — `Elements read: Flèche de Barrage=earth[97], Flèche de Transfusion=earth[96]`.
+It is the one thing that cannot be checked from the outside: a water spell read as earth is
+scored on a strength character's four hundred strength and wins every turn, and nothing
+else in the log would say so. Compare it against the spell sheets in game.
+
 A fight also reports the statistics behind the choice — `Stats: earth 110, fire 0, water 0,
 air 20` — and which elements are ticked, naming every spell that ticking disables. All
 statistics at zero means the character sheet was not found and every spell then looks
@@ -354,6 +361,13 @@ each one's own movement decides how far that is — but never past the character
 since leaving the fight only postpones it. Short of a kill, arrows go to the monster closest
 to death: one that falls stops playing its turn, which is the cheapest defence there is.
 
+A cast limit of **zero means there is none**. That is how the protocol writes "as often as
+you like", and reading it as a number once took a whole spellbook out of a fight: every
+spell the client was generous with reported *"already cast 0 time(s), its limit for a
+turn"*, and the turn fell back on the two or three that carried a real limit. A limit that
+really is one is carried across the re-plans, so a spell allowed once per monster is not
+aimed at the same one again after the turn has been re-planned.
+
 A cooldown counts the turns to wait **between** casts, so a spell without one may be cast
 again on the same turn — twice, three times, as long as the points last. A spell that grows
 with use, costing a point more on each cast, is re-priced from what the game accepts rather
@@ -395,10 +409,33 @@ a monster in contact rather than skipped. Between two casts of equal damage the 
 touching more monsters wins; a cast that would catch an ally loses to one that does not,
 even when it touches fewer monsters.
 
+### Building the group
+
 Pushes and pulls are part of the plan: a spell that shoves its targets a cell back moves
-them for every cast that follows, and a pull that groups a scattered pack makes the area
-cast after it worth more — which the search sees, because it plans the sequence rather
-than the next cast.
+them for every cast that follows, and the search plans sequences rather than single casts,
+so "pull, then area" is discovered as one idea.
+
+That is not enough on its own, and the fight that showed it was a Crâ emptying five turns
+into transfusion arrows while three birds stood a cell too far apart to share a cross. The
+cast that *sets up* the next one never looks best on the spot — it does less damage than
+the arrow beside it, and what it buys lands later.
+
+So grouping has a value of its own. After every push and pull, the AI counts how many
+**pairs of monsters end up close enough for one cast to catch both**, and the increase is
+worth about one extra cast's damage per pair. A Concentration that drags a bird into range
+of its neighbours is therefore taken over a transfusion arrow that hits half again as hard,
+and the cross that follows catches two instead of one.
+
+- The distance that counts is **twice** the widest area the character can throw, not once:
+  a cross of one reaches a cell either side of where it lands, so two monsters two cells
+  apart are both covered by the cell between them.
+- A shove that **scatters** the pack is charged the same amount in reverse.
+- With no area spell in the book, or a single monster left, grouping is worth nothing and
+  the hardest hit wins again.
+
+The same number reaches the local model, as `setup` on every cast it is offered, with a
+rule telling it what to do with it — a model choosing on `damage` alone is exactly how the
+spamming started.
 
 ### What is not worth shooting
 
@@ -683,6 +720,8 @@ replays any one of them.
 | Invulnerability | a 5000-point reduction: the damage read as zero, the target left alone |
 | Shoving | the push preferred when held, refused at range, and reversed for a melee build |
 | Spending the points | the best combination found, cast limits respected, area over single when it covers more |
+| Grouping | the pull taken over a harder arrow, refused with nothing to group, and reported to the model |
+| Cast limits | zero read as no limit, a real limit surviving the re-plans |
 | Whole fights | 200 generated fights a seed, refereed action by action |
 | Speed | a six-monster, eight-spell turn planned in under 100 ms |
 
