@@ -1457,6 +1457,152 @@ async function runSuite(combat, SEED) {
     console.log('ok - an invulnerable monster is detected and left for the others')
   }
 
+  /* --- 15. shoving out of contact, and shoving an obstacle aside --- */
+  {
+    // A barrage arrow: it hits, and it pushes a cell.
+    const barrage = spellOf(2, {
+      name: 'Flèche de Barrage',
+      apCost: 4,
+      range: 6,
+      minRange: 1,
+      effects: [
+        { effectId: 97, diceNum: 25, diceSide: 30, zoneSize: 0 },
+        { effectId: 5, diceNum: 1, zoneSize: 0 }
+      ]
+    })
+    // And a plain one that hits harder and pushes nothing.
+    const arrow = spellOf(1, {
+      name: 'Flèche',
+      apCost: 4,
+      range: 8,
+      effects: [{ effectId: 97, diceNum: 30, diceSide: 35, zoneSize: 0 }]
+    })
+
+    const sheet = {
+      strength: { base: 200 },
+      intelligence: { base: 0 },
+      chance: { base: 0 },
+      agility: { base: 0 }
+    }
+    const context = (over) => ({
+      turn: 1,
+      actionPoints: 4,
+      movementPoints: 0,
+      elements: [],
+      lastCastTurn: new Map(),
+      canMove: false,
+      keepDistance: true,
+      ...over
+    })
+
+    const held = cellFromCoordinates(11, 10)
+    const behind = cellFromCoordinates(12, 10)
+
+    // A monster in contact. Fleeing on foot is tackled; shoving it is not, so
+    // the arrow that pushes wins over the one that hits harder.
+    const melee = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 4,
+      movementPoints: 0,
+      monsters: [{ cellId: held, life: 500, name: 'Bouftou' }],
+      spells: { 1: arrow, 2: barrage },
+      characteristics: sheet
+    })
+
+    const shove = planTurn(melee.gameWindow, context({}))
+    assert.strictEqual(shove.casts.length, 1, 'the turn casts')
+    assert.strictEqual(
+      shove.casts[0].spellId,
+      2,
+      'the arrow that pushes is preferred to the one that hits harder'
+    )
+    assert.strictEqual(shove.casts[0].cellId, held, 'and it is aimed at the monster holding us')
+
+    // A melee build wants it exactly the other way round.
+    const closing = planTurn(melee.gameWindow, context({ keepDistance: false }))
+    assert.strictEqual(
+      closing.casts[0].spellId,
+      1,
+      'closing in, the harder hit wins: pushing the target away is the last thing it wants'
+    )
+
+    // Out of contact, the push buys nothing and the harder hit wins again —
+    // the plan must not walk into melee just to shove its way back out.
+    const apart = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 4,
+      movementPoints: 3,
+      monsters: [{ cellId: cellFromCoordinates(14, 10), life: 500, name: 'Bouftou' }],
+      spells: { 1: arrow, 2: barrage },
+      characteristics: sheet
+    })
+    const atRange = planTurn(apart.gameWindow, context({ movementPoints: 3, canMove: true }))
+    assert.strictEqual(
+      atRange.casts[0].spellId,
+      1,
+      'at range the push is worth nothing and the harder hit is taken'
+    )
+    assert.ok(
+      atRange.actions.every(
+        (action) =>
+          action.type !== 'move' || cellDistance(action.cellId, cellFromCoordinates(14, 10)) > 1
+      ),
+      'and no move walks into contact for the sake of a shove'
+    )
+
+    // A summon is an obstacle that can be moved. Held by one, with a monster
+    // it could shoot instead, the turn shoves the summon off it — the damage
+    // done to the summon counts for almost nothing, the freedom for a lot.
+    const blocked = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 4,
+      movementPoints: 0,
+      monsters: [
+        { cellId: cellFromCoordinates(10, 9), life: 500, name: 'Invocation', summoned: true },
+        { cellId: cellFromCoordinates(15, 10), life: 500, name: 'Tofu' }
+      ],
+      spells: { 1: arrow, 2: barrage },
+      characteristics: sheet
+    })
+
+    const cleared = planTurn(blocked.gameWindow, context({}))
+    assert.strictEqual(
+      cleared.casts[0].spellId,
+      2,
+      'the summon holding the character is shoved rather than left there'
+    )
+    assert.strictEqual(
+      cleared.casts[0].cellId,
+      cellFromCoordinates(10, 9),
+      'and the shove is aimed at the summon itself'
+    )
+
+    // Standing free, the same summon is not worth a cast: the rule holds.
+    const free = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 4,
+      movementPoints: 0,
+      monsters: [
+        { cellId: cellFromCoordinates(12, 11), life: 500, name: 'Invocation', summoned: true },
+        { cellId: cellFromCoordinates(15, 10), life: 500, name: 'Tofu' }
+      ],
+      spells: { 1: arrow, 2: barrage },
+      characteristics: sheet
+    })
+    const ignored = planTurn(free.gameWindow, context({}))
+    assert.ok(
+      ignored.casts[0].hits.every((id) => id !== blocked.monsters[0].id),
+      'a summon that is holding nothing is still left alone'
+    )
+    assert.strictEqual(
+      ignored.casts[0].cellId,
+      cellFromCoordinates(15, 10),
+      'and the monster behind it is the one shot'
+    )
+
+    console.log('ok - a hold is shoved off rather than walked out of, summons included')
+  }
+
   console.log(`— seed ${SEED} clear —`)
 }
 

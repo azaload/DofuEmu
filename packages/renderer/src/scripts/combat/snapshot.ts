@@ -299,8 +299,9 @@ function castsFrom(
 
   // And a cast that only touches summons, while something else is in reach.
   const touchesReal = (cast: ScoredCast) => cast.candidate.enemies.some((enemy) => !enemy.summoned)
+  const shoves = (cast: ScoredCast) => cast.spell.pushDistance > 0 || cast.spell.pullDistance > 0
   if (summonsLast && offered.some(touchesReal)) {
-    offered = offered.filter((cast) => utility(cast) || touchesReal(cast))
+    offered = offered.filter((cast) => utility(cast) || touchesReal(cast) || shoves(cast))
   }
 
   offered.sort((a, b) => b.value - a.value)
@@ -367,7 +368,10 @@ export function buildSnapshot(
     profile: field.profile,
     grid: field.grid,
     fightEndsThisTurn: false,
-    cheapestAttack: book.cheapestAttack
+    cheapestAttack: book.cheapestAttack,
+    keepDistance: true,
+    summonsLast: options.summonsLast !== false,
+    heldBy: new Set(holdersOf(field, from).map((enemy) => enemy.id))
   }
 
   const summonsLast = options.summonsLast !== false

@@ -128,10 +128,10 @@ action has already been computed and given a key**. The model picks keys.
   that become possible once standing there**, each with its own key.
 - **`notes`** — a line or two in plain words: held in contact, nothing in reach, the
   mastery is ready, a monster nothing can hurt.
+- The fight's challenges, when the client exposes them and **Play the challenges** is on.
 
 The casts offered already follow the summon and invulnerability rules, so the model cannot
 choose one the built-in turn would have refused to make.
-- The fight's challenges, when the client exposes them and **Play the challenges** is on.
 
 A one- or two-billion-parameter model cannot work out geometry: ask it which cell an
 area spell should land on and it will invent one. Nothing is left for it to invent.
@@ -263,14 +263,38 @@ positioning mode and however many movement points are left. The log says so:
 Turn it off only if you want the AI to attempt escapes; it will then place itself as it
 would out of melee, and report what the tackle really cost.
 
-### Breaking a hold with a push
+### Shoving instead of walking out
 
-Fleeing on foot is tackled — pushing the monster away is not. Tick **push** on a spell that
-throws its target back, and in *Keep your distance* the AI casts it at the start of the turn
-when **exactly one** enemy holds the character, freeing it for the rest of the turn.
+Leaving a cell a monster is standing on is tackled: it costs more movement than the
+distance walked, can cost action points, and often fails outright. Shoving that monster
+away is not tackled at all.
 
-With two or more monsters in contact it is not used: pushing one leaves the other holding,
-for nothing.
+So in *Keep your distance*, a spell that pushes its target — a Crâ's **Flèche de Barrage**
+does, alongside its damage — is worth about as much as a good hit **on top of** its damage
+when it breaks a hold, and is preferred to a spell that hits harder and pushes nothing.
+The character is then free: the next plan sees no monster in contact, spends its movement
+backing off, and the turn ends at range.
+
+Three guards keep that from turning into a trick:
+
+- Only a hold **the turn opened with** counts. Rewarding any broken contact teaches the
+  plan to walk into melee and shove its way back out, which is a fine trick and a terrible
+  turn.
+- A **pull** that drags a monster *into* contact is charged exactly what breaking one out
+  of it is worth.
+- In *Close in on the target* there is no bonus at all: pushing the target away is the last
+  thing a melee build wants.
+
+### Breaking a hold with a push, in the manual combo
+
+The section above is the automatic mode, which reads the push off the spellbook. The manual
+combo knows only what you tell it: tick **push** on a spell that throws its target back, and
+in *Keep your distance* it is cast at the start of the turn when **exactly one** enemy holds
+the character, freeing it for the rest of the turn.
+
+With two or more monsters in contact it is not used there: pushing one leaves the other
+holding, for nothing. The automatic mode has no such limit — it weighs each shove on what it
+actually frees.
 
 ## Letting the AI choose its spells
 
@@ -396,6 +420,12 @@ is treated as any other enemy.
 A summon is recognised from the fighter's own statistics — the flag the protocol carries,
 or the id of the summoner when a build only exposes that. Neither being there reads as
 "not a summon", since treating a real monster as one would leave it alive all fight.
+
+A summon is treated as an **obstacle that can be moved**, not as a target. It blocks a
+walk and it blocks a line like any other body — and a spell that pushes may be thrown at
+one to shift it, which the rule above never blocks. What such a cast does to the summon on
+the way counts for almost nothing, so it is only made when the shove itself is worth
+something: it is holding the character, or it is standing in the way.
 
 **Monsters nothing can hurt.** The invulnerable state a monster like a Tronknyde puts up
 for a couple of turns is a **flat damage reduction of several thousand**, which is more
@@ -633,6 +663,7 @@ replays any one of them.
 | The mastery | cast, skipped, on cooldown, and with the setting off |
 | Summons | the flag either way round, the rule on and off, and an area covering both |
 | Invulnerability | a 5000-point reduction: the damage read as zero, the target left alone |
+| Shoving | the push preferred when held, refused at range, and reversed for a melee build |
 | Whole fights | 200 generated fights a seed, refereed action by action |
 | Speed | a six-monster, eight-spell turn planned in under 100 ms |
 

@@ -235,13 +235,23 @@ function candidateCasts(
     }
     if (!anyReal) return perSpell
 
+    // A summon is an obstacle that can be moved, so a spell that shoves it is
+    // never dropped by this rule: pushing one out of a line, or off the cell
+    // it is holding us on, is not the same as spending the turn killing it.
+    // What it does to the summon on the way is discounted to almost nothing,
+    // so such a cast only wins when the shove itself is worth something.
+    const shoves = (cast: ScoredCast) =>
+      cast.spell.pushDistance > 0 || cast.spell.pullDistance > 0
+
     const kept = new Map<number, ScoredCast[]>()
     for (const [id, casts] of perSpell) {
       // A cast touching no enemy at all is a buff or a heal: the rule says
       // nothing about those.
       kept.set(
         id,
-        casts.filter((cast) => cast.candidate.enemies.length === 0 || touchesReal(cast))
+        casts.filter(
+          (cast) => cast.candidate.enemies.length === 0 || touchesReal(cast) || shoves(cast)
+        )
       )
     }
     return kept
@@ -631,7 +641,15 @@ export function planTurn(gameWindow: DofusWindow, plan: PlanContext): TurnPlan |
           { spell: entry.spell, from: field.me.cellId, cellId: enemy.cellId, covered: [enemy.cellId], enemies: [enemy], friends: [], hitsSelf: false },
           entry.apCost,
           state,
-          { profile: field.profile, grid: field.grid, fightEndsThisTurn: false, cheapestAttack: 0 }
+          {
+            profile: field.profile,
+            grid: field.grid,
+            fightEndsThisTurn: false,
+            cheapestAttack: 0,
+            keepDistance: plan.keepDistance,
+            summonsLast: plan.summonsLast !== false,
+            heldBy: new Set<number>()
+          }
         )?.damage.get(enemy.id) ?? 0
       )
     )
@@ -642,7 +660,16 @@ export function planTurn(gameWindow: DofusWindow, plan: PlanContext): TurnPlan |
     grid: field.grid,
     fightEndsThisTurn:
       totalLife > 0 && bestHit * Math.floor(plan.actionPoints / cheapest) >= totalLife,
-    cheapestAttack: book.cheapestAttack
+    cheapestAttack: book.cheapestAttack,
+    keepDistance: plan.keepDistance,
+    summonsLast: plan.summonsLast !== false,
+    // Whoever is standing on us right now: those are the holds worth paying a
+    // cast to break, and no others.
+    heldBy: new Set(
+      field.enemies
+        .filter((enemy) => cellDistance(field.me.cellId, enemy.cellId) === 1)
+        .map((enemy) => enemy.id)
+    )
   }
 
   /**

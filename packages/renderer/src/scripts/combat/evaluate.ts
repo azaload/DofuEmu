@@ -53,6 +53,25 @@ export const HEAL_VALUE = 2
  * wins against passing the turn.
  */
 export const POINTLESS_CAST = 0.01
+/**
+ * What shoving a monster out of contact is worth.
+ *
+ * For a ranged character it is the difference between a turn spent tackled
+ * and a turn spent shooting: the walk that follows costs its own points
+ * instead of double, and the monster spends its next turn walking back.
+ * Pitched below a kill and above a single hit, so it is preferred to one more
+ * arrow but never to finishing something off.
+ */
+export const BREAK_CONTACT = 90
+/**
+ * How much of the damage done to a summon counts.
+ *
+ * Almost none of it: a summon is an obstacle that happens to have life, and
+ * the points spent taking it off buy nothing while the monster that called it
+ * is still standing. Enough to keep a cast on one worth making when there is
+ * nothing else at all, and far too little to prefer one.
+ */
+export const SUMMON_DISCOUNT = 0.1
 
 /** What a spell would really take off a fighter, after everything. */
 export function damageTo(
@@ -90,6 +109,21 @@ export interface ScoreContext {
   fightEndsThisTurn: boolean
   /** The cheapest attack available, so a buff never eats the points to hit with. */
   cheapestAttack: number
+  /**
+   * The character fights at range, so shoving a monster out of contact is
+   * worth something. A melee build wants the opposite and gets no bonus.
+   */
+  keepDistance: boolean
+  /** Summons are obstacles rather than targets: their life is discounted. */
+  summonsLast: boolean
+  /**
+   * The enemies holding the character when the turn opened.
+   *
+   * Only a hold the character did not choose is worth paying to break. Reward
+   * any contact broken and the plan learns to walk into melee and shove its
+   * way back out, which is a fine trick and a terrible turn.
+   */
+  heldBy: ReadonlySet<number>
 }
 
 export interface ScoredCast {
@@ -154,6 +188,16 @@ export function scoreCast(
       if (dealt <= 0) continue
 
       damage.set(enemy.id, dealt)
+
+      // A summon is an obstacle with life, not a target: what a cast takes
+      // off one barely counts, and finishing one counts for nothing at all.
+      // That is what keeps a push aimed at one from being chosen for the
+      // damage it happens to do on the way.
+      if (context.summonsLast && enemy.summoned) {
+        value += Math.min(dealt, enemy.life) * SUMMON_DISCOUNT
+        continue
+      }
+
       value += Math.min(dealt, enemy.life)
 
       if (dealt >= enemy.life) {
@@ -171,6 +215,7 @@ export function scoreCast(
     }
 
     value += Math.max(0, damage.size - 1) * MULTI_HIT_BONUS
+    value += freedomGained(candidate, state, context)
 
     for (const friend of candidate.friends) {
       const taken = damageWith(spell, friend.resistances, context.profile, boostOf(state))
@@ -262,6 +307,50 @@ export function scoreCast(
     kills,
     reason: spell.isMastery ? 'keeping the mastery up' : 'keeping the boost up'
   }
+}
+
+/**
+ * What a cast buys by moving what it hits.
+ *
+ * Fleeing on foot is tackled; shoving the monster away is not. A spell that
+ * pushes its target — a Crâ's barrage arrow does, alongside its damage — is
+ * therefore the way out of a hold, and the way to keep an obstacle moving:
+ * the summon standing in the line is pushed aside rather than shot down.
+ *
+ * Counted as contacts before against contacts after, so a pull that drags a
+ * monster *into* contact is charged for it rather than rewarded.
+ */
+function freedomGained(
+  candidate: AimCandidate,
+  state: PlanState,
+  context: ScoreContext
+): number {
+  if (!context.keepDistance) return 0
+
+  const spell = candidate.spell
+  if (spell.pushDistance <= 0 && spell.pullDistance <= 0) return 0
+  if (candidate.enemies.length === 0) return 0
+
+  const holds = (fighter: Combatant) => cellDistance(candidate.from, fighter.cellId) === 1
+  const moved = new Map(
+    candidate.enemies.map((enemy) => [enemy.id, { ...enemy }] as const)
+  )
+  displace(context.grid, spell, candidate, [...moved.values()], new Set(state.occupied))
+
+  let gained = 0
+  for (const enemy of candidate.enemies) {
+    const after = moved.get(enemy.id)
+    if (!after) continue
+
+    // Freed from a hold that was there when the turn opened.
+    if (context.heldBy.has(enemy.id) && holds(enemy) && !holds(after)) gained += BREAK_CONTACT
+
+    // And a pull that drags one into melee costs exactly what breaking one
+    // out of it is worth.
+    if (!holds(enemy) && holds(after)) gained -= BREAK_CONTACT
+  }
+
+  return gained
 }
 
 /**
