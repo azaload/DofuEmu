@@ -1603,6 +1603,209 @@ async function runSuite(combat, SEED) {
     console.log('ok - a hold is shoved off rather than walked out of, summons included')
   }
 
+  /* --- 16. the turn spends every point on the best combination --- */
+  {
+    const flat = {
+      strength: { base: 0 },
+      intelligence: { base: 0 },
+      chance: { base: 0 },
+      agility: { base: 0 }
+    }
+    const context = (over) => ({
+      turn: 1,
+      actionPoints: 12,
+      movementPoints: 0,
+      elements: [],
+      lastCastTurn: new Map(),
+      canMove: false,
+      keepDistance: true,
+      ...over
+    })
+
+    // Two ways to spend twelve points on one monster: the big arrow twice for
+    // 120, or the cheap one three times and the big one once for 150. Ranking
+    // casts by what each is worth on its own only ever finds the first.
+    const harassing = spellOf(1, {
+      name: 'Flèche Harcelante',
+      apCost: 2,
+      range: 8,
+      maxCastPerTurn: 3,
+      effects: [{ effectId: 97, diceNum: 30, diceSide: 30, zoneSize: 0 }]
+    })
+    const punitive = spellOf(2, {
+      name: 'Flèche Punitive',
+      apCost: 6,
+      range: 8,
+      effects: [{ effectId: 97, diceNum: 60, diceSide: 60, zoneSize: 0 }]
+    })
+
+    const solo = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 12,
+      movementPoints: 0,
+      monsters: [{ cellId: cellFromCoordinates(15, 10), life: 5000, name: 'Bouftou' }],
+      spells: { 1: harassing, 2: punitive },
+      characteristics: flat
+    })
+
+    const best = planTurn(solo.gameWindow, context({}))
+    const spent = best.casts.reduce((total, cast) => total + cast.apCost, 0)
+    const thrown = best.casts.filter((cast) => cast.spellId === 1).length
+    const heavy = best.casts.filter((cast) => cast.spellId === 2).length
+
+    assert.strictEqual(spent, 12, `every point is spent (${spent} of 12)`)
+    assert.strictEqual(thrown, 3, `the cheap arrow is thrown its three times (${thrown})`)
+    assert.strictEqual(heavy, 1, `and the big one fills what is left (${heavy})`)
+
+    // The same twelve points against the same monster, but the cheap arrow
+    // capped at one cast: the plan has to fall back to the big one twice.
+    const capped = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 12,
+      movementPoints: 0,
+      monsters: [{ cellId: cellFromCoordinates(15, 10), life: 5000, name: 'Bouftou' }],
+      spells: {
+        1: spellOf(1, {
+          name: 'Flèche Harcelante',
+          apCost: 2,
+          range: 8,
+          maxCastPerTurn: 1,
+          effects: [{ effectId: 97, diceNum: 30, diceSide: 30, zoneSize: 0 }]
+        }),
+        2: punitive
+      },
+      characteristics: flat
+    })
+    const limited = planTurn(capped.gameWindow, context({}))
+    assert.strictEqual(
+      limited.casts.filter((cast) => cast.spellId === 2).length,
+      2,
+      'the cast limit is respected and the points go to the big arrow instead'
+    )
+
+    // The case that ranking by value alone gets wrong. Five arrows, and the
+    // cheap one is the worst of them taken on its own — so it never makes the
+    // shortlist of four, and never gets tried. Six casts of it are worth 180;
+    // the best the shortlist can do with twelve points is 134.
+    const spread12 = {
+      1: spellOf(1, {
+        name: 'Grande',
+        apCost: 6,
+        range: 8,
+        effects: [{ effectId: 97, diceNum: 60, diceSide: 60, zoneSize: 0 }]
+      }),
+      2: spellOf(2, {
+        name: 'Moyenne',
+        apCost: 5,
+        range: 8,
+        effects: [{ effectId: 97, diceNum: 55, diceSide: 55, zoneSize: 0 }]
+      }),
+      3: spellOf(3, {
+        name: 'Petite',
+        apCost: 4,
+        range: 8,
+        effects: [{ effectId: 97, diceNum: 45, diceSide: 45, zoneSize: 0 }]
+      }),
+      4: spellOf(4, {
+        name: 'Autre',
+        apCost: 4,
+        range: 8,
+        effects: [{ effectId: 97, diceNum: 44, diceSide: 44, zoneSize: 0 }]
+      }),
+      5: spellOf(5, {
+        name: 'Harcelante',
+        apCost: 2,
+        range: 8,
+        effects: [{ effectId: 97, diceNum: 30, diceSide: 30, zoneSize: 0 }]
+      })
+    }
+
+    const crowded = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 12,
+      movementPoints: 0,
+      monsters: [{ cellId: cellFromCoordinates(15, 10), life: 5000, name: 'Bouftou' }],
+      spells: spread12,
+      characteristics: flat
+    })
+
+    const efficient = planTurn(crowded.gameWindow, context({}))
+    const points = efficient.casts.reduce((total, cast) => total + cast.apCost, 0)
+    const damage = efficient.casts.reduce((total, cast) => total + cast.value, 0)
+
+    assert.strictEqual(points, 12, `every point is spent (${points} of 12)`)
+    assert.ok(
+      damage >= 180,
+      `and on the combination that takes the most off: ${Math.round(damage)} ` +
+        `from ${efficient.casts.map((cast) => cast.name).join(', ')}`
+    )
+    assert.strictEqual(
+      efficient.casts.filter((cast) => cast.spellId === 5).length,
+      6,
+      'which is the cheap arrow six times, not the two big ones'
+    )
+
+    // Three monsters standing together, and six points. One big arrow on one
+    // of them is worth 60; the cross twice, catching all three each time, is
+    // worth 120. The area has to win.
+    const cluster = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 6,
+      movementPoints: 0,
+      monsters: [
+        { cellId: cellFromCoordinates(15, 10), life: 5000, name: 'Piou Bleu' },
+        { cellId: cellFromCoordinates(15, 11), life: 5000, name: 'Piou Rouge' },
+        { cellId: cellFromCoordinates(15, 9), life: 5000, name: 'Piou Jaune' }
+      ],
+      spells: {
+        2: punitive,
+        3: spellOf(3, {
+          name: 'Flèche de Concentration',
+          apCost: 3,
+          range: 8,
+          effects: [{ effectId: 97, diceNum: 20, diceSide: 20, zoneShape: 43, zoneSize: 1 }]
+        })
+      },
+      characteristics: flat
+    })
+
+    const spread = planTurn(cluster.gameWindow, context({ actionPoints: 6 }))
+    assert.ok(
+      spread.casts.every((cast) => cast.spellId === 3),
+      `the area is taken over the harder single-target arrow (${spread.casts
+        .map((cast) => cast.spellId)
+        .join(', ')})`
+    )
+    assert.strictEqual(spread.casts.length, 2, 'and thrown twice, for all six points')
+    assert.ok(
+      spread.casts.every((cast) => cast.hits.length === 3),
+      'each one catching all three'
+    )
+
+    // Alone, the same monster is worth the big arrow rather than the cross.
+    const single = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 6,
+      movementPoints: 0,
+      monsters: [{ cellId: cellFromCoordinates(15, 10), life: 5000, name: 'Piou Bleu' }],
+      spells: { 2: punitive, 3: spellOf(3, {
+        name: 'Flèche de Concentration',
+        apCost: 3,
+        range: 8,
+        effects: [{ effectId: 97, diceNum: 20, diceSide: 20, zoneShape: 43, zoneSize: 1 }]
+      }) },
+      characteristics: flat
+    })
+    const alone = planTurn(single.gameWindow, context({ actionPoints: 6 }))
+    assert.strictEqual(
+      alone.casts[0].spellId,
+      2,
+      'with one monster the area buys nothing and the hardest hit is taken'
+    )
+
+    console.log('ok - the turn finds the combination that spends every point best')
+  }
+
   console.log(`— seed ${SEED} clear —`)
 }
 

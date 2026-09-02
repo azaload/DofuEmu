@@ -503,6 +503,24 @@ It weighs runs, not single casts, because the best next cast is often the wrong 
 four action points, a four-point spell worth forty loses to two two-point spells worth sixty
 together. A few sequences are played out and the best total wins.
 
+**Every point is meant to be spent, on the combination that takes the most off.** Two things
+make that work rather than merely intend it:
+
+- The sequences are as long as the points can pay for — twelve points and a two-point arrow
+  is six casts deep, not an arbitrary three or four.
+- The casts opened at each step are the best few *and* the one that buys the most **per
+  action point**. Ranking by value alone is what loses a turn: a harassing arrow at two
+  points is the weakest spell in the book taken on its own, so it never reaches a shortlist
+  sorted by what each cast is worth — and six of it beats two of anything else. With twelve
+  points against a single monster, that is the difference between 152 damage and 180.
+
+Cast limits are part of the arithmetic: a spell the game allows three times a turn is
+chained three times and no more, and the points left over go to the next best thing.
+
+Multi-target is not a separate rule, it is the same sum: a cross covering three monsters is
+worth three times its damage, so it wins over a single-target arrow that hits half again as
+hard, and stops winning the moment only one monster stands in it.
+
 ### Statistics and resistances
 
 A spell's printed damage is only a starting point. The AI reads the character's own
@@ -664,6 +682,7 @@ replays any one of them.
 | Summons | the flag either way round, the rule on and off, and an area covering both |
 | Invulnerability | a 5000-point reduction: the damage read as zero, the target left alone |
 | Shoving | the push preferred when held, refused at range, and reversed for a melee build |
+| Spending the points | the best combination found, cast limits respected, area over single when it covers more |
 | Whole fights | 200 generated fights a seed, refereed action by action |
 | Speed | a six-monster, eight-spell turn planned in under 100 ms |
 

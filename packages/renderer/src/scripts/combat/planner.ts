@@ -134,8 +134,15 @@ const CONTACT_PENALTY = 45
 /** Actions a single turn may plan. */
 const MAX_STEPS = 14
 /** Casts examined at each step of the sequence search. */
-const BRANCHES = 3
-const DEPTH = 5
+const BRANCHES = 4
+/**
+ * Casts a single sequence may chain.
+ *
+ * Bounded by the action points in practice — twelve points and a two-point
+ * spell is six casts — and by this only so that a turn with a great many
+ * cheap casts cannot run the search away.
+ */
+const MAX_DEPTH = 8
 /** The same, for the cheaper search that only compares two positions. */
 const SCOUT_BRANCHES = 2
 const SCOUT_DEPTH = 3
@@ -148,7 +155,7 @@ const AIM_LIMIT = 5
  * fighter that does nothing. The budget bounds the worst case; what is found
  * when it runs out is still a legal, usually optimal, turn.
  */
-const NODE_BUDGET = 6000
+const NODE_BUDGET = 20000
 /** Positions compared before a move. Beyond this the extra cells buy nothing. */
 const MAX_POSITIONS = 44
 
@@ -286,8 +293,27 @@ function candidateCasts(
     if (best) found.push(best)
   }
 
+  /**
+   * The branches worth opening.
+   *
+   * Ranking by value alone is what loses a turn: with twelve action points, a
+   * two-point arrow that may be thrown three times beats a six-point one
+   * thrown twice, and the cheap arrow never makes the top of a list sorted by
+   * what each cast is worth on its own. So the most efficient cast — the one
+   * that buys the most per action point — is always opened as well, even when
+   * it looks small beside the rest.
+   */
   found.sort((a, b) => b.value - a.value)
-  return found.slice(0, limit)
+  const kept = found.slice(0, limit)
+
+  const perPoint = (cast: ScoredCast) => cast.value / Math.max(1, cast.apCost)
+  const efficient = found.reduce<ScoredCast | null>(
+    (best, cast) => (!best || perPoint(cast) > perPoint(best) ? cast : best),
+    null
+  )
+  if (efficient && !kept.includes(efficient)) kept.push(efficient)
+
+  return kept
 }
 
 /**
@@ -705,7 +731,11 @@ export function planTurn(gameWindow: DofusWindow, plan: PlanContext): TurnPlan |
 
   for (let step = 0; step < MAX_STEPS; step++) {
     const search: Search = { nodes: 0 }
-    const here = bestSequenceFrom(position, book, state, context, plan, search, DEPTH, BRANCHES)
+    // As many casts as the points could possibly pay for, capped.
+    const cheapest = Math.max(1, Math.min(...book.usable.map((entry) => entry.apCost || 1)))
+    const depth = Math.max(1, Math.min(MAX_DEPTH, Math.ceil(state.actionPoints / cheapest)))
+
+    const here = bestSequenceFrom(position, book, state, context, plan, search, depth, BRANCHES)
     const ownReach = ownReachOf(book, state)
 
     let move:
