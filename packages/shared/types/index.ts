@@ -32,6 +32,146 @@ export interface GameSettings {
   autoGroupEnabled: boolean
   autoInviteEnabled: boolean
   notificationsEnabled: boolean
+  /**
+   * Feed the client a sign of life while a script plays, and close the
+   * inactivity warning it puts up before the server drops the connection.
+   */
+  antiIdleEnabled: boolean
+  antiIdleIntervalSec: number
+}
+
+export interface ScriptSettings {
+  enabled: boolean
+  humanDelays: boolean
+  minActionDelayMs: number
+  maxActionDelayMs: number
+  stopOnFight: boolean
+  maxRuntimeMinutes: number
+}
+
+export type CombatTargetStrategy = 'nearest' | 'weakest' | 'strongest' | 'first'
+
+export interface CombatSpell {
+  id: number
+  name: string
+  /** Cast on our own cell instead of the target. */
+  self?: boolean
+  /** Cast range in cells. Overrides what the game reports, when set. */
+  range?: number
+  /**
+   * Pushes its target away. Used to break away from a monster in contact
+   * without paying a tackle.
+   */
+  push?: boolean
+}
+
+/** A combo that replaces the default one on a given turn of the fight. */
+export interface CombatTurnCombo {
+  turn: number
+  combo: CombatSpell[]
+}
+
+export interface CombatSettings {
+  enabled: boolean
+  combo: CombatSpell[]
+  turnCombos: CombatTurnCombo[]
+  targetStrategy: CombatTargetStrategy
+  autoReady: boolean
+  turnStartDelayMs: number
+  castDelayMs: number
+  /**
+   * Take a starting cell before pressing ready: the furthest one the fight
+   * can still be opened from, rather than wherever the game dropped you.
+   */
+  placeBeforeReady: boolean
+  /** Pause before pressing ready at the start of a fight. */
+  readyDelayMs: number
+  /** Random extra time added to every pause, so actions are not clockwork. */
+  randomJitterMs: number
+  endTurnAfterCombo: boolean
+  closeEndScreens: boolean
+  /** Walk towards the target with the remaining MP when it is out of range. */
+  approachEnemies: boolean
+  /** Cast range assumed when the game does not report the spell's own range. */
+  defaultSpellRange: number
+  /** Move onto a cell lined up with the target when possible. */
+  preferLineUp: boolean
+  /** How to place the character before casting. */
+  positioning: CombatPositioning
+  /**
+   * Account for tackle: leaving a cell held by a monster costs extra MP and AP,
+   * so only escape when it clears melee, and keep points in reserve.
+   */
+  tackleAware: boolean
+  /**
+   * Cast each spell once per enemy in range rather than emptying the combo on
+   * a single one. With one enemy in range this plays the combo as written.
+   */
+  spreadCasts: boolean
+  /** Which spells the built-in AI casts: the combo, or its own choice. */
+  spellMode: CombatSpellMode
+  /**
+   * Put the mastery back up whenever its cooldown allows and the action
+   * points left still buy an attack. A mastery lasting several turns is worth
+   * more than the one cast it delays.
+   */
+  keepMasteryUp: boolean
+  /**
+   * Only aim at a monster's summon when no other enemy is in reach.
+   *
+   * A summon leaves on its own and the monster that called it can call
+   * another, so a turn spent killing one is a turn given away. It is still
+   * shot when there is nothing else to shoot: casting nothing is worse.
+   */
+  summonsLast: boolean
+  /** Elements it may use when choosing on its own. */
+  elements: CombatElement[]
+  /** Who decides the turn: the built-in rules, or a local model. */
+  brain: CombatBrain
+  ollamaEndpoint: string
+  ollamaModel: string
+  ollamaTimeoutMs: number
+  /** Ask the model to hold the fight's challenges, even at a cost. */
+  preferChallenges: boolean
+}
+
+export type CombatElement = 'fire' | 'earth' | 'water' | 'air' | 'neutral'
+
+export const COMBAT_ELEMENT_LABELS: Record<CombatElement, string> = {
+  fire: 'Fire',
+  earth: 'Earth',
+  water: 'Water',
+  air: 'Air',
+  neutral: 'Neutral'
+}
+
+/** How the built-in AI decides which spells to cast. */
+export type CombatSpellMode = 'combo' | 'auto'
+
+export const COMBAT_SPELL_MODE_LABELS: Record<CombatSpellMode, string> = {
+  combo: 'The combo I configured',
+  auto: 'Choose from my spells'
+}
+
+export type CombatPositioning = 'keep-distance' | 'close-in'
+
+export type CombatBrain = 'rules' | 'ollama'
+
+export const COMBAT_BRAIN_LABELS: Record<CombatBrain, string> = {
+  rules: 'Built-in rules',
+  ollama: 'Local model (Ollama)'
+}
+
+export const COMBAT_POSITIONING_LABELS: Record<CombatPositioning, string> = {
+  'keep-distance': 'Keep your distance',
+  'close-in': 'Close in on the target'
+}
+
+export const COMBAT_TARGET_LABELS: Record<CombatTargetStrategy, string> = {
+  nearest: 'Nearest enemy',
+  weakest: 'Lowest health',
+  strongest: 'Highest health',
+  first: 'First in the list'
 }
 
 export interface AppSettings {
@@ -39,6 +179,8 @@ export interface AppSettings {
   window: WindowSettings
   proxy: ProxySettings
   game: GameSettings
+  scripts: ScriptSettings
+  combat: CombatSettings
   version: string
 }
 
@@ -80,6 +222,9 @@ export type HotkeyAction =
   | 'prev-tab'
   | 'zoom-in'
   | 'zoom-out'
+  | 'run-script'
+  | 'stop-scripts'
+  | 'toggle-combat-ai'
 
 export interface Character {
   id: string
@@ -96,6 +241,60 @@ export interface Team {
   leaderId: string
   memberIds: string[]
 }
+
+export type ScriptTarget = 'active-tab' | 'all-tabs' | 'team-leader' | 'team-followers'
+
+export interface AutomationScript {
+  id: string
+  name: string
+  description: string
+  source: string
+  target: ScriptTarget
+  loop: boolean
+  loopDelayMs: number
+  createdAt: number
+  updatedAt: number
+}
+
+export type ScriptRunStatus = 'running' | 'stopping' | 'stopped' | 'done' | 'error'
+
+export type ScriptLogLevel = 'info' | 'warn' | 'error'
+
+export interface ScriptLogEntry {
+  id: string
+  runId: string
+  scriptId: string
+  tabId: string
+  level: ScriptLogLevel
+  message: string
+  timestamp: number
+}
+
+export interface ScriptRun {
+  id: string
+  scriptId: string
+  tabId: string
+  status: ScriptRunStatus
+  iteration: number
+  startedAt: number
+  endedAt?: number
+  error?: string
+}
+
+export const SCRIPT_TARGET_LABELS: Record<ScriptTarget, string> = {
+  'active-tab': 'Active tab',
+  'all-tabs': 'All tabs',
+  'team-leader': 'Team leader',
+  'team-followers': 'Team followers'
+}
+
+export const SCRIPT_LIMITS = {
+  maxLogEntries: 300,
+  minLoopDelayMs: 0,
+  maxLoopDelayMs: 600000,
+  minRuntimeMinutes: 1,
+  maxRuntimeMinutes: 720
+} as const
 
 export interface AutoGroupState {
   enabled: boolean
@@ -118,7 +317,10 @@ export const HOTKEY_ACTIONS: HotkeyAction[] = [
   'next-tab',
   'prev-tab',
   'zoom-in',
-  'zoom-out'
+  'zoom-out',
+  'run-script',
+  'stop-scripts',
+  'toggle-combat-ai'
 ]
 
 export const HOTKEY_ACTION_LABELS: Record<HotkeyAction, string> = {
@@ -134,7 +336,10 @@ export const HOTKEY_ACTION_LABELS: Record<HotkeyAction, string> = {
   'next-tab': 'Next Tab',
   'prev-tab': 'Previous Tab',
   'zoom-in': 'Zoom In',
-  'zoom-out': 'Zoom Out'
+  'zoom-out': 'Zoom Out',
+  'run-script': 'Run Selected Script',
+  'stop-scripts': 'Stop All Scripts',
+  'toggle-combat-ai': 'Toggle Combat AI'
 }
 
 export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
@@ -150,7 +355,10 @@ export const DEFAULT_HOTKEYS: Record<HotkeyAction, string> = {
   'next-tab': 'Ctrl+Tab',
   'prev-tab': 'Ctrl+Shift+Tab',
   'zoom-in': 'Ctrl+=',
-  'zoom-out': 'Ctrl+-'
+  'zoom-out': 'Ctrl+-',
+  'run-script': 'Ctrl+Shift+R',
+  'stop-scripts': 'Ctrl+Shift+X',
+  'toggle-combat-ai': 'Ctrl+Shift+F'
 }
 
 export const RESOLUTIONS = [
@@ -200,5 +408,22 @@ export enum IPCEvents {
   NATIVE_NOTIFICATION_CLICK = 'native_notification_click',
   STORE_GET = 'store_get',
   STORE_SET = 'store_set',
-  STORE_DELETE = 'store_delete'
+  STORE_DELETE = 'store_delete',
+  OLLAMA_CHAT = 'ollama_chat'
+}
+
+export interface OllamaRequest {
+  endpoint: string
+  model: string
+  prompt: string
+  system?: string
+  timeoutMs?: number
+}
+
+export interface OllamaResponse {
+  ok: boolean
+  content?: string
+  error?: string
+  /** Round trip in milliseconds, for the activity log. */
+  elapsedMs?: number
 }

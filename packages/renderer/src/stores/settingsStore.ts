@@ -5,6 +5,11 @@ import type {
   ProxySettings,
   GameSettings,
   HotkeyAction,
+  ScriptSettings,
+  CombatSettings,
+  CombatSpell,
+  CombatTurnCombo,
+  CombatElement,
   DEFAULT_HOTKEYS
 } from '@dofemu/shared'
 
@@ -16,6 +21,8 @@ interface SettingsState {
   hotkeys: HotkeyMap
   proxy: ProxySettings
   game: GameSettings
+  scripts: ScriptSettings
+  combat: CombatSettings
   version: string
   isLoading: boolean
   isHydrated: boolean
@@ -27,6 +34,19 @@ interface SettingsState {
   resetHotkeys: () => void
   setProxySettings: (settings: Partial<ProxySettings>) => void
   setGameSettings: (settings: Partial<GameSettings>) => void
+  setScriptSettings: (settings: Partial<ScriptSettings>) => void
+  toggleScripts: () => void
+  setCombatSettings: (settings: Partial<CombatSettings>) => void
+  toggleCombatAi: () => void
+  /** `turn` is null for the default combo, or the turn number of an override. */
+  addComboSpell: (turn: number | null, spell: CombatSpell) => void
+  removeComboSpell: (turn: number | null, index: number) => void
+  moveComboSpell: (turn: number | null, index: number, direction: -1 | 1) => void
+  toggleComboSpellSelf: (turn: number | null, index: number) => void
+  setComboSpellRange: (turn: number | null, index: number, range: number | undefined) => void
+  toggleComboSpellPush: (turn: number | null, index: number) => void
+  addTurnCombo: (turn: number) => void
+  removeTurnCombo: (turn: number) => void
   setResolution: (width: number, height: number) => void
   toggleAudioMute: () => void
   toggleSoundOnFocus: () => void
@@ -48,7 +68,10 @@ const defaultHotkeys: HotkeyMap = {
   'next-tab': 'Ctrl+Tab',
   'prev-tab': 'Ctrl+Shift+Tab',
   'zoom-in': 'Ctrl+=',
-  'zoom-out': 'Ctrl+-'
+  'zoom-out': 'Ctrl+-',
+  'run-script': 'Ctrl+Shift+R',
+  'stop-scripts': 'Ctrl+Shift+X',
+  'toggle-combat-ai': 'Ctrl+Shift+F'
 }
 
 const defaultState = {
@@ -70,9 +93,63 @@ const defaultState = {
   game: {
     autoGroupEnabled: false,
     autoInviteEnabled: true,
-    notificationsEnabled: true
+    notificationsEnabled: true,
+    antiIdleEnabled: true,
+    antiIdleIntervalSec: 45
+  },
+  combat: {
+    enabled: false,
+    combo: [] as CombatSpell[],
+    turnCombos: [] as CombatTurnCombo[],
+    targetStrategy: 'nearest' as const,
+    autoReady: true,
+    turnStartDelayMs: 250,
+    castDelayMs: 350,
+    placeBeforeReady: true,
+    readyDelayMs: 900,
+    randomJitterMs: 600,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1,
+    preferLineUp: true,
+    positioning: 'keep-distance' as const,
+    tackleAware: true,
+    spreadCasts: true,
+    spellMode: 'auto' as const,
+    keepMasteryUp: true,
+    summonsLast: true,
+    elements: ['fire', 'earth', 'water', 'air', 'neutral'] as CombatElement[],
+    brain: 'rules' as const,
+    ollamaEndpoint: 'http://127.0.0.1:11434',
+    ollamaModel: 'qwen2.5:1.5b-instruct',
+    ollamaTimeoutMs: 4000,
+    preferChallenges: false
+  },
+  scripts: {
+    enabled: true,
+    humanDelays: true,
+    minActionDelayMs: 250,
+    maxActionDelayMs: 900,
+    stopOnFight: true,
+    maxRuntimeMinutes: 120
   },
   version: '0.1.0'
+}
+
+/** Applies `update` to the default combo (turn null) or to a turn override. */
+function mapCombo(
+  combat: CombatSettings,
+  turn: number | null,
+  update: (combo: CombatSpell[]) => CombatSpell[]
+): CombatSettings {
+  if (turn === null) return { ...combat, combo: update(combat.combo) }
+  return {
+    ...combat,
+    turnCombos: combat.turnCombos.map((entry) =>
+      entry.turn === turn ? { ...entry, combo: update(entry.combo) } : entry
+    )
+  }
 }
 
 function persist(state: SettingsState) {
@@ -83,6 +160,8 @@ function persist(state: SettingsState) {
       hotkeys: state.hotkeys,
       proxy: state.proxy,
       game: state.game,
+      scripts: state.scripts,
+      combat: state.combat,
       version: state.version
     })
     window.dofemu.setSettings(payload)
@@ -114,6 +193,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => {
           hotkeys: { ...defaultHotkeys, ...parsed.hotkeys },
           proxy: { ...defaultState.proxy, ...parsed.proxy },
           game: { ...defaultState.game, ...parsed.game },
+          scripts: { ...defaultState.scripts, ...parsed.scripts },
+          combat: { ...defaultState.combat, ...parsed.combat },
           version: parsed.version ?? defaultState.version,
           isHydrated: true
         })
@@ -137,6 +218,80 @@ export const useSettingsStore = create<SettingsState>()((set, get) => {
 
     setGameSettings: (settings) =>
       mutate((s) => ({ game: { ...s.game, ...settings } })),
+
+    setScriptSettings: (settings) =>
+      mutate((s) => ({ scripts: { ...s.scripts, ...settings } })),
+
+    toggleScripts: () =>
+      mutate((s) => ({ scripts: { ...s.scripts, enabled: !s.scripts.enabled } })),
+
+    setCombatSettings: (settings) =>
+      mutate((s) => ({ combat: { ...s.combat, ...settings } })),
+
+    toggleCombatAi: () =>
+      mutate((s) => ({ combat: { ...s.combat, enabled: !s.combat.enabled } })),
+
+    addComboSpell: (turn, spell) =>
+      mutate((s) => ({ combat: mapCombo(s.combat, turn, (combo) => [...combo, spell]) })),
+
+    removeComboSpell: (turn, index) =>
+      mutate((s) => ({
+        combat: mapCombo(s.combat, turn, (combo) => combo.filter((_, i) => i !== index))
+      })),
+
+    moveComboSpell: (turn, index, direction) =>
+      mutate((s) => ({
+        combat: mapCombo(s.combat, turn, (combo) => {
+          const next = [...combo]
+          const target = index + direction
+          if (index < 0 || index >= next.length || target < 0 || target >= next.length) return combo
+          const [moved] = next.splice(index, 1)
+          next.splice(target, 0, moved)
+          return next
+        })
+      })),
+
+    toggleComboSpellSelf: (turn, index) =>
+      mutate((s) => ({
+        combat: mapCombo(s.combat, turn, (combo) =>
+          combo.map((spell, i) => (i === index ? { ...spell, self: !spell.self } : spell))
+        )
+      })),
+
+    toggleComboSpellPush: (turn, index) =>
+      mutate((s) => ({
+        combat: mapCombo(s.combat, turn, (combo) =>
+          combo.map((spell, i) => (i === index ? { ...spell, push: !spell.push } : spell))
+        )
+      })),
+
+    setComboSpellRange: (turn, index, range) =>
+      mutate((s) => ({
+        combat: mapCombo(s.combat, turn, (combo) =>
+          combo.map((spell, i) => (i === index ? { ...spell, range } : spell))
+        )
+      })),
+
+    addTurnCombo: (turn) =>
+      mutate((s) => {
+        if (turn < 1 || s.combat.turnCombos.some((entry) => entry.turn === turn)) {
+          return { combat: s.combat }
+        }
+        return {
+          combat: {
+            ...s.combat,
+            turnCombos: [...s.combat.turnCombos, { turn, combo: [] }].sort((a, b) => a.turn - b.turn)
+          }
+        }
+      }),
+
+    removeTurnCombo: (turn) =>
+      mutate((s) => ({
+        combat: {
+          ...s.combat,
+          turnCombos: s.combat.turnCombos.filter((entry) => entry.turn !== turn)
+        }
+      })),
 
     setResolution: (width, height) =>
       mutate((s) => ({

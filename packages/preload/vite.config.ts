@@ -10,7 +10,12 @@ export default defineConfig({
       fileName: () => 'index.cjs'
     },
     rollupOptions: {
-      external: (id) => id === 'electron' || id.startsWith('electron/') || !id.startsWith('.') && !id.startsWith('/') && !id.startsWith('@dofemu/')
+      // Bundle relative, absolute and workspace imports; leave node/electron
+      // built-ins external. path.isAbsolute keeps Windows entries (C:\...) in.
+      external: (id) =>
+        id === 'electron' ||
+        id.startsWith('electron/') ||
+        (!id.startsWith('.') && !path.isAbsolute(id) && !id.startsWith('@dofemu/'))
     },
     minify: false,
     emptyOutDir: true

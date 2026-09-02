@@ -17,6 +17,10 @@ Unofficial desktop client for Dofus Touch.
 - Team management with leader/follower roles
 - Auto-group — followers auto-follow across maps
 - Auto-invite — automatic party invitations
+- Automation scripts — movement paths, resource circuits and custom JS per tab ([docs](docs/scripting.md))
+- Combat AI — takes a starting cell, plans each turn from your spellbook (areas, resistances, masteries, line of sight), or casts a configured combo, or lets a local Ollama model choose from the legal options ([docs](docs/combat.md))
+- Map-circuit hunting — chains fights over a chosen list of maps ([docs](docs/scripting.md))
+- Stay connected — keeps the session alive while a script plays, and closes the inactivity warning
 - Drag-to-reorder tabs
 - Character icon capture in tabs
 - Configurable hotkeys
@@ -47,6 +51,28 @@ pnpm run dev
 ```bash
 pnpm run build
 pnpm run dist
+```
+
+`dist` clears `release/` first. On Windows that folder is often held by
+something else — DofEmu still running, OneDrive syncing a project kept on the
+Desktop, or an antivirus scanning the generated uninstaller — which shows up as
+`EPERM: operation not permitted, unlink ...__uninstaller-nsis-dofemu.exe`. The
+clean step retries and then names the likely cause; keeping the project outside
+synced folders (`C:\dev\DofuEmu`) avoids it entirely.
+
+## Combat AI
+
+**Settings → Combat** plays fight turns on its own: a fixed spell combo cast on a chosen
+target, then the turn is passed. See [docs/combat.md](docs/combat.md).
+
+## Automation scripts
+
+Write JavaScript that drives a tab — walk a path, harvest a circuit, relay the leader's
+map changes — from **Settings → Scripts**. See [docs/scripting.md](docs/scripting.md) for
+the API reference. Run the engine tests with:
+
+```bash
+pnpm run test:scripts
 ```
 
 ## Release Updates
@@ -80,9 +106,10 @@ packages/
     game-base/    Game shell, CSS fixes, regex patches
     scripts/      Injected helper scripts
   renderer/       React frontend
-    screens/      GameScreen, SetupScreen, SettingsScreen
-    stores/       Zustand stores (tabs, teams, settings)
-    mods/         Game mods (auto-group, party invite)
+    screens/      GameScreen, SetupScreen, SettingsScreen, ScriptsScreen, CombatScreen
+    stores/       Zustand stores (tabs, teams, settings, scripts)
+    mods/         Game mods (auto-group, party invite, combat AI)
+    scripts/      Automation engine (game API, runner, templates)
     components/   Shared components
     utils/        Utilities
   preload/        Electron preload bridge

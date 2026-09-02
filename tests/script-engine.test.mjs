@@ -1,0 +1,4628 @@
+import assert from 'assert'
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath, pathToFileURL } from 'url'
+import { build } from 'vite'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const root = path.resolve(__dirname, '..')
+const tmpDir = path.join(root, 'tests/.tmp')
+const bundlePath = path.join(tmpDir, 'engine.js')
+const combatBundlePath = path.join(tmpDir, 'combat-ai.js')
+
+/** Same grid maths as the app, to spend the right number of MP in the stub. */
+function cellGridDistance(from, to) {
+  const point = (cellId) => {
+    const row = Math.floor(cellId / 14)
+    const col = cellId % 14
+    return { x: col + Math.floor((row + 1) / 2), y: Math.floor(row / 2) - col }
+  }
+  const a = point(from)
+  const b = point(to)
+  return Math.abs(a.x - b.x) + Math.abs(a.y - b.y)
+}
+
+const MAP_A = 1000
+const MAP_B = 1001
+const EXIT_CELL_RIGHT = 293
+
+async function bundleModule(entry) {
+  fs.mkdirSync(tmpDir, { recursive: true })
+  await build({
+    configFile: false,
+    logLevel: 'error',
+    resolve: {
+      alias: {
+        '@': path.join(root, 'packages/renderer/src'),
+        '@dofemu/shared': path.join(root, 'packages/shared/index.ts')
+      }
+    },
+    build: {
+      ssr: true,
+      target: 'node18',
+      minify: false,
+      emptyOutDir: false,
+      outDir: tmpDir,
+      lib: { entry, formats: ['es'] }
+    }
+  })
+}
+
+async function bundleEngine() {
+  fs.mkdirSync(tmpDir, { recursive: true })
+  await build({
+    configFile: false,
+    logLevel: 'error',
+    resolve: {
+      alias: {
+        '@': path.join(root, 'packages/renderer/src'),
+        '@dofemu/shared': path.join(root, 'packages/shared/index.ts')
+      }
+    },
+    build: {
+      ssr: true,
+      target: 'node18',
+      minify: false,
+      emptyOutDir: false,
+      outDir: tmpDir,
+      lib: {
+        entry: path.join(root, 'packages/renderer/src/scripts/engine.ts'),
+        formats: ['es']
+      }
+    }
+  })
+  return import(`${pathToFileURL(bundlePath).href}?t=${Date.now()}`)
+}
+
+/** Minimal stand-in for the game window the scripts drive. */
+function createFakeGameWindow() {
+  const listeners = new Map()
+  const sent = []
+
+  const closedWindows = []
+  const moves = []
+  const cells = {}
+  cells[EXIT_CELL_RIGHT] = { mapChangeData: 1 }
+
+  const state = {
+    mapId: MAP_A,
+    cellId: 100,
+    sent,
+    emit: (event, payload) => {
+      for (const handler of listeners.get(event) ?? []) handler(payload)
+    }
+  }
+
+  const connectionManager = {
+    on: (event, handler) => {
+      const list = listeners.get(event) ?? []
+      list.push(handler)
+      listeners.set(event, list)
+    },
+    removeListener: (event, handler) => {
+      listeners.set(event, (listeners.get(event) ?? []).filter((cb) => cb !== handler))
+    }
+  }
+
+  const fighters = [
+    { id: 7, data: { teamId: 0, alive: true, disposition: { cellId: 280 }, stats: { lifePoints: 500, maxLifePoints: 500, actionPoints: 6, movementPoints: 3 }, name: 'Tester' } },
+    { id: 20, data: { teamId: 1, alive: true, disposition: { cellId: 294 }, stats: { lifePoints: 120, maxLifePoints: 200 }, name: 'Close' } },
+    { id: 21, data: { teamId: 1, alive: true, disposition: { cellId: 350 }, stats: { lifePoints: 40, maxLifePoints: 200 }, name: 'Weak' } }
+  ]
+
+  const attackButton = {
+    tagName: 'DIV',
+    className: 'greenButton attackButton',
+    textContent: 'Attaquer',
+    offsetParent: {},
+    clicked: 0,
+    click() {
+      this.clicked += 1
+      setTimeout(() => {
+        gameWindow.gui.fightManager.isFightStarted = true
+        gameWindow.gui.playerData.isFighting = true
+        state.emit('GameFightStartingMessage', {})
+      }, 5)
+    },
+    querySelectorAll: () => [],
+    getBoundingClientRect: () => ({ width: 80, height: 24 })
+  }
+
+  const gameWindow = {
+    document: {
+      querySelectorAll: () => (state.attackButtonVisible ? [attackButton] : [])
+    },
+    dofus: {
+      connectionManager,
+      sendMessage: (name, data) => {
+        sent.push({ name, data })
+        if (name === 'GameMapMovementRequestMessage') {
+          // Decode the path the way the server would, and walk it.
+          const path = (data.keyMovements ?? []).map((key) => key & 0xfff)
+          const destination = path[path.length - 1]
+          if (destination !== undefined) state.moves.push(destination)
+          if (destination !== undefined && !state.serverRefusesMoves) {
+            const landing = state.walkLimit ? state.walkLimit(destination) : destination
+            setTimeout(() => {
+              const spent = cellGridDistance(fighters[0].data.disposition.cellId, landing)
+              state.cellId = landing
+              gameWindow.isoEngine.actorManager.userActor.cellId = landing
+              fighters[0].data.disposition.cellId = landing
+              fighters[0].data.stats.movementPoints = Math.max(
+                0,
+                fighters[0].data.stats.movementPoints - spent
+              )
+            }, 5)
+          }
+        }
+        if (name === 'GameRolePlayAttackMonsterRequestMessage') {
+          setTimeout(() => {
+            gameWindow.gui.fightManager.isFightStarted = true
+            gameWindow.gui.playerData.isFighting = true
+            state.emit('GameFightStartingMessage', { monsterGroupId: data.monsterGroupId })
+          }, 5)
+        }
+        if (name === 'GameFightPlacementPositionRequestMessage') {
+          // The server puts the fighter on the cell it accepted.
+          setTimeout(() => {
+            fighters[0].data.disposition.cellId = data.cellId
+            gameWindow.isoEngine.actorManager.userActor.cellId = data.cellId
+          }, 2)
+        }
+        if (name === 'GameActionFightCastRequestMessage') {
+          // The server confirms a cast it accepted, and answers a refusal —
+          // an obstacle in the way, a state the spell forbids — with silence.
+          const refused = typeof state.refuseCast === 'function' && state.refuseCast(data)
+          if (!refused) {
+            setTimeout(
+              () => state.emit('GameActionFightSpellCastMessage', { sourceId: 7, spellId: data.spellId }),
+              5
+            )
+          }
+        }
+        if (name === 'ChangeMapMessage') {
+          setTimeout(() => {
+            state.mapId = data.mapId
+            gameWindow.isoEngine.mapRenderer.mapId = data.mapId
+            gameWindow.isoEngine.mapRenderer.map = buildMap(data.mapId)
+            state.emit('CurrentMapMessage', { mapId: data.mapId })
+          }, 5)
+        }
+      }
+    },
+    gui: {
+      // Swallows every argument and does nothing, like the minified build.
+      // Present but useless, like the minified build. They throw when a test
+      // does not want them, so the API treats them as absent.
+      openContextualMenu: () => {
+        if (!state.noopAttackMethods) throw new Error('not available')
+      },
+      selectActor: () => {
+        if (!state.noopAttackMethods) throw new Error('not available')
+      },
+      isConnected: () => true,
+      playerData: {
+        characterBaseInformations: { id: 7, name: 'Tester', level: 42 },
+        isFighting: false,
+        characters: {
+          mainCharacter: {
+            spellData: {
+              spells: {
+                161: { id: 161, spell: { nameId: 'Pressure' }, level: 5 },
+                165: { id: 165, spell: { nameId: 'Bramble' }, level: 4 }
+              }
+            }
+          }
+        }
+      },
+      fightManager: { isFightStarted: false, fighters },
+      windowsManager: {
+        openedWindows: {
+          fightEnd: { id: 'fightEnd', openState: true },
+          levelUp: { id: 'levelUp', openState: true },
+          inventory: { id: 'inventory', openState: true }
+        },
+        close: (id) => {
+          closedWindows.push(id)
+          delete gameWindow.gui.windowsManager.openedWindows[id]
+        }
+      },
+      on: connectionManager.on
+    },
+    isoEngine: {
+      mapRenderer: {
+        mapId: MAP_A,
+        map: buildMap(MAP_A),
+        interactiveElements: {},
+        isWalkable: () => true
+      },
+      actorManager: {
+        userActor: { cellId: 100 },
+        actors: {
+          // A player: no staticInfos, must be ignored.
+          '900': { id: 900, data: { disposition: { cellId: 120 } } },
+          '-1': {
+            id: -1,
+            data: {
+              contextualId: -1,
+              disposition: { cellId: 300 },
+              staticInfos: {
+                mainCreatureLightInfos: { level: 30 },
+                underlings: [{ level: 25 }, { level: 20 }]
+              }
+            }
+          },
+          '-2': {
+            id: -2,
+            data: {
+              contextualId: -2,
+              disposition: { cellId: 114 },
+              staticInfos: {
+                mainCreatureLightInfos: { level: 60 },
+                underlings: [{ level: 55 }, { level: 50 }, { level: 45 }]
+              }
+            }
+          }
+        }
+      },
+      // Named like a build that does NOT expose moveTo, so the API has to
+      // discover the working entry point.
+      goToCell: (cellId) => {
+        if (state.disableMovement) return
+        state.moves.push(cellId)
+        // state.walkLimit caps how far the engine actually walks, the way the
+        // real one stops short when the path is blocked.
+        const landing = state.walkLimit ? state.walkLimit(cellId) : cellId
+        setTimeout(() => {
+          const spent = cellGridDistance(fighters[0].data.disposition.cellId, landing)
+          state.cellId = landing
+          gameWindow.isoEngine.actorManager.userActor.cellId = landing
+          fighters[0].data.disposition.cellId = landing
+          fighters[0].data.stats.movementPoints = Math.max(
+            0,
+            fighters[0].data.stats.movementPoints - spent
+          )
+        }, 5)
+      }
+    }
+  }
+
+  function buildMap(mapId) {
+    return {
+      id: mapId,
+      posX: mapId === MAP_A ? 3 : 4,
+      posY: -5,
+      cells,
+      topNeighbourId: -1,
+      bottomNeighbourId: -1,
+      leftNeighbourId: mapId === MAP_B ? MAP_A : -1,
+      rightNeighbourId: mapId === MAP_A ? MAP_B : -1
+    }
+  }
+
+  state.closedWindows = closedWindows
+  state.moves = moves
+  state.attackButton = attackButton
+  state.attackButtonVisible = true
+  state.endFight = () => {
+    gameWindow.gui.fightManager.isFightStarted = false
+    gameWindow.gui.playerData.isFighting = false
+    state.emit('GameFightEndMessage', {})
+  }
+  state.fighters = fighters
+  state.startFight = () => {
+    gameWindow.gui.fightManager.isFightStarted = true
+    gameWindow.gui.playerData.isFighting = true
+  }
+  state.mpPerTurn = 3
+  state.startTurn = (fighterId) => {
+    if (fighterId === 7) fighters[0].data.stats.movementPoints = state.mpPerTurn
+    state.emit('GameFightTurnStartMessage', { id: fighterId })
+    state.emit('GameFightTurnStartPlayingMessage', { id: fighterId })
+  }
+  /** Turn start without the "you may play" message, to test the wait. */
+  state.startTurnPending = (fighterId) =>
+    state.emit('GameFightTurnStartMessage', { id: fighterId })
+  state.setPlayable = (fighterId) =>
+    state.emit('GameFightTurnStartPlayingMessage', { id: fighterId })
+
+  return { gameWindow, state }
+}
+
+/** Combat settings a test can spread and override, all delays at zero. */
+const combatDefaults = {
+  enabled: true,
+  combo: [],
+  turnCombos: [],
+  targetStrategy: 'first',
+  autoReady: true,
+  turnStartDelayMs: 0,
+  castDelayMs: 0,
+  readyDelayMs: 0,
+  placeBeforeReady: false,
+  randomJitterMs: 0,
+  endTurnAfterCombo: true,
+  closeEndScreens: true,
+  approachEnemies: false,
+  defaultSpellRange: 1,
+  preferLineUp: false,
+  positioning: 'close-in',
+  tackleAware: true,
+  spreadCasts: false,
+  spellMode: 'combo',
+  keepMasteryUp: true,
+  brain: 'rules',
+  elements: ['fire', 'earth', 'water', 'air', 'neutral']
+}
+
+const settings = {
+  enabled: true,
+  humanDelays: false,
+  minActionDelayMs: 0,
+  maxActionDelayMs: 0,
+  stopOnFight: true,
+  maxRuntimeMinutes: 5
+}
+
+function makeScript(overrides = {}) {
+  return {
+    id: 'script-1',
+    name: 'Test script',
+    description: '',
+    source: '',
+    target: 'active-tab',
+    loop: false,
+    loopDelayMs: 0,
+    createdAt: 0,
+    updatedAt: 0,
+    ...overrides
+  }
+}
+
+function makeHooks() {
+  const logs = []
+  const statuses = []
+  return {
+    logs,
+    statuses,
+    hooks: {
+      onStatus: (run) => statuses.push(run.status),
+      onLog: (level, message) => logs.push(`${level}: ${message}`)
+    }
+  }
+}
+
+async function run(ScriptRunner, source, extra = {}, prepare) {
+  const { gameWindow, state } = createFakeGameWindow()
+  prepare?.(state)
+  const { logs, statuses, hooks } = makeHooks()
+  const runner = new ScriptRunner({
+    script: makeScript({ source, ...extra }),
+    tabId: 'tab-1',
+    gameWindow,
+    settings,
+    hooks
+  })
+  const result = await runner.run()
+  return { result, logs, statuses, state, runner }
+}
+
+async function testSimpleRun(ScriptRunner) {
+  const { result, logs } = await run(ScriptRunner, `
+    api.log('character is', api.character().name)
+    api.log('map is', api.mapId())
+    await api.wait(5)
+  `)
+
+  assert.strictEqual(result.status, 'done', 'a plain script should finish')
+  assert.strictEqual(result.iteration, 1)
+  assert.ok(logs.some((line) => line.includes('character is Tester')), 'api.character() should read the game window')
+  assert.ok(logs.some((line) => line.includes(`map is ${MAP_A}`)), 'api.mapId() should read the map renderer')
+  console.log('ok - simple run')
+}
+
+async function testMove(ScriptRunner) {
+  const { result, state } = await run(ScriptRunner, `await api.move('right')`)
+
+  assert.strictEqual(result.status, 'done', `move should succeed, got ${result.error ?? ''}`)
+  assert.strictEqual(state.cellId, EXIT_CELL_RIGHT, 'the character walks to the map-change cell first')
+  assert.deepStrictEqual(
+    state.sent.map((message) => message.name),
+    ['ChangeMapMessage'],
+    'a single ChangeMapMessage is sent'
+  )
+  assert.strictEqual(state.sent[0].data.mapId, MAP_B, 'it targets the right neighbour')
+  assert.strictEqual(state.mapId, MAP_B, 'the run waits until the new map is loaded')
+  console.log('ok - map change')
+}
+
+async function testTravel(ScriptRunner) {
+  const { result, state } = await run(ScriptRunner, `await api.travelTo(4, -5)`)
+  assert.strictEqual(result.status, 'done', `travel should succeed, got ${result.error ?? ''}`)
+  assert.strictEqual(state.mapId, MAP_B, 'travelTo walks towards the target coordinates')
+  console.log('ok - travel to coordinates')
+}
+
+async function testLoopAndStop(ScriptRunner) {
+  const { gameWindow } = createFakeGameWindow()
+  const { logs, hooks } = makeHooks()
+  const runner = new ScriptRunner({
+    script: makeScript({ source: `api.log('tick', api.iteration); await api.wait(10)`, loop: true, loopDelayMs: 0 }),
+    tabId: 'tab-1',
+    gameWindow,
+    settings,
+    hooks
+  })
+
+  const pending = runner.run()
+  setTimeout(() => runner.stop('Stopped by test'), 60)
+  const result = await pending
+
+  assert.strictEqual(result.status, 'stopped', 'stopping a loop marks the run stopped')
+  assert.ok(result.iteration > 1, `the loop should iterate more than once, got ${result.iteration}`)
+  assert.ok(logs.some((line) => line.includes('Stopped by test')), 'the stop reason is logged')
+  console.log('ok - loop and stop')
+}
+
+async function testRuntimeError(ScriptRunner) {
+  const { result } = await run(ScriptRunner, `await api.move('top')`)
+  assert.strictEqual(result.status, 'error', 'moving towards a missing neighbour fails the run')
+  assert.match(result.error ?? '', /no top neighbour/i)
+  console.log('ok - runtime error')
+}
+
+async function testSyntaxError(ScriptRunner) {
+  const { result, logs } = await run(ScriptRunner, `this is not javascript(`)
+  assert.strictEqual(result.status, 'error', 'a syntax error fails before running')
+  assert.ok(logs.some((line) => line.startsWith('error: Syntax error')), 'the syntax error is logged')
+  console.log('ok - syntax error')
+}
+
+async function testApiStop(ScriptRunner) {
+  const { result, logs } = await run(ScriptRunner, `api.log('before'); api.stop('done early'); api.log('after')`)
+  assert.strictEqual(result.status, 'stopped')
+  assert.ok(!logs.some((line) => line.includes('after')), 'api.stop() interrupts the script')
+  console.log('ok - api.stop')
+}
+
+async function testListenersCleanedUp(ScriptRunner) {
+  const { gameWindow, state } = createFakeGameWindow()
+  const { hooks } = makeHooks()
+  const runner = new ScriptRunner({
+    script: makeScript({ source: `api.on('CurrentMapMessage', () => { globalThis.__hits = (globalThis.__hits ?? 0) + 1 })` }),
+    tabId: 'tab-1',
+    gameWindow,
+    settings,
+    hooks
+  })
+
+  await runner.run()
+  state.emit('CurrentMapMessage', { mapId: MAP_B })
+  assert.strictEqual(globalThis.__hits, undefined, 'listeners registered by a script are removed when it ends')
+  console.log('ok - listeners cleaned up')
+}
+
+async function testFightCombo(ScriptRunner) {
+  const { gameWindow, state } = createFakeGameWindow()
+  const { logs, hooks } = makeHooks()
+  state.startFight()
+
+  const runner = new ScriptRunner({
+    script: makeScript({
+      source: `
+        await api.fight.waitForTurn({ timeout: 5000, interval: 50 })
+        for (const spellId of [161, 165]) {
+          const target = api.fight.target('nearest')
+          const ok = await api.fight.cast(spellId, target)
+          api.log('cast', spellId, 'on', target.name, ok)
+        }
+        api.fight.endTurn()
+      `
+    }),
+    tabId: 'tab-1',
+    gameWindow,
+    settings,
+    hooks
+  })
+
+  const pending = runner.run()
+  setTimeout(() => state.startTurn(7), 40)
+  const result = await pending
+
+  assert.strictEqual(result.status, 'done', `combo should finish, got ${result.error ?? ''}`)
+
+  const casts = state.sent.filter((message) => message.name === 'GameActionFightCastRequestMessage')
+  assert.deepStrictEqual(casts.map((c) => c.data.spellId), [161, 165], 'both spells are cast in order')
+  assert.strictEqual(casts[0].data.cellId, 294, 'the nearest enemy cell is targeted')
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameFightTurnFinishMessage'),
+    'the turn is passed after the combo'
+  )
+  assert.ok(logs.some((line) => line.includes('cast 161 on Close true')), 'the cast is confirmed')
+  console.log('ok - fight combo')
+}
+
+async function testTargetStrategies(ScriptRunner) {
+  const { gameWindow, state } = createFakeGameWindow()
+  const { logs, hooks } = makeHooks()
+  state.startFight()
+
+  const runner = new ScriptRunner({
+    script: makeScript({
+      source: `
+        api.log('nearest', api.fight.target('nearest').name)
+        api.log('weakest', api.fight.target('weakest').name)
+        api.log('spells', api.fight.spells().map((s) => s.id).join(','))
+        api.log('enemies', api.fight.enemies().length)
+      `
+    }),
+    tabId: 'tab-1',
+    gameWindow,
+    settings,
+    hooks
+  })
+
+  const result = await runner.run()
+  assert.strictEqual(result.status, 'done')
+  assert.ok(logs.some((line) => line.includes('nearest Close')), 'nearest picks the closest cell')
+  assert.ok(logs.some((line) => line.includes('weakest Weak')), 'weakest picks the lowest life')
+  assert.ok(logs.some((line) => line.includes('spells 161,165')), 'the spell list is read')
+  assert.ok(logs.some((line) => line.includes('enemies 2')), 'only the other team counts as enemies')
+  console.log('ok - fight targeting')
+}
+
+async function testMonsterHunt(ScriptRunner) {
+  const { result, logs, state } = await run(
+    ScriptRunner,
+    `
+      const all = api.monsters()
+      api.log('groups', all.length, 'first', all[0].id, 'level', all[0].level, 'size', all[0].size)
+
+      const small = api.monsters({ maxLevel: 100 })
+      api.log('small', small.map((g) => g.id).join(','))
+
+      const started = await api.attack(all[0])
+      api.log('fight started', started)
+    `
+  )
+
+  assert.strictEqual(result.status, 'done', `hunt should finish, got ${result.error ?? ''}`)
+  assert.ok(logs.some((line) => line.includes('groups 2 ')), 'only monster groups are listed')
+  assert.ok(
+    logs.some((line) => line.includes('first -2 level 210 size 4')),
+    'the nearest group comes first, with summed levels and group size'
+  )
+  assert.ok(logs.some((line) => line.includes('small -1')), 'the level filter excludes big groups')
+
+  // The group on cell 114 is already next to us: no walking needed.
+  assert.strictEqual(state.moves.length, 0, 'no move when already next to the group')
+  assert.ok(state.attackButton.clicked > 0, 'the attack is requested through the game flow')
+  assert.ok(logs.some((line) => line.includes('fight started true')), 'the fight start is awaited')
+  console.log('ok - monster hunt')
+}
+
+async function testAttackUsesTheGameFlow(ScriptRunner) {
+  const { result, logs, state } = await run(
+    ScriptRunner,
+    `
+      const group = api.monsters().find((g) => g.id === -2)
+      api.log('started', await api.attack(group, { approach: false }))
+    `
+  )
+
+  assert.strictEqual(result.status, 'done', `the attack should finish, got ${result.error ?? ''}`)
+  assert.strictEqual(state.attackButton.clicked > 0, true, 'the attack button is pressed')
+  assert.ok(
+    logs.some((line) => line.includes('attack button')),
+    'the strategy used is written to the log'
+  )
+  assert.ok(
+    !state.sent.some((message) => message.name === 'GameRolePlayAttackMonsterRequestMessage'),
+    'the raw request is not sent when the button worked'
+  )
+  assert.ok(logs.some((line) => line.includes('started true')), 'the fight starts')
+  console.log('ok - attack uses the game flow')
+}
+
+async function testAttackFallsBackToProtocol(ScriptRunner) {
+  const { logs, state } = await run(
+    ScriptRunner,
+    `
+      const group = api.monsters().find((g) => g.id === -2)
+      api.log('started', await api.attack(group, { approach: false }))
+    `,
+    {},
+    (state) => {
+      state.attackButtonVisible = false
+    }
+  )
+
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameRolePlayAttackMonsterRequestMessage'),
+    'without a button, the network request is sent'
+  )
+  assert.ok(logs.some((line) => line.includes('started true')), 'the fight still starts')
+  console.log('ok - attack falls back to the protocol')
+}
+
+async function testAttackKeepsProbingAndReports(ScriptRunner) {
+  const { logs, state } = await run(
+    ScriptRunner,
+    `
+      const group = api.monsters().find((g) => g.id === -2)
+      api.log('started', await api.attack(group, { approach: false, timeout: 1500 }))
+    `,
+    {},
+    (state) => {
+      // A method that swallows anything without doing a thing, like a minified
+      // client, and no button anywhere.
+      state.attackButtonVisible = false
+      state.noopAttackMethods = true
+    }
+  )
+
+  assert.ok(
+    logs.some((line) => line.includes('gui.openContextualMenu()')),
+    'the no-op method is reported as tried'
+  )
+  assert.ok(
+    logs.some((line) => /tried .*,/.test(line)),
+    'the search continues past it instead of stopping at the first call'
+  )
+  assert.ok(
+    logs.some((line) => line.includes('on screen now')),
+    'what is on screen is reported when nothing works'
+  )
+  assert.ok(logs.some((line) => line.includes('started false')), 'the failure is honest')
+  console.log('ok - attack keeps probing and reports')
+}
+
+async function testAttackApproach(ScriptRunner) {
+  const { logs, state } = await run(
+    ScriptRunner,
+    `
+      const far = api.monsters().find((group) => group.id === -1)
+      api.log('target cell', far.cellId)
+      api.log('started', await api.attack(far))
+    `
+  )
+
+  // The far group sits on cell 300, out of reach: we must walk next to it,
+  // never onto it — that cell is occupied and the walk would never complete.
+  assert.strictEqual(state.moves.length, 1, 'one approach move is requested')
+  const landing = state.moves[0]
+  assert.notStrictEqual(landing, 300, 'the character does not walk onto the group')
+  assert.ok(
+    logs.some((line) => line.includes('next to the group on 300')),
+    'the approach is reported in the log'
+  )
+  assert.ok(
+    logs.some((line) => line.includes('Attack: requesting group -1')),
+    'the attack request is reported with the group id'
+  )
+  assert.ok(logs.some((line) => line.includes('started true')), 'the fight starts')
+  console.log('ok - attack approach')
+}
+
+async function testClosePopups(ScriptRunner) {
+  const { result, logs, state } = await run(
+    ScriptRunner,
+    `api.log('closed', api.closePopups().join(','))`
+  )
+
+  assert.strictEqual(result.status, 'done')
+  assert.ok(
+    logs.some((line) => line.includes('closed fightEnd,levelUp')),
+    'the fight results and level-up screens are closed'
+  )
+  assert.ok(
+    !state.closedWindows.includes('inventory'),
+    'unrelated windows are left alone'
+  )
+  console.log('ok - close end screens')
+}
+
+async function testTurnCombos() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Attack' }],
+    turnCombos: [{ turn: 1, combo: [{ id: 100, name: 'Buff' }, { id: 101, name: 'Boost' }] }],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    placeBeforeReady: false,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: false,
+    defaultSpellRange: 1,
+    preferLineUp: false,
+    positioning: 'close-in',
+    tackleAware: true,
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  const spellsCast = () =>
+    state.sent
+      .filter((message) => message.name === 'GameActionFightCastRequestMessage')
+      .map((message) => message.data.spellId)
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.deepStrictEqual(spellsCast(), [100, 101], 'turn 1 plays its own combo')
+  assert.ok(
+    logs.some((line) => line.includes('Turn 1: manual mode, playing the turn 1 combo')),
+    'the combo used is logged, and named as the manual mode it is'
+  )
+
+  state.sent.length = 0
+  state.startTurn(20)
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.deepStrictEqual(spellsCast(), [165], 'turn 2 falls back to the default combo')
+
+  // An empty override means "cast nothing and pass".
+  state.sent.length = 0
+  combatSettings.turnCombos = [{ turn: 3, combo: [] }]
+  state.startTurn(20)
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.deepStrictEqual(spellsCast(), [], 'an empty turn combo casts nothing')
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameFightTurnFinishMessage'),
+    'the turn is still passed'
+  )
+
+  // A new fight restarts the turn count.
+  state.endFight()
+  state.sent.length = 0
+  state.startFight()
+  state.emit('GameFightStartingMessage', {})
+  combatSettings.turnCombos = [{ turn: 1, combo: [{ id: 100, name: 'Buff' }] }]
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.deepStrictEqual(spellsCast(), [100], 'the turn counter resets between fights')
+
+  dispose()
+  console.log('ok - per-turn combos')
+}
+
+async function testApproachWithMp() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Attack' }],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    placeBeforeReady: false,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1,
+    preferLineUp: false,
+    positioning: 'close-in',
+    tackleAware: true,
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  // Enemy on cell 294 is 1 cell away: already in range, no move expected.
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  assert.strictEqual(state.moves.length, 0, 'no move when the target is already in range')
+
+  // Push the enemy out of range: the AI should walk with its 3 MP.
+  state.fighters[1].data.disposition.cellId = 322
+  state.sent.length = 0
+  state.startTurn(20)
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 400))
+
+  assert.strictEqual(state.moves.length, 1, 'one move is requested')
+  const destination = state.moves[0]
+  assert.notStrictEqual(destination, 322, 'the AI does not walk onto the enemy cell')
+  assert.ok(logs.some((line) => line.includes('Moving to cell')), 'the move is logged')
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
+    'the spell is cast after moving'
+  )
+
+  // With no MP left it should say so instead of moving.
+  // Put the character back where it started, far from the enemy.
+  state.mpPerTurn = 0
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 322
+  state.moves.length = 0
+  state.startTurn(20)
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  assert.strictEqual(state.moves.length, 0, 'no move without MP')
+  assert.ok(logs.some((line) => line.includes('no MP left')), 'the missing MP is reported')
+
+  dispose()
+  console.log('ok - approach with MP')
+}
+
+async function testSelfCastAndLineUp() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-bridge.ts'))
+  const { cellCoordinates, cellDistance, areCellsAligned } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-bridge.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [
+      { id: 100, name: 'Buff', self: true },
+      { id: 165, name: 'Attack' }
+    ],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    placeBeforeReady: false,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1,
+    preferLineUp: true,
+    positioning: 'close-in',
+    tackleAware: true,
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  // Far enemy: the AI must spend its MP to close in, not stand still.
+  const myCell = 280
+  const farCell = 400
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+  state.fighters[1].data.disposition.cellId = farCell
+  state.fighters[2].data.disposition.cellId = farCell
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 400))
+
+  const casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.strictEqual(casts[0].data.spellId, 100, 'the self spell is cast first')
+  assert.strictEqual(
+    casts[0].data.cellId,
+    state.fighters[0].data.disposition.cellId,
+    'the self spell targets our own cell, wherever the turn left us'
+  )
+  assert.ok(logs.some((line) => line.includes('on myself')), 'the self cast is logged')
+
+  assert.strictEqual(state.moves.length, 1, 'the AI moves towards a far target')
+  const destination = state.moves[0]
+  const spent = cellDistance(myCell, destination)
+  assert.strictEqual(spent, 3, 'it spends all 3 MP when the target is far')
+  assert.ok(
+    cellDistance(destination, farCell) < cellDistance(myCell, farCell),
+    'the move closes distance to the target'
+  )
+  // Nothing lines up within 3 MP here, so closing distance is the right call.
+  assert.ok(
+    !areCellsAligned(myCell, farCell),
+    'the starting position is not lined up with the target'
+  )
+
+  // Now a lined-up cell is reachable: it must win over one more cell of progress.
+  const cellAt = (x, y) => {
+    for (let cellId = 0; cellId < 560; cellId++) {
+      const point = cellCoordinates(cellId)
+      if (point.x === x && point.y === y) return cellId
+    }
+    throw new Error(`no cell at [${x}, ${y}]`)
+  }
+
+  const nearTarget = cellAt(12, 4)
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+  state.fighters[1].data.disposition.cellId = nearTarget
+  state.fighters[2].data.disposition.cellId = nearTarget
+  state.moves.length = 0
+
+  state.startTurn(20)
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 400))
+
+  assert.strictEqual(state.moves.length, 1, 'the AI moves again')
+  const lined = state.moves[0]
+  assert.ok(
+    areCellsAligned(lined, nearTarget),
+    `the destination lines up with the target (${JSON.stringify(cellCoordinates(lined))} vs [12, 4])`
+  )
+  assert.ok(
+    cellDistance(lined, nearTarget) < cellDistance(myCell, nearTarget),
+    'lining up still closes distance'
+  )
+
+  dispose()
+  console.log('ok - self cast and line-up approach')
+}
+
+async function testRangeAndShortWalk() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-bridge.ts'))
+  const { cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-bridge.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    // The spell reaches 6 cells, so no walking should happen at 4.
+    combo: [{ id: 165, name: 'Bolt', range: 6 }],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    placeBeforeReady: false,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1,
+    preferLineUp: false,
+    positioning: 'close-in',
+    tackleAware: true,
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  // Enemy 4 cells away: within the spell's own range, so cast without moving.
+  const myCell = 280
+  const enemyCell = 336
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+  state.fighters[1].data.disposition.cellId = enemyCell
+  state.fighters[2].data.disposition.cellId = enemyCell
+  assert.strictEqual(cellDistance(myCell, enemyCell), 4, 'the enemy is 4 cells away')
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 300))
+
+  assert.strictEqual(state.moves.length, 0, 'a ranged spell does not chase the target')
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
+    'the spell is cast from where we stand'
+  )
+  assert.ok(logs.some((line) => line.includes('from 4 cell(s)')), 'the cast distance is logged')
+
+  // Now a melee spell against a walk the engine cuts short.
+  combatSettings.combo = [{ id: 165, name: 'Punch', range: 1 }]
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+  state.moves.length = 0
+  state.sent.length = 0
+  // The engine only ever advances one cell towards the request.
+  state.walkLimit = () => 294
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 1500))
+
+  assert.strictEqual(
+    state.moves.length,
+    1,
+    `one move per turn, never a burst of small steps (${state.moves.join(',')}) ${logs.join(' | ')}`
+  )
+  assert.ok(
+    logs.some((line) => line.includes('Stopped on cell 294')),
+    'a walk cut short by an obstacle is reported'
+  )
+  // The walk stopped short, so the melee spell can no longer reach: the cast is
+  // skipped and said out loud, rather than thrown at nothing.
+  const castAfterwards = state.sent.some(
+    (message) => message.name === 'GameActionFightCastRequestMessage'
+  )
+  assert.ok(
+    castAfterwards || logs.some((line) => line.includes('Skipping')),
+    'either the spell reaches, or the AI says why it does not'
+  )
+
+  state.walkLimit = null
+  dispose()
+  console.log('ok - spell range and short walks')
+}
+
+async function testKitingAndSingleMove() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-bridge.ts'))
+  const { cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-bridge.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Bolt', range: 5 }],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    placeBeforeReady: false,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1,
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  // An enemy three cells away, with a spell that reaches five: the kiting AI
+  // should back off — while staying able to cast — rather than stand still.
+  const myCell = 280
+  const enemyCell = 322
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+  state.fighters[1].data.disposition.cellId = enemyCell
+  state.fighters[2].data.disposition.cellId = enemyCell
+  const startDistance = cellDistance(myCell, enemyCell)
+  assert.ok(startDistance > 1 && startDistance < 5, 'the enemy starts in range but not in contact')
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  assert.strictEqual(state.moves.length, 1, 'exactly one move is requested for the turn')
+  const landing = state.moves[0]
+  assert.ok(
+    cellDistance(landing, enemyCell) > startDistance,
+    'the AI backs away from the enemy'
+  )
+  assert.ok(cellDistance(landing, enemyCell) <= 5, 'it stays within casting range')
+  assert.ok(
+    logs.some((line) => line.includes('backing off')),
+    `the move says what it really does (${logs.join(' | ')})`
+  )
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
+    'the spell is cast from the new position'
+  )
+
+  // Closing in is still available for melee builds.
+  state.sent.length = 0
+  state.moves.length = 0
+  combatSettings.positioning = 'close-in'
+  combatSettings.combo = [{ id: 165, name: 'Punch', range: 1 }]
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+  state.fighters[1].data.disposition.cellId = 350
+  state.fighters[2].data.disposition.cellId = 350
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  assert.strictEqual(state.moves.length, 1, 'still a single move per turn')
+  assert.ok(
+    cellDistance(state.moves[0], 350) < cellDistance(myCell, 350),
+    'close-in walks towards the target'
+  )
+
+  dispose()
+  console.log('ok - kiting and one move per turn')
+}
+
+async function testSpreadCasts() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const combatSettings = {
+    enabled: true,
+    combo: [
+      { id: 100, name: 'First', range: 12 },
+      { id: 101, name: 'Second', range: 12 }
+    ],
+    turnCombos: [],
+    targetStrategy: 'nearest',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    placeBeforeReady: false,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: false,
+    defaultSpellRange: 12,
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    spreadCasts: true
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: () => {}
+  })
+
+  const casts = () =>
+    state.sent
+      .filter((message) => message.name === 'GameActionFightCastRequestMessage')
+      .map((message) => `${message.data.spellId}@${message.data.cellId}`)
+
+  // Two enemies in range: the same spell goes once on each.
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 294
+  state.fighters[2].data.disposition.cellId = 350
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  assert.deepStrictEqual(
+    casts(),
+    ['100@294', '100@350', '101@294', '101@350'],
+    'each spell is cast once per enemy in range'
+  )
+
+  // A single enemy in range: the combo plays out on it, spell after spell.
+  state.sent.length = 0
+  state.fighters[2].data.alive = false
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  assert.deepStrictEqual(
+    casts(),
+    ['100@294', '101@294'],
+    'with one enemy left the combo runs as written'
+  )
+
+  state.fighters[2].data.alive = true
+  dispose()
+  console.log('ok - casts spread over the enemies in range')
+}
+
+async function testTackleAwareness() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-bridge.ts'))
+  const { cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-bridge.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Bolt', range: 5 }],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    placeBeforeReady: false,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1,
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  const myCell = 280
+  const meleeCell = 294
+
+  // 1. One MP against a monster in contact: no escape can clear melee, so the
+  // turn is spent casting instead of paying the tackle for nothing.
+  state.mpPerTurn = 1
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+  state.fighters[1].data.disposition.cellId = meleeCell
+  state.fighters[2].data.disposition.cellId = meleeCell
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  assert.strictEqual(state.moves.length, 0, 'no move at all while held in contact')
+  assert.ok(
+    logs.some((line) => line.includes('not moving, casting from here')),
+    'the reason is logged'
+  )
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
+    'the spell is cast from where we stand'
+  )
+
+  // 2. Even with plenty of MP, a monster in contact means no move at all.
+  state.mpPerTurn = 4
+  state.moves.length = 0
+  state.sent.length = 0
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 600))
+
+  assert.strictEqual(state.moves.length, 0, 'never break away from a monster in contact')
+  assert.ok(
+    logs.some((line) => line.includes('not moving, casting from here')),
+    'staying put is announced'
+  )
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
+    'the turn is spent casting'
+  )
+
+  // 3. Out of contact, the AI positions itself as usual.
+  state.moves.length = 0
+  state.sent.length = 0
+  state.fighters[1].data.disposition.cellId = 400
+  state.fighters[2].data.disposition.cellId = 400
+  state.fighters[0].data.disposition.cellId = myCell
+  gameWindow.isoEngine.actorManager.userActor.cellId = myCell
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 600))
+
+  assert.strictEqual(state.moves.length, 1, 'with no one in contact it still moves')
+
+  dispose()
+  console.log('ok - tackle awareness')
+}
+
+async function testFightMovementGoesThroughTheServer() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellCoordinates, neighbourCells, cellFromCoordinates } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  // The grid maths the path is built on.
+  for (let cellId = 0; cellId < 560; cellId++) {
+    const point = cellCoordinates(cellId)
+    assert.strictEqual(cellFromCoordinates(point.x, point.y), cellId, 'coordinates round-trip')
+  }
+  assert.ok(neighbourCells(280).every((cell) => neighbourCells(cell).includes(280)), 'steps are symmetric')
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Punch', range: 1 }],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    placeBeforeReady: false,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1,
+    preferLineUp: false,
+    positioning: 'close-in',
+    tackleAware: true,
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[2].data.disposition.cellId = 336
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 700))
+
+  const moveMessages = state.sent.filter((m) => m.name === 'GameMapMovementRequestMessage')
+  assert.strictEqual(moveMessages.length, 1, 'the move is sent to the server')
+
+  const keys = moveMessages[0].data.keyMovements
+  assert.ok(Array.isArray(keys) && keys.length >= 2, 'the path carries at least a start and an end')
+  assert.strictEqual(keys[0] & 0xfff, 280, 'it starts where the character stands')
+  assert.ok(
+    keys.every((key) => [0, 2, 4, 6].includes(key >> 12)),
+    'every step is one of the four fight directions'
+  )
+  const walked = keys.map((key) => key & 0xfff)
+  for (let index = 1; index < walked.length; index++) {
+    assert.ok(
+      neighbourCells(walked[index - 1]).includes(walked[index]),
+      `step ${index} goes to a neighbouring cell`
+    )
+  }
+
+  // A refused move must be reported, not taken for granted.
+  state.sent.length = 0
+  state.serverRefusesMoves = true
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 1500))
+
+  assert.ok(
+    logs.some((line) => line.includes('server refused the move')),
+    'a rollback is called out'
+  )
+  assert.ok(
+    state.sent.some((m) => m.name === 'GameFightTurnFinishMessage'),
+    'the turn is still passed'
+  )
+
+  state.serverRefusesMoves = false
+  dispose()
+  console.log('ok - fight movement reaches the server')
+}
+
+async function testHumanDelays() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Bolt', range: 5 }],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 300,
+    randomJitterMs: 200,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: false,
+    defaultSpellRange: 1,
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: () => {}
+  })
+
+  const readySent = () => state.sent.some((message) => message.name === 'GameFightReadyMessage')
+
+  state.startFight()
+  state.emit('GameFightStartingMessage', {})
+
+  assert.strictEqual(readySent(), false, 'ready is not pressed on the same tick')
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.strictEqual(readySent(), false, 'nor before the configured delay')
+
+  await new Promise((resolve) => setTimeout(resolve, 700))
+  assert.strictEqual(readySent(), true, 'but it is pressed once the pause is over')
+
+  // Two turns in a row must not be spaced identically.
+  combatSettings.readyDelayMs = 0
+  combatSettings.turnStartDelayMs = 40
+  combatSettings.randomJitterMs = 400
+
+  const gaps = []
+  for (let round = 0; round < 3; round++) {
+    state.sent.length = 0
+    state.emit('GameFightTurnEndMessage', { id: 7 })
+    state.startTurn(20)
+    state.emit('GameFightTurnEndMessage', { id: 20 })
+    const startedAt = Date.now()
+    state.startTurn(7)
+    await new Promise((resolve) => setTimeout(resolve, 900))
+    const cast = state.sent.find((message) => message.name === 'GameActionFightCastRequestMessage')
+    assert.ok(cast, 'the spell is cast every turn')
+    gaps.push(Date.now() - startedAt)
+  }
+
+  assert.ok(
+    gaps.every((gap) => gap >= 40),
+    `every turn waits at least the configured pause (${gaps.join(', ')})`
+  )
+
+  dispose()
+  console.log('ok - randomised pauses')
+}
+
+async function testTurnAlwaysPassed() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Bolt', range: 5 }],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    placeBeforeReady: false,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1,
+    preferLineUp: true,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 322
+  state.fighters[2].data.disposition.cellId = 322
+
+  // The two emitters each deliver the previous fighter's turn end, and it can
+  // land after our turn started. That must not abort our turn.
+  state.startTurn(7)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  await new Promise((resolve) => setTimeout(resolve, 700))
+
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameActionFightCastRequestMessage'),
+    'a stale turn end from another fighter does not cancel our turn'
+  )
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameFightTurnFinishMessage'),
+    'the turn is passed'
+  )
+
+  // Even when the combo cannot be played, the turn is never left hanging.
+  state.sent.length = 0
+  combatSettings.combo = []
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameFightTurnFinishMessage'),
+    'an empty combo still passes the turn'
+  )
+
+  dispose()
+  console.log('ok - the turn is always passed')
+}
+
+async function testTurnSynchronisation() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 165, name: 'Attack' }],
+    turnCombos: [],
+    targetStrategy: 'first',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    placeBeforeReady: false,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: false,
+    defaultSpellRange: 1,
+    preferLineUp: false,
+    positioning: 'close-in',
+    positioning: 'close-in',
+    tackleAware: true,
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral']
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  const names = () => state.sent.map((message) => message.name)
+
+  // 1. Nothing is sent until the server says the turn can be played.
+  state.startTurnPending(7)
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  assert.deepStrictEqual(names(), [], 'no input before the turn is playable')
+
+  state.setPlayable(7)
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  assert.ok(names().includes('GameActionFightCastRequestMessage'), 'the spell is cast once playable')
+  assert.ok(names().includes('GameFightTurnFinishMessage'), 'the turn is then passed')
+
+  // 2. The turn is not ended while an animation sequence is running.
+  state.sent.length = 0
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.emit('SequenceStartMessage', {})
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 300))
+
+  assert.ok(
+    !names().includes('GameFightTurnFinishMessage'),
+    'the turn stays open while a sequence is in flight'
+  )
+
+  state.emit('SequenceEndMessage', {})
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  assert.ok(names().includes('GameFightTurnFinishMessage'), 'it is passed once the sequence ends')
+
+  // 3. Nothing from a finished turn is sent late.
+  state.sent.length = 0
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.emit('SequenceStartMessage', {})
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('SequenceEndMessage', {})
+  await new Promise((resolve) => setTimeout(resolve, 300))
+
+  assert.ok(
+    !names().includes('GameFightTurnFinishMessage'),
+    'no stale end-of-turn once the turn moved on'
+  )
+
+  // 4. A turn still waiting on the previous sequence must not swallow the next
+  // one: this is what froze fights from turn 2 on.
+  state.sent.length = 0
+  state.emit('SequenceStartMessage', {})
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.deepStrictEqual(names(), [], 'the stuck turn sends nothing')
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  state.emit('SequenceEndMessage', {})
+  await new Promise((resolve) => setTimeout(resolve, 400))
+
+  assert.ok(names().includes('GameActionFightCastRequestMessage'), 'the next turn is played')
+  assert.strictEqual(
+    names().filter((name) => name === 'GameFightTurnFinishMessage').length,
+    1,
+    'exactly one end-of-turn is sent'
+  )
+
+  dispose()
+  console.log('ok - turn synchronisation')
+}
+
+async function testMovementDiscovery(ScriptRunner) {
+  const { result, logs, state } = await run(
+    ScriptRunner,
+    `
+      api.log('cell before', api.cellId())
+      await api.moveToCell(114)
+      api.log('cell after', api.cellId())
+    `
+  )
+
+  assert.strictEqual(result.status, 'done', `the walk should succeed, got ${result.error ?? ''}`)
+  assert.deepStrictEqual(state.moves, [114], 'the working entry point is used')
+  assert.ok(logs.some((line) => line.includes('cell after 114')), 'the character arrives')
+  console.log('ok - movement entry point discovery')
+}
+
+async function testMovementReportsNoEntryPoint(ScriptRunner) {
+  const { result } = await run(
+    ScriptRunner,
+    `await api.moveToCell(114)`,
+    {},
+    (state) => {
+      state.disableMovement = true
+    }
+  )
+
+  assert.strictEqual(result.status, 'error', 'a build without movement fails loudly')
+  assert.match(
+    result.error ?? '',
+    /api\.inspect/,
+    'the error points at the diagnostic'
+  )
+  console.log('ok - movement reports a missing entry point')
+}
+
+async function testModelBrain() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const asked = []
+  globalThis.window = {
+    dofemu: {
+      ollamaChat: async (request) => {
+        asked.push(request)
+        if (state.modelAnswer === null) return { ok: false, error: 'connection refused', elapsedMs: 12 }
+        return { ok: true, content: state.modelAnswer, elapsedMs: 42 }
+      }
+    }
+  }
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 161, name: 'Bolt', range: 12 }],
+    turnCombos: [],
+    targetStrategy: 'nearest',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    placeBeforeReady: false,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 12,
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral'],
+    brain: 'ollama',
+    ollamaEndpoint: 'http://127.0.0.1:11434',
+    ollamaModel: 'test-model',
+    ollamaTimeoutMs: 1000,
+    preferChallenges: true
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 350
+  state.fighters[2].data.disposition.cellId = 350
+
+  // The model answers with a legal cast plus one action it invented.
+  state.modelAnswer = JSON.stringify({
+    actions: [
+      { type: 'cast', spellId: 161, targetId: 20 },
+      { type: 'cast', spellId: 777, targetId: 20 }
+    ],
+    reason: 'hit the closest'
+  })
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 600))
+
+  assert.strictEqual(asked.length, 1, 'the model is asked once for the turn')
+  assert.strictEqual(asked[0].model, 'test-model', 'with the configured model')
+  // The prompt carries the whole fight: the spells, the enemies, and every
+  // cast already aimed with what it would hit.
+  for (const part of ['"spells"', '"enemies"', '"casts"', '"me"']) {
+    assert.ok(asked[0].prompt.includes(part), `the prompt carries ${part}`)
+  }
+  assert.ok(asked[0].system.includes('"plan"'), 'and the system prompt asks for a plan of keys')
+
+  const casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.ok(casts.length >= 1, 'the legal cast is played')
+  assert.ok(
+    casts.every((message) => message.data.spellId !== 777),
+    'and the spell the model invented never reaches the game'
+  )
+  // Whatever the model managed, the points it left over are played on the
+  // rules rather than thrown away with the turn.
+  assert.ok(
+    logs.some((line) => line.includes('finishing the turn on the rules')),
+    `the rest of the turn is played (${logs.join(' | ')})`
+  )
+  assert.strictEqual(casts[0].data.spellId, 161)
+  assert.ok(logs.some((line) => line.includes('hit the closest')), 'the reason is logged')
+  assert.ok(
+    logs.some((line) => line.includes('spell 777')),
+    `the invented spell is reported (${logs.join(' | ')})`
+  )
+  assert.ok(
+    state.sent.some((m) => m.name === 'GameFightTurnFinishMessage'),
+    'the turn is still passed'
+  )
+
+  // A plan that only walks must not end the turn without attacking.
+  state.sent.length = 0
+  logs.length = 0
+  state.modelAnswer = JSON.stringify({
+    actions: [{ type: 'move', cellId: 294 }],
+    reason: 'reposition'
+  })
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 900))
+
+  assert.ok(
+    logs.some((line) => line.includes('only moved')),
+    'the shortfall is called out'
+  )
+  assert.ok(
+    state.sent.some((m) => m.name === 'GameActionFightCastRequestMessage'),
+    'the combo is cast on top of the model plan'
+  )
+
+  // With no model answering, the rules take the turn.
+  state.sent.length = 0
+  state.modelAnswer = null
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 800))
+
+  assert.ok(
+    logs.some((line) => line.includes('playing the rules')),
+    'the fallback is announced'
+  )
+  assert.ok(
+    state.sent.some((m) => m.name === 'GameActionFightCastRequestMessage'),
+    'the rules still cast'
+  )
+
+  delete globalThis.window
+  dispose()
+  console.log('ok - model brain with fallback')
+}
+
+async function testPlacementAndLineOfSight() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-bridge.ts'))
+  const { findPositionCell, areCellsAligned } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-bridge.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/combat/placement.ts'))
+  const { choosePlacement, syntheticSpell } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'placement.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[2].data.disposition.cellId = 336
+
+  // Cells around the monster on 336, by their grid distance to it.
+  const contact = 322 // one cell away, and lined up with it
+  const shooting = 267 // five away: still in a bow's range
+  const far = 226 // eight away: two steps short of it
+  const tooFar = 184 // eleven away: nothing reaches on turn one
+
+  const bow = syntheticSpell(1, 6)
+  const ranged = { positioning: 'keep-distance', movementPoints: 3, weapons: [bow] }
+
+  assert.ok(areCellsAligned(contact, 336), 'the contact cell is on the enemy line')
+
+  // The whole point of the placement: as far back as the fight can still be
+  // opened from. A cell in contact opens it tackled, which costs the turn.
+  const kept = choosePlacement(gameWindow, [shooting, contact], ranged)
+  assert.strictEqual(kept.cellId, shooting, 'the furthest cell that can still shoot wins')
+  assert.strictEqual(kept.opensStanding, true, 'and it shoots without walking')
+  assert.strictEqual(kept.threats, 0, 'out of the monsters first-turn reach')
+
+  // The first turn's movement points count as reach: a cell two steps short
+  // of the range still opens the fight, and it is further back.
+  const withLegs = choosePlacement(gameWindow, [shooting, far], ranged)
+  assert.strictEqual(withLegs.cellId, far, 'a cell reachable by walking is preferred when further')
+  assert.strictEqual(withLegs.opensStanding, false, 'it cannot shoot standing still')
+  assert.strictEqual(withLegs.opensAfterMoving, true, 'but it can once the MP are spent')
+  assert.ok(withLegs.openingCost > 0 && withLegs.openingCost <= 3, 'within the movement points')
+
+  // And a cell nothing reaches from, however safe, loses to one that opens.
+  const unreachable = choosePlacement(gameWindow, [tooFar, far], ranged)
+  assert.strictEqual(unreachable.cellId, far, 'a cell out of reach on turn one is never taken')
+
+  // Without movement points the reach is the range alone.
+  const rooted = choosePlacement(gameWindow, [shooting, far], { ...ranged, movementPoints: 0 })
+  assert.strictEqual(rooted.cellId, shooting, 'with no MP only what shoots from the spot counts')
+
+  // A line a wall blocks is no line: that cell cannot open the fight either.
+  gameWindow.isoEngine.mapRenderer.isInLineOfSight = (from, to) =>
+    !(from === shooting && to === 336)
+  const blocked = choosePlacement(gameWindow, [shooting, contact], { ...ranged, movementPoints: 0 })
+  assert.strictEqual(blocked.cellId, contact, 'a blocked line loses to a cell that sees')
+  delete gameWindow.isoEngine.mapRenderer.isInLineOfSight
+
+  // Closing in reverses the order, and nothing else about it.
+  const melee = choosePlacement(gameWindow, [shooting, contact], {
+    ...ranged,
+    positioning: 'close-in',
+    weapons: [syntheticSpell(1, 1)]
+  })
+  assert.strictEqual(melee.cellId, contact, 'a melee build starts next to the pack')
+
+  const move = findPositionCell(
+    gameWindow,
+    { id: 20, teamId: 1, alive: true, cellId: 336, life: 100, maxLife: 100, ap: 6, mp: 3, name: 'Champ' },
+    6,
+    3,
+    { preferLineUp: true, positioning: 'keep-distance', tackleAware: true }
+  )
+  if (move) {
+    assert.strictEqual(
+      move.aligned,
+      areCellsAligned(move.cellId, 336),
+      'alignment always implies a clear line'
+    )
+  }
+
+  // The placement step runs before ready, and only once.
+  const logs = []
+  const combatSettings = {
+    ...combatDefaults,
+    combo: [{ id: 165, name: 'Bolt', range: 6 }],
+    autoReady: true,
+    placeBeforeReady: true,
+    readyDelayMs: 40,
+    defaultSpellRange: 6,
+    spellMode: 'combo',
+    positioning: 'keep-distance'
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.emit('GameFightPlacementPossiblePositionsMessage', { positions: [shooting, contact] })
+  state.emit('GameFightStartingMessage', {})
+  await new Promise((resolve) => setTimeout(resolve, 400))
+
+  const placements = state.sent.filter((m) => m.name === 'GameFightPlacementPositionRequestMessage')
+  assert.strictEqual(placements.length, 1, `one placement is requested (${logs.join(' | ')})`)
+  assert.strictEqual(placements[0].data.cellId, shooting, 'on the cell it can shoot from at range')
+  assert.ok(logs.some((line) => line.includes('Taking starting cell')), 'the choice is logged')
+  assert.ok(
+    logs.some((line) => line.includes('MP on turn one')),
+    'and it says what it planned around'
+  )
+
+  const readyAfter = state.sent.findIndex((m) => m.name === 'GameFightReadyMessage')
+  const placedAt = state.sent.findIndex((m) => m.name === 'GameFightPlacementPositionRequestMessage')
+  assert.ok(placedAt < readyAfter, 'the place is taken before readying')
+
+  dispose()
+  console.log('ok - placement keeps its distance and its line')
+}
+
+/**
+ * The combo leaves alone what it should not be shooting.
+ *
+ * Two rules, both of which cost a whole turn when they are missed: a summon
+ * killed while its summoner stands beside it, and an arrow thrown at a
+ * monster under the invulnerable state, which takes nothing from anything.
+ */
+async function testSummonsAndInvulnerable() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    ...combatDefaults,
+    combo: [{ id: 165, name: 'Bolt', range: 10 }],
+    targetStrategy: 'weakest',
+    defaultSpellRange: 10,
+    spellMode: 'combo',
+    spreadCasts: false,
+    summonsLast: true
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 294 // Close, 120 life
+  state.fighters[2].data.disposition.cellId = 350 // Weak, 40 life
+
+  // The weakest of the two is a summon, and "lowest health" would take it.
+  state.fighters[2].data.stats.summoned = true
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  let casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.strictEqual(casts.length, 1, `one cast is made (${logs.join(' | ')})`)
+  assert.strictEqual(
+    casts[0].data.cellId,
+    294,
+    'the summoner is shot, not the weaker summon standing beside it'
+  )
+  assert.ok(
+    logs.some((line) => line.includes('summon(s) alone')),
+    `and the combo says what it left alone (${logs.join(' | ')})`
+  )
+
+  // Turned off, the strategy has the last word again.
+  state.sent.length = 0
+  logs.length = 0
+  combatSettings.summonsLast = false
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.strictEqual(casts[0].data.cellId, 350, 'with the rule off the summon is the target again')
+
+  // Now the invulnerable state: a flat reduction bigger than any hit. The
+  // spell has to be one the client really describes, or nothing can be worked
+  // out about what it would take off.
+  state.sent.length = 0
+  logs.length = 0
+  combatSettings.summonsLast = true
+  delete state.fighters[2].data.stats.summoned
+
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    165: {
+      id: 165,
+      spell: { nameId: 'Bolt' },
+      spellLevel: {
+        apCost: 3,
+        range: 10,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: true,
+        effects: [{ effectId: 97, diceNum: 25, diceSide: 30, zoneSize: 0 }]
+      }
+    }
+  }
+  gameWindow.gui.playerData.characters.mainCharacter.characteristics = {
+    strength: { base: 200 },
+    intelligence: { base: 0 },
+    chance: { base: 0 },
+    agility: { base: 0 }
+  }
+  for (const element of ['earth', 'fire', 'water', 'air', 'neutral']) {
+    state.fighters[2].data.stats[`${element}ElementReduction`] = 5000
+  }
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.ok(casts.length > 0, `the turn still casts (${logs.join(' | ')})`)
+  assert.strictEqual(
+    casts[0].data.cellId,
+    294,
+    'the monster that can be hurt is shot, not the invulnerable one'
+  )
+  assert.ok(
+    logs.some((line) => line.includes('invulnerable')),
+    `and the state is named in the log (${logs.join(' | ')})`
+  )
+
+  dispose()
+  console.log('ok - the combo leaves summons and invulnerable monsters alone')
+}
+
+async function testPushBreaksMelee() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/combat/index.ts'))
+  const { buildSnapshot, weaponsFromCombo } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'index.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [
+      { id: 300, name: 'Shove', range: 4, push: true },
+      { id: 165, name: 'Bolt', range: 6 }
+    ],
+    turnCombos: [],
+    targetStrategy: 'nearest',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    placeBeforeReady: false,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true,
+    approachEnemies: true,
+    defaultSpellRange: 1,
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    spreadCasts: false,
+    spellMode: 'combo',
+    elements: ['fire', 'earth', 'water', 'air', 'neutral'],
+    brain: 'rules',
+    ollamaEndpoint: '',
+    ollamaModel: '',
+    ollamaTimeoutMs: 1000,
+    preferChallenges: false
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  // One monster in contact, one far away.
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 294
+  state.fighters[2].data.disposition.cellId = 400
+
+  // The snapshot handed to a model must say the character is held.
+  const snapshot = buildSnapshot(gameWindow, {
+    turn: 1,
+    elements: combatSettings.elements,
+    lastCastTurn: new Map(),
+    actionPoints: 6,
+    movementPoints: 3,
+    canMove: false,
+    catalogue: weaponsFromCombo(gameWindow, combatSettings.combo, 1, { includeSelf: true })
+  })
+  assert.deepStrictEqual(snapshot.me.heldBy, [1], 'the holder is named')
+  assert.strictEqual(snapshot.me.canMove, false, 'and moving is ruled out')
+  assert.strictEqual(snapshot.moves.length, 0, 'no cell is offered while held')
+  assert.ok(
+    snapshot.notes.some((note) => note.includes('hold the character in contact')),
+    'and the model is told so in words'
+  )
+  assert.ok(
+    snapshot.spells.some((spell) => spell.id === 300),
+    'the push spell is among the options'
+  )
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 700))
+
+  const casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.strictEqual(casts[0].data.spellId, 300, 'the push is cast first, at the holder')
+  assert.strictEqual(casts[0].data.cellId, 294, 'on the monster in contact')
+  assert.ok(logs.some((line) => line.includes('to break contact')), 'the intent is logged')
+  assert.strictEqual(state.moves.length, 0, 'no tackled move is attempted')
+
+  // Two monsters in contact: pushing one changes nothing, so it is not used.
+  state.sent.length = 0
+  logs.length = 0
+  state.fighters[2].data.disposition.cellId = 266
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 700))
+
+  assert.ok(
+    !logs.some((line) => line.includes('to break contact')),
+    'no push when several monsters hold the character'
+  )
+
+  dispose()
+  console.log('ok - push breaks a lone hold')
+}
+
+async function testAntiIdle() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/anti-idle.ts'))
+  const { initAntiIdle, dismissInactivityDialog, signalActivity } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'anti-idle.js')).href}?t=${Date.now()}`
+  )
+
+  // A window showing the warning the game puts up when nothing moves.
+  const clicked = []
+  const dispatched = []
+  const makeElement = (text, tag = 'DIV') => ({
+    tagName: tag,
+    textContent: text,
+    innerText: text,
+    offsetParent: {},
+    getBoundingClientRect: () => ({ width: 60, height: 20 }),
+    contains: () => false,
+    click() {
+      clicked.push(text)
+    }
+  })
+
+  const warning = makeElement(
+    'Une inactivité prolongée entraîne une déconnexion automatique du serveur.'
+  )
+  const okButton = makeElement('Ok', 'BUTTON')
+
+  const gameWindow = {
+    document: {
+      body: {
+        dispatchEvent: (event) => dispatched.push(event.type)
+      },
+      querySelectorAll: (selector) =>
+        selector.includes('button') ? [warning, okButton] : [warning]
+    }
+  }
+
+  assert.strictEqual(dismissInactivityDialog(gameWindow), true, 'the warning is closed')
+  assert.deepStrictEqual(clicked, ['Ok'], 'by pressing its Ok button')
+
+  // No warning on screen, nothing to click.
+  const quiet = {
+    document: {
+      body: { dispatchEvent: () => {} },
+      querySelectorAll: () => [makeElement('Inventaire')]
+    }
+  }
+  assert.strictEqual(dismissInactivityDialog(quiet), false, 'nothing is clicked without the warning')
+
+  // The sign of life is input the client counts, and nothing it acts on.
+  // Node has no DOM event constructors; the renderer does.
+  class StubEvent {
+    constructor(type) {
+      this.type = type
+    }
+  }
+  globalThis.MouseEvent = StubEvent
+  globalThis.KeyboardEvent = StubEvent
+
+  signalActivity(gameWindow)
+  assert.ok(dispatched.includes('mousemove'), 'a pointer move is sent')
+  assert.ok(dispatched.includes('keydown'), 'a modifier key is pressed')
+  assert.ok(!dispatched.includes('click'), 'never a click, which would act in game')
+
+  // The watcher closes it on its own, and stops when disposed.
+  clicked.length = 0
+  const dispose = initAntiIdle(gameWindow, 'tab-1', {
+    getSettings: () => ({ antiIdleEnabled: true, antiIdleIntervalSec: 10 }),
+    onLog: () => {}
+  })
+  await new Promise((resolve) => setTimeout(resolve, 5300))
+  assert.ok(clicked.length >= 1, 'the watcher closes the warning by itself')
+
+  dispose()
+  const seen = clicked.length
+  await new Promise((resolve) => setTimeout(resolve, 5300))
+  assert.strictEqual(clicked.length, seen, 'and stops once disposed')
+
+  delete globalThis.MouseEvent
+  delete globalThis.KeyboardEvent
+  console.log('ok - stays connected while idle')
+}
+
+async function testSpellPlanner() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/zones.ts'))
+  const { areaCells, zoneShapeOf } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'zones.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-planner.ts'))
+  const { planTurn, castableCells, hitsFrom } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'spell-planner.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellDistance, cellCoordinates, cellFromCoordinates } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  // --- the shapes ---
+  assert.strictEqual(zoneShapeOf(67), 'circle', 'C is a circle')
+  assert.strictEqual(zoneShapeOf(80), 'point', 'P is a point')
+  assert.strictEqual(zoneShapeOf(76), 'line', 'L is a line')
+  assert.strictEqual(zoneShapeOf(90), 'unknown', 'an unknown letter is reported as such')
+
+  const centre = 280
+  const point = areaCells({ shape: 'point', size: 0, minSize: 0 }, 266, centre)
+  assert.deepStrictEqual(point, [centre], 'a point covers one cell')
+
+  const circle = areaCells({ shape: 'circle', size: 2, minSize: 0 }, 266, centre)
+  assert.ok(circle.includes(centre), 'a circle covers its centre')
+  assert.ok(
+    circle.every((cell) => cellDistance(cell, centre) <= 2),
+    'and nothing beyond its size'
+  )
+
+  const ring = areaCells({ shape: 'circle', size: 2, minSize: 1 }, 266, centre)
+  assert.ok(!ring.includes(centre), 'a minimum size hollows the middle out')
+  assert.ok(ring.length > 0, 'while keeping the rest')
+
+  const lineFrom = 280
+  const lineTo = 294
+  const line = areaCells({ shape: 'line', size: 3, minSize: 0 }, lineFrom, lineTo)
+  assert.ok(line.includes(lineTo), 'a line starts at the aimed cell')
+  assert.ok(line.length >= 2, 'and carries on away from the caster')
+  const point0 = cellCoordinates(lineFrom)
+  const point1 = cellCoordinates(lineTo)
+  const dx = Math.sign(point1.x - point0.x)
+  const dy = Math.sign(point1.y - point0.y)
+  const expected = cellFromCoordinates(point1.x + dx, point1.y + dy)
+  if (expected !== null) assert.ok(line.includes(expected), 'in the direction of the cast')
+
+  const cross = areaCells({ shape: 'cross', size: 1, minSize: 0 }, 266, centre)
+  assert.strictEqual(cross.length <= 5, true, 'a cross of 1 is the centre and its four arms')
+
+  // --- the fight ---
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const spellOf = (over) => ({
+    id: 1,
+    spell: { nameId: 'Test' },
+    spellLevel: Object.assign(
+      {
+        apCost: 3,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        needFreeCell: false,
+        needTakenCell: false,
+        effects: [{ effectId: 100, diceNum: 20, diceSide: 20, zoneShape: 80, zoneSize: 0 }]
+      },
+      over
+    )
+  })
+
+  const context = (over) =>
+    Object.assign(
+      {
+        turn: 1,
+        actionPoints: 6,
+        movementPoints: 0,
+        elements: [],
+        lastCastTurn: new Map(),
+        canMove: false,
+        keepDistance: false
+      },
+      over
+    )
+
+  // Two monsters one cell apart: an area spell must catch both with one cast.
+  const me = 280
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+  const a = 336
+  const b = areaCells({ shape: 'circle', size: 1, minSize: 0 }, me, a).find((cell) => cell !== a)
+  state.fighters[1].data.disposition.cellId = a
+  state.fighters[2].data.disposition.cellId = b
+
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: spellOf({
+      apCost: 4,
+      effects: [{ effectId: 100, diceNum: 18, diceSide: 22, zoneShape: 67, zoneSize: 1 }]
+    })
+  }
+
+  const area = planTurn(gameWindow, context({}))
+  assert.ok(area && area.casts.length > 0, 'a plan is produced')
+  assert.strictEqual(area.casts[0].hits.length, 2, 'the area cast catches both monsters')
+  assert.ok(
+    area.casts[0].reason.includes('2 enemies'),
+    'and says so'
+  )
+
+  // The same spell must not be aimed where it also catches an ally.
+  state.fighters.push({
+    id: 30,
+    data: {
+      teamId: 0,
+      alive: true,
+      disposition: { cellId: b },
+      stats: { lifePoints: 200, maxLifePoints: 200, actionPoints: 6, movementPoints: 3 },
+      name: 'Ally'
+    }
+  })
+  const withAlly = planTurn(gameWindow, context({}))
+  assert.ok(withAlly && withAlly.casts.length > 0, 'it still casts')
+  assert.ok(
+    !withAlly.casts[0].friendlyHits.includes(30),
+    'but not on a cell whose area covers an ally'
+  )
+  state.fighters.pop()
+
+  // Constraints are the spell's own: minimum range, straight line, free cell.
+  const near = {
+    id: 2,
+    range: 6,
+    minRange: 3,
+    castInLine: true,
+    castInDiagonal: false,
+    needsLineOfSight: false,
+    needsFreeCell: false,
+    needsTakenCell: false,
+    zone: { shape: 'point', size: 0, minSize: 0 }
+  }
+  const cells = castableCells(gameWindow, near, me, new Set())
+  assert.ok(cells.length > 0, 'a line spell has somewhere to go')
+  assert.ok(
+    cells.every((cell) => cellDistance(me, cell) >= 3 && cellDistance(me, cell) <= 6),
+    'the minimum and maximum range hold'
+  )
+
+  const mustBeFree = castableCells(
+    gameWindow,
+    Object.assign({}, near, { castInLine: false, needsFreeCell: true }),
+    me,
+    new Set([a])
+  )
+  assert.ok(!mustBeFree.includes(a), 'a spell needing a free cell skips an occupied one')
+
+  const mustBeTaken = castableCells(
+    gameWindow,
+    Object.assign({}, near, { castInLine: false, needsTakenCell: true }),
+    me,
+    new Set([a])
+  )
+  assert.deepStrictEqual(mustBeTaken, [a], 'a spell needing someone only aims at them')
+
+  // Damage is not wasted: a second cast goes elsewhere once one would kill.
+  state.fighters[1].data.stats.lifePoints = 15
+  state.fighters[2].data.stats.lifePoints = 300
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: spellOf({ apCost: 3, effects: [{ effectId: 100, diceNum: 40, diceSide: 40, zoneSize: 0 }] })
+  }
+  const spread = planTurn(gameWindow, context({ actionPoints: 6 }))
+  assert.ok(spread && spread.casts.length === 2, 'the action points buy two casts')
+  assert.notStrictEqual(
+    spread.casts[0].cellId,
+    spread.casts[1].cellId,
+    'the second cast is not thrown at a monster the first already kills'
+  )
+
+  // Moving is considered when it unlocks a better cast.
+  // Seven cells away: out of a range-4 spell, but four movement points bring
+  // the character close enough.
+  state.fighters[1].data.stats.lifePoints = 300
+  state.fighters[1].data.disposition.cellId = 381
+  state.fighters[2].data.disposition.cellId = 382
+  assert.strictEqual(cellDistance(me, 381), 7, 'the target sits just out of reach')
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: spellOf({ apCost: 3, range: 4, effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneSize: 0 }] })
+  }
+
+  const still = planTurn(gameWindow, context({ movementPoints: 0, canMove: false }))
+  const moving = planTurn(gameWindow, context({ movementPoints: 4, canMove: true }))
+  assert.ok(
+    (still?.casts.length ?? 0) === 0,
+    'out of range, standing still casts nothing'
+  )
+  assert.ok(
+    moving && moving.actions.some((action) => action.type === 'move'),
+    'but a move is planned to reach them'
+  )
+  assert.ok(moving.casts.length > 0, 'and the cast follows')
+  const order = moving.actions.map((action) => action.type)
+  assert.strictEqual(order[0], 'move', 'the points are spent before the first spell here')
+
+  // An element the user unticked is left alone.
+  const noFire = planTurn(gameWindow, context({ movementPoints: 4, canMove: true, elements: ['water'] }))
+  assert.ok((noFire?.casts.length ?? 0) === 0, 'a fire spell is skipped when only water is allowed')
+
+  // Points can also be kept for later: cast, step, cast again.
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[1].data.stats.lifePoints = 300
+  state.fighters[2].data.disposition.cellId = 470
+  state.fighters[2].data.stats.lifePoints = 300
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: spellOf({
+      apCost: 3,
+      range: 5,
+      maxCastPerTarget: 1,
+      effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneSize: 0 }]
+    })
+  }
+
+  // One monster in reach, another only after walking, and a spell that may
+  // hit each of them once: the turn has to cast, walk, then cast again.
+  // The two monsters are far enough apart that no single cell reaches both,
+  // so the only way to hit them in one turn is to cast, walk, cast again.
+  const inReach = 336
+  const far = cellFromCoordinates(10, 1)
+  state.fighters[1].data.disposition.cellId = inReach
+  state.fighters[1].data.stats.lifePoints = 9000
+  state.fighters[2].data.disposition.cellId = far
+  state.fighters[2].data.stats.lifePoints = 9000
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: spellOf({
+      apCost: 3,
+      range: 5,
+      maxCastPerTarget: 1,
+      effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneSize: 0 }]
+    })
+  }
+
+  const interleaved = planTurn(
+    gameWindow,
+    context({ actionPoints: 6, movementPoints: 4, canMove: true })
+  )
+  const kinds = (interleaved?.actions ?? []).map((action) => action.type)
+  const firstCast = kinds.indexOf('cast')
+  assert.notStrictEqual(firstCast, -1, 'the monster already in reach is hit')
+  assert.ok(
+    kinds.indexOf('move', firstCast) > firstCast,
+    `the points are then spent to reach the other one (${kinds.join(', ')})`
+  )
+  assert.strictEqual(
+    kinds.filter((kind) => kind === 'cast').length,
+    2,
+    'and both monsters are hit in the same turn'
+  )
+
+  // --- what the fight forbids, and why nothing was planned ---
+
+  // Challenges are read and reported, but never enforced: holding one is not
+  // worth losing a fight or dragging it out.
+  state.fighters[1].data.disposition.cellId = a
+  state.fighters[1].data.stats.lifePoints = 300
+  state.fighters[2].data.disposition.cellId = b
+  state.fighters[2].data.stats.lifePoints = 300
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: spellOf({
+      apCost: 4,
+      effects: [{ effectId: 100, diceNum: 20, diceSide: 20, zoneShape: 67, zoneSize: 1 }]
+    })
+  }
+
+  const unconstrained = planTurn(gameWindow, context({}))
+  assert.ok(
+    (unconstrained?.casts ?? []).some((cast) => cast.hits.length === 2),
+    'the best area cast is still chosen, challenge or not'
+  )
+
+  // A boost is not worth casting on the turn everything dies.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: spellOf({ apCost: 2, effects: [{ effectId: 128, diceNum: 30, diceSide: 30, zoneSize: 0 }] }),
+    2: spellOf({ apCost: 3, effects: [{ effectId: 100, diceNum: 400, diceSide: 400, zoneSize: 0 }] })
+  }
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells[2].id = 2
+
+  state.fighters[1].data.stats.lifePoints = 50
+  state.fighters[2].data.stats.lifePoints = 50
+  const finishing = planTurn(gameWindow, context({ actionPoints: 6 }))
+  assert.ok(
+    !(finishing?.casts ?? []).some((cast) => cast.spellId === 1),
+    'the boost is skipped when the fight ends this turn'
+  )
+
+  state.fighters[1].data.stats.lifePoints = 5000
+  state.fighters[2].data.stats.lifePoints = 5000
+  const lasting = planTurn(gameWindow, context({ actionPoints: 6 }))
+  assert.ok(
+    (lasting?.casts ?? []).some((cast) => cast.spellId === 1),
+    'but kept up in a fight that will last'
+  )
+
+  // Nothing planned always says why. Only a fire spell here, so asking for
+  // water leaves nothing at all.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    2: Object.assign(spellOf({ apCost: 3 }), { id: 2 })
+  }
+  const filteredOut = planTurn(gameWindow, context({ elements: ['water'] }))
+  assert.ok(
+    filteredOut?.diagnostic?.includes('filtered out by the chosen elements'),
+    `the element filter explains itself, got ${filteredOut?.diagnostic}`
+  )
+
+  const broke = planTurn(gameWindow, context({ actionPoints: 1 }))
+  assert.ok(
+    broke?.diagnostic?.includes('action point'),
+    `an unaffordable turn explains itself, got ${broke?.diagnostic}`
+  )
+
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {}
+  const noBook = planTurn(gameWindow, context({}))
+  assert.ok(
+    noBook?.diagnostic?.includes('spellbook'),
+    `an unreadable spellbook explains itself, got ${noBook?.diagnostic}`
+  )
+
+  // --- statistics and resistances decide which spell hits hardest ---
+  gameWindow.gui.playerData.characters.mainCharacter.characteristics = {
+    strength: { base: 100, additional: 0, objectsAndMountBonus: 200, alignGiftBonus: 0, contextModif: 0 },
+    intelligence: { base: 50, additional: 0, objectsAndMountBonus: 0, alignGiftBonus: 0, contextModif: 0 },
+    chance: { base: 0 },
+    agility: { base: 0 },
+    damagesBonusPercent: { base: 0 },
+    allDamagesBonus: { base: 0 }
+  }
+
+  // Same base damage, one earth and one fire.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    10: Object.assign(
+      spellOf({ apCost: 3, effects: [{ effectId: 96, diceNum: 20, diceSide: 20, zoneSize: 0 }] }),
+      { id: 10 }
+    ),
+    11: Object.assign(
+      spellOf({ apCost: 3, effects: [{ effectId: 100, diceNum: 20, diceSide: 20, zoneSize: 0 }] }),
+      { id: 11 }
+    )
+  }
+
+  // One monster alone, resisting earth heavily.
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[1].data.stats.lifePoints = 5000
+  state.fighters[1].data.stats.earthElementResistPercent = { base: 80 }
+  state.fighters[1].data.stats.fireElementResistPercent = { base: 0 }
+  state.fighters[2].data.alive = false
+
+  const versusEarthResist = planTurn(gameWindow, context({ actionPoints: 3 }))
+  assert.strictEqual(
+    versusEarthResist?.casts[0]?.spellId,
+    11,
+    'against an earth-resistant monster the fire spell is chosen, despite the bigger strength'
+  )
+
+  // Flip the resistances and the choice must follow.
+  state.fighters[1].data.stats.earthElementResistPercent = { base: 0 }
+  state.fighters[1].data.stats.fireElementResistPercent = { base: 90 }
+
+  const versusFireResist = planTurn(gameWindow, context({ actionPoints: 3 }))
+  assert.strictEqual(
+    versusFireResist?.casts[0]?.spellId,
+    10,
+    'and the earth spell when fire is the resisted one'
+  )
+
+  state.fighters[2].data.alive = true
+  delete state.fighters[1].data.stats.earthElementResistPercent
+  delete state.fighters[1].data.stats.fireElementResistPercent
+  delete gameWindow.gui.playerData.characters.mainCharacter.characteristics
+
+  console.log('ok - the AI plans spells, areas and position together')
+}
+
+async function testSpellPlannerEdgeCases() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-planner.ts'))
+  const { planTurn, castableCells } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'spell-planner.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/zones.ts'))
+  const { areaCells } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'zones.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellDistance, cellFromCoordinates, cellCoordinates } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/damage.ts'))
+  const { damageAgainst } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'damage.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const me = 280
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+
+  const spellOf = (over) => ({
+    id: 1,
+    spell: { nameId: 'Test' },
+    spellLevel: Object.assign(
+      {
+        apCost: 3,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        needFreeCell: false,
+        needTakenCell: false,
+        effects: [{ effectId: 100, diceNum: 20, diceSide: 20, zoneSize: 0 }]
+      },
+      over
+    )
+  })
+
+  const context = (over) =>
+    Object.assign(
+      {
+        turn: 1,
+        actionPoints: 6,
+        movementPoints: 0,
+        elements: [],
+        lastCastTurn: new Map(),
+        canMove: false,
+        keepDistance: false
+      },
+      over
+    )
+
+  const spells = (map) => {
+    gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = map
+  }
+
+  // --- hitting a monster without aiming at it ---
+  // A minimum range of 2 forbids aiming at the monster in contact, but the
+  // area still reaches it from a cell two steps away.
+  const adjacent = cellFromCoordinates(11, 10)
+  state.fighters[1].data.disposition.cellId = adjacent
+  state.fighters[1].data.stats.lifePoints = 400
+  state.fighters[2].data.alive = false
+  assert.strictEqual(cellDistance(me, adjacent), 1, 'the monster is in contact')
+
+  spells({
+    1: spellOf({
+      minRange: 2,
+      range: 6,
+      effects: [{ effectId: 100, diceNum: 25, diceSide: 25, zoneShape: 67, zoneSize: 1 }]
+    })
+  })
+
+  const indirect = planTurn(gameWindow, context({ actionPoints: 3 }))
+  const first = indirect?.casts[0]
+  assert.ok(first, 'a cast is found even though the monster cannot be aimed at')
+  assert.notStrictEqual(first.cellId, adjacent, 'the monster cell itself is out of the minimum range')
+  assert.deepStrictEqual(first.hits, [20], 'and the area reaches it anyway')
+
+  // --- line of sight, per spell ---
+  const behindWall = cellFromCoordinates(14, 10)
+  gameWindow.isoEngine.mapRenderer.isInLineOfSight = (from, to) => to !== behindWall
+
+  const seeing = castableCells(
+    gameWindow,
+    { id: 1, range: 8, minRange: 0, castInLine: false, castInDiagonal: false, needsLineOfSight: true, needsFreeCell: false, needsTakenCell: false, zone: { shape: 'point', size: 0, minSize: 0 } },
+    me,
+    new Set()
+  )
+  const blind = castableCells(
+    gameWindow,
+    { id: 1, range: 8, minRange: 0, castInLine: false, castInDiagonal: false, needsLineOfSight: false, needsFreeCell: false, needsTakenCell: false, zone: { shape: 'point', size: 0, minSize: 0 } },
+    me,
+    new Set()
+  )
+  assert.ok(!seeing.includes(behindWall), 'a spell that needs sight cannot be aimed behind the wall')
+  assert.ok(blind.includes(behindWall), 'one that does not, can')
+  delete gameWindow.isoEngine.mapRenderer.isInLineOfSight
+
+  // --- diagonal-only casting ---
+  const diagonalOnly = castableCells(
+    gameWindow,
+    { id: 1, range: 6, minRange: 1, castInLine: false, castInDiagonal: true, needsLineOfSight: false, needsFreeCell: false, needsTakenCell: false, zone: { shape: 'point', size: 0, minSize: 0 } },
+    me,
+    new Set()
+  )
+  const origin = cellCoordinates(me)
+  assert.ok(diagonalOnly.length > 0, 'a diagonal spell has somewhere to go')
+  assert.ok(
+    diagonalOnly.every((cell) => {
+      const point = cellCoordinates(cell)
+      return Math.abs(point.x - origin.x) === Math.abs(point.y - origin.y)
+    }),
+    'and only on a diagonal'
+  )
+
+  // --- how often a spell may be cast ---
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[1].data.stats.lifePoints = 5000
+  spells({ 1: spellOf({ apCost: 2, maxCastPerTurn: 1 }) })
+
+  const limited = planTurn(gameWindow, context({ actionPoints: 6 }))
+  assert.strictEqual(
+    (limited?.casts ?? []).filter((cast) => cast.spellId === 1).length,
+    1,
+    'a spell limited to one cast a turn is cast once'
+  )
+
+  // ...and how often on the same monster.
+  state.fighters[2].data.alive = true
+  state.fighters[2].data.disposition.cellId = 350
+  state.fighters[2].data.stats.lifePoints = 5000
+  spells({ 1: spellOf({ apCost: 3, maxCastPerTarget: 1 }) })
+
+  const perTarget = planTurn(gameWindow, context({ actionPoints: 6 }))
+  const touched = (perTarget?.casts ?? []).flatMap((cast) => cast.hits)
+  assert.ok(perTarget && perTarget.casts.length === 2, 'both casts are planned')
+  assert.strictEqual(new Set(touched).size, 2, 'the second one goes to the other monster')
+
+  // --- never stand in our own area ---
+  const nextToMe = cellFromCoordinates(11, 10)
+  state.fighters[1].data.disposition.cellId = nextToMe
+  state.fighters[2].data.alive = false
+  spells({
+    1: spellOf({
+      apCost: 3,
+      minRange: 0,
+      effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneShape: 67, zoneSize: 2 }]
+    })
+  })
+
+  const selfSafe = planTurn(gameWindow, context({ actionPoints: 3 }))
+  for (const cast of selfSafe?.casts ?? []) {
+    assert.ok(
+      !areaCells({ shape: 'circle', size: 2, minSize: 0 }, me, cast.cellId).includes(me),
+      'a cast whose area would cover the caster is avoided'
+    )
+  }
+
+  // --- a boost goes before the attack ---
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[1].data.stats.lifePoints = 5000
+  spells({
+    1: Object.assign(
+      spellOf({ apCost: 2, effects: [{ effectId: 128, diceNum: 40, diceSide: 40, zoneSize: 0 }] }),
+      { id: 1 }
+    ),
+    2: Object.assign(
+      spellOf({ apCost: 4, effects: [{ effectId: 100, diceNum: 60, diceSide: 60, zoneSize: 0 }] }),
+      { id: 2 }
+    )
+  })
+
+  const opener = planTurn(gameWindow, context({ actionPoints: 6 }))
+  assert.strictEqual(opener?.casts[0]?.spellId, 1, 'the boost opens the turn')
+  assert.strictEqual(opener?.casts[1]?.spellId, 2, 'and the attack follows with what is left')
+  assert.strictEqual(
+    opener.casts.filter((cast) => cast.spellId === 1).length,
+    1,
+    'a buff already up is never cast twice in a turn'
+  )
+
+  // With only enough points for one, the attack wins over the boost.
+  const tight = planTurn(gameWindow, context({ actionPoints: 4 }))
+  assert.strictEqual(
+    tight?.casts[0]?.spellId,
+    2,
+    'a boost is not cast when it would leave nothing to attack with'
+  )
+
+  // --- healing only what is wounded ---
+  spells({
+    1: Object.assign(
+      spellOf({ apCost: 2, range: 6, effects: [{ effectId: 108, diceNum: 50, diceSide: 50, zoneSize: 0 }] }),
+      { id: 1 }
+    )
+  })
+  state.fighters[0].data.stats.lifePoints = 500
+  state.fighters[0].data.stats.maxLifePoints = 500
+
+  const healthy = planTurn(gameWindow, context({ actionPoints: 4 }))
+  assert.ok(
+    !(healthy?.casts ?? []).some((cast) => cast.spellId === 1),
+    'a heal is not cast on someone at full life'
+  )
+
+  state.fighters[0].data.stats.lifePoints = 100
+  const wounded = planTurn(gameWindow, context({ actionPoints: 4 }))
+  assert.ok(
+    (wounded?.casts ?? []).some((cast) => cast.spellId === 1),
+    'but it is when life is missing'
+  )
+  state.fighters[0].data.stats.lifePoints = 500
+
+  // --- flat bonuses and flat reduction ---
+  const profile = {
+    stat: { fire: 0, earth: 0, water: 0, air: 0, neutral: 0 },
+    damagePercent: 0,
+    flat: { fire: 10, earth: 0, water: 0, air: 0, neutral: 0 },
+    finalPercent: 0
+  }
+  const spell = {
+    damage: 20,
+    effects: [{ kind: 'damage', element: 'fire', average: 20, delay: 0, effectId: 100, zone: { shape: 'point', size: 0, minSize: 0 } }]
+  }
+  const plain = { id: 1, stats: {} }
+  const armoured = { id: 2, stats: { fireElementReduction: { base: 5 } } }
+  const resistant = { id: 3, stats: { fireElementResistPercent: { base: 50 } } }
+
+  assert.strictEqual(damageAgainst(spell, plain, profile), 30, 'the flat bonus is added')
+  assert.strictEqual(damageAgainst(spell, armoured, profile), 25, 'the flat reduction is taken off')
+  assert.strictEqual(damageAgainst(spell, resistant, profile), 15, 'and the percentage applies first')
+
+  // --- the remaining zone shapes ---
+  const square = areaCells({ shape: 'square', size: 1, minSize: 0 }, me, 336)
+  assert.ok(square.length >= 5, 'a square covers more than a cross of the same size')
+
+  const bar = areaCells({ shape: 'perpendicular', size: 1, minSize: 0 }, me, 336)
+  assert.ok(bar.includes(336), 'a perpendicular bar covers the aimed cell')
+
+  const diagonal = areaCells({ shape: 'diagonal-cross', size: 1, minSize: 0 }, me, 336)
+  assert.ok(diagonal.includes(336), 'so does a diagonal cross')
+
+  const unknown = areaCells({ shape: 'unknown', size: 1, minSize: 0 }, me, 336)
+  assert.ok(unknown.length > 1, 'an unknown shape falls back to a circle rather than a point')
+
+  state.fighters[2].data.alive = true
+  console.log('ok - spell planner edge cases')
+}
+
+async function testTurnOptimality() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-planner.ts'))
+  const { planTurn } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'spell-planner.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellFromCoordinates, cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const me = 280
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+
+  const level = (over) =>
+    Object.assign(
+      {
+        apCost: 3,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false
+      },
+      over
+    )
+
+  const spell = (id, name, over) => ({
+    id,
+    spell: { nameId: name },
+    spellLevel: level(over)
+  })
+
+  const spells = (map) => {
+    gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = map
+  }
+
+  const plan = (over) =>
+    planTurn(
+      gameWindow,
+      Object.assign(
+        {
+          turn: 1,
+          actionPoints: 6,
+          movementPoints: 0,
+          elements: [],
+          lastCastTurn: new Map(),
+          canMove: false,
+          keepDistance: false
+        },
+        over
+      )
+    )
+
+  const damage = (plan) =>
+    (plan?.casts ?? []).reduce((total, cast) => total + cast.value, 0)
+
+  // --- points spent where they are worth the most ---
+  // Four points: one big cast is worth forty, two small ones sixty together.
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[1].data.stats.lifePoints = 9000
+  state.fighters[2].data.alive = false
+
+  spells({
+    1: spell(1, 'Big', { apCost: 4, effects: [{ effectId: 100, diceNum: 40, diceSide: 40, zoneSize: 0 }] }),
+    2: spell(2, 'Small', { apCost: 2, effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneSize: 0 }] })
+  })
+
+  const efficient = plan({ actionPoints: 4 })
+  const smallCasts = (efficient?.casts ?? []).filter((cast) => cast.spellId === 2).length
+  assert.strictEqual(smallCasts, 2, 'the two cheap casts are preferred to the single big one')
+  assert.ok(damage(efficient) >= 60, `and the turn is worth more (${damage(efficient)})`)
+
+  // And the big one wins when the cheap one cannot be repeated: thirty once
+  // is worth less than forty.
+  spells({
+    1: spell(1, 'Big', { apCost: 4, effects: [{ effectId: 100, diceNum: 40, diceSide: 40, zoneSize: 0 }] }),
+    2: spell(2, 'Small', {
+      apCost: 2,
+      maxCastPerTurn: 1,
+      effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneSize: 0 }]
+    })
+  })
+
+  const capped = plan({ actionPoints: 4 })
+  assert.strictEqual(
+    capped?.casts[0]?.spellId,
+    1,
+    'a cheap spell limited to one cast no longer beats the big one'
+  )
+
+  // --- finishing a monster off ---
+  state.fighters[2].data.alive = true
+  state.fighters[2].data.disposition.cellId = 350
+  state.fighters[1].data.stats.lifePoints = 9000
+  state.fighters[2].data.stats.lifePoints = 20
+
+  spells({
+    1: spell(1, 'Arrow', { apCost: 3, effects: [{ effectId: 100, diceNum: 25, diceSide: 25, zoneSize: 0 }] })
+  })
+
+  const finisher = plan({ actionPoints: 3 })
+  assert.deepStrictEqual(
+    finisher?.casts[0]?.hits,
+    [21],
+    'the monster that can be finished off is the one hit'
+  )
+
+  // --- an area on two beats a stronger single hit ---
+  const pair = cellFromCoordinates(12, 10)
+  const beside = cellFromCoordinates(13, 10)
+  state.fighters[1].data.disposition.cellId = pair
+  state.fighters[2].data.disposition.cellId = beside
+  state.fighters[1].data.stats.lifePoints = 9000
+  state.fighters[2].data.stats.lifePoints = 9000
+  assert.strictEqual(cellDistance(pair, beside), 1, 'the two monsters stand side by side')
+
+  spells({
+    1: spell(1, 'Single', { apCost: 3, effects: [{ effectId: 100, diceNum: 45, diceSide: 45, zoneSize: 0 }] }),
+    2: spell(2, 'Area', {
+      apCost: 3,
+      effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneShape: 67, zoneSize: 1 }]
+    })
+  })
+
+  const grouped = plan({ actionPoints: 3 })
+  assert.strictEqual(grouped?.casts[0]?.spellId, 2, 'the area is chosen: sixty over forty-five')
+  assert.strictEqual(grouped?.casts[0]?.hits.length, 2, 'and it lands on both')
+
+  // --- stepping back to be able to cast at all ---
+  // A minimum range of three, with the monster in contact: the only way to
+  // cast is to walk away first.
+  const contact = cellFromCoordinates(11, 10)
+  state.fighters[1].data.disposition.cellId = contact
+  state.fighters[2].data.alive = false
+  spells({
+    1: spell(1, 'Long bow', {
+      apCost: 3,
+      minRange: 3,
+      range: 8,
+      effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneSize: 0 }]
+    })
+  })
+
+  const stuck = plan({ actionPoints: 3, movementPoints: 0, canMove: false })
+  assert.strictEqual((stuck?.casts ?? []).length, 0, 'in contact, the long bow cannot be cast')
+
+  const backing = plan({ actionPoints: 3, movementPoints: 3, canMove: true })
+  assert.ok(
+    backing?.actions[0]?.type === 'move',
+    'so the turn opens by stepping away'
+  )
+  assert.ok((backing?.casts ?? []).length > 0, 'and the shot follows')
+
+  // --- nothing is wasted on a monster already dead in the plan ---
+  state.fighters[2].data.alive = true
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[2].data.disposition.cellId = 350
+  state.fighters[1].data.stats.lifePoints = 10
+  state.fighters[2].data.stats.lifePoints = 9000
+  spells({
+    1: spell(1, 'Arrow', { apCost: 3, effects: [{ effectId: 100, diceNum: 50, diceSide: 50, zoneSize: 0 }] })
+  })
+
+  const spread = plan({ actionPoints: 6 })
+  const targets = (spread?.casts ?? []).map((cast) => cast.hits.join(','))
+  assert.strictEqual(targets.length, 2, 'both casts are used')
+  assert.notStrictEqual(targets[0], targets[1], 'the second goes elsewhere once the first kills')
+
+  console.log('ok - the turn is planned as a whole, not cast by cast')
+}
+
+async function testActionPointBudget() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-planner.ts'))
+  const { planTurn } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'spell-planner.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[0].data.stats.actionPoints = 8
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[1].data.stats.lifePoints = 9000
+  state.fighters[2].data.disposition.cellId = 350
+  state.fighters[2].data.stats.lifePoints = 9000
+
+  // Three action points a cast, eight available: two casts, never four.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: {
+      id: 1,
+      spell: { nameId: 'Arrow' },
+      spellLevel: {
+        apCost: 3,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 100, diceNum: 20, diceSide: 20, zoneSize: 0 }]
+      }
+    }
+  }
+
+  const plan = planTurn(gameWindow, {
+    turn: 1,
+    actionPoints: 8,
+    movementPoints: 0,
+    elements: [],
+    lastCastTurn: new Map(),
+    canMove: false,
+    keepDistance: false
+  })
+  const planned = (plan?.casts ?? []).reduce((total, cast) => total + cast.apCost, 0)
+  assert.ok(planned <= 8, `the plan stays within the points (${planned})`)
+
+  // And the AI holds to it even when the client never decrements its counter,
+  // which is what had it cast thirteen points' worth of spells out of eight.
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [],
+    turnCombos: [],
+    targetStrategy: 'nearest',
+    autoReady: false,
+    placeBeforeReady: false,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: false,
+    approachEnemies: false,
+    defaultSpellRange: 1,
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    spreadCasts: false,
+    spellMode: 'auto',
+    elements: [],
+    brain: 'rules',
+    ollamaEndpoint: '',
+    ollamaModel: '',
+    ollamaTimeoutMs: 500,
+    preferChallenges: false
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 900))
+
+  const casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.ok(casts.length > 0, 'the turn is played')
+  assert.ok(
+    casts.length <= 2,
+    `at three points a cast, eight points buy two of them, not ${casts.length}`
+  )
+
+  dispose()
+  console.log('ok - the turn stays inside its action points')
+}
+
+async function testUtilitySpellsAreNotBuffs() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-planner.ts'))
+  const { planTurn } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'spell-planner.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[1].data.stats.lifePoints = 9000
+  state.fighters[2].data.alive = false
+
+  const level = (over) =>
+    Object.assign(
+      {
+        apCost: 3,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false
+      },
+      over
+    )
+
+  // A debuff whose effect this code does not know, and a plain attack.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: {
+      id: 1,
+      spell: { nameId: 'Fleche Aveuglante' },
+      spellLevel: level({ apCost: 2, effects: [{ effectId: 9999, diceNum: 5, diceSide: 5, zoneSize: 0 }] })
+    },
+    2: {
+      id: 2,
+      spell: { nameId: 'Fleche de Barrage' },
+      spellLevel: level({ apCost: 4, effects: [{ effectId: 100, diceNum: 30, diceSide: 30, zoneSize: 0 }] })
+    }
+  }
+
+  const plan = planTurn(gameWindow, {
+    turn: 1,
+    actionPoints: 6,
+    movementPoints: 0,
+    elements: [],
+    lastCastTurn: new Map(),
+    canMove: false,
+    keepDistance: false
+  })
+
+  assert.ok(
+    !(plan?.casts ?? []).some((cast) => cast.spellId === 1),
+    'a spell whose effects are not recognised is never cast as if it were a buff'
+  )
+  assert.ok(
+    (plan?.casts ?? []).some((cast) => cast.spellId === 2),
+    'the real attack is'
+  )
+
+  // Poison still counts, at a discount, rather than being ignored.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    3: {
+      id: 3,
+      spell: { nameId: 'Fleche Empoisonnee' },
+      spellLevel: level({
+        apCost: 3,
+        effects: [{ effectId: 100, diceNum: 40, diceSide: 40, zoneSize: 0, delay: 1 }]
+      })
+    }
+  }
+  const poison = planTurn(gameWindow, {
+    turn: 1,
+    actionPoints: 6,
+    movementPoints: 0,
+    elements: [],
+    lastCastTurn: new Map(),
+    canMove: false,
+    keepDistance: false
+  })
+  assert.ok(
+    (poison?.casts ?? []).some((cast) => cast.spellId === 3),
+    'a damage-over-time spell is still usable'
+  )
+
+  state.fighters[2].data.alive = true
+  console.log('ok - utility spells are not mistaken for buffs')
+}
+
+async function testSightBlockedByFighters() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { hasLineOfSight, cellFromCoordinates } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow } = createFakeGameWindow()
+  const from = cellFromCoordinates(10, 10)
+  const middle = cellFromCoordinates(12, 10)
+  const behind = cellFromCoordinates(14, 10)
+
+  assert.strictEqual(
+    hasLineOfSight(gameWindow, from, behind),
+    true,
+    'an empty line is clear'
+  )
+  assert.strictEqual(
+    hasLineOfSight(gameWindow, from, behind, new Set([middle])),
+    false,
+    'a fighter standing in the way blocks sight, as it does in game'
+  )
+  assert.strictEqual(
+    hasLineOfSight(gameWindow, from, middle, new Set([middle])),
+    true,
+    'but the target itself never blocks its own line'
+  )
+
+  console.log('ok - fighters block the line of sight')
+}
+
+/**
+ * The character's Portée, and the buff that raises it mid-turn.
+ *
+ * A spell's printed range is only its base. Everything flagged boostable
+ * reaches as far as the range characteristic takes it, and a bow mastery
+ * raises that characteristic for a couple of turns — which is the whole point
+ * of casting it before shooting rather than after.
+ */
+async function testRangeAndItsBoost() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-catalogue.ts'))
+  const { readSpellCatalogue } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'spell-catalogue.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-planner.ts'))
+  const { planTurn } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'spell-planner.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellFromCoordinates, cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const arrow = (over) => ({
+    spell: { nameId: 'Arrow' },
+    spellLevel: Object.assign(
+      {
+        apCost: 3,
+        range: 5,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 100, diceNum: 20, diceSide: 20, zoneSize: 0 }]
+      },
+      over
+    )
+  })
+
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: { id: 1, ...arrow({ rangeCanBeBoosted: true }) },
+    2: { id: 2, ...arrow({ rangeCanBeBoosted: false }) }
+  }
+
+  // Three points of Portée from gear, worn by the fighter in the fight.
+  state.fighters[0].data.stats.range = 3
+
+  const catalogue = readSpellCatalogue(gameWindow)
+  assert.strictEqual(catalogue.find((spell) => spell.id === 1).range, 8, 'a boostable spell takes the Portée')
+  assert.strictEqual(catalogue.find((spell) => spell.id === 2).range, 5, 'a fixed one does not')
+
+  // Most spells take the Portée and the ones that do not say so, so a build
+  // that never mentions the flag must not lose the bonus in silence.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    3: { id: 3, ...arrow({}) }
+  }
+  assert.strictEqual(
+    readSpellCatalogue(gameWindow).find((spell) => spell.id === 3).range,
+    8,
+    'a spell whose build never mentions the flag is treated as taking it'
+  )
+
+  // And a build that works the range out itself is the authority on it.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    4: {
+      id: 4,
+      ...arrow({ rangeCanBeBoosted: true }),
+      getRange: () => 12
+    }
+  }
+  assert.strictEqual(
+    readSpellCatalogue(gameWindow).find((spell) => spell.id === 4).range,
+    12,
+    'the range the client computes wins over the sum'
+  )
+
+  // Back to the pair the rest of this test plans with.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: { id: 1, ...arrow({ rangeCanBeBoosted: true }) },
+    2: { id: 2, ...arrow({ rangeCanBeBoosted: false }) }
+  }
+
+  // Only the boostable arrow reaches: it is the one that must be cast.
+  const me = cellFromCoordinates(10, 10)
+  const enemy = cellFromCoordinates(17, 10)
+  assert.strictEqual(cellDistance(me, enemy), 7, 'the target sits between the two ranges')
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+  state.fighters[1].data.disposition.cellId = enemy
+  state.fighters[2].data.disposition.cellId = cellFromCoordinates(18, 10)
+
+  const context = (over) =>
+    Object.assign(
+      {
+        turn: 1,
+        actionPoints: 6,
+        movementPoints: 0,
+        elements: [],
+        lastCastTurn: new Map(),
+        canMove: false,
+        keepDistance: false
+      },
+      over
+    )
+
+  const reach = planTurn(gameWindow, context({}))
+  assert.ok(reach.casts.length > 0, 'the Portée puts the target in range')
+  assert.ok(
+    reach.casts.every((cast) => cast.spellId === 1),
+    'and only the spell that takes it is cast'
+  )
+
+  // Now the buff: without Portée from gear, a mastery grants it for the turn.
+  state.fighters[0].data.stats.range = 0
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: {
+      id: 1,
+      spell: { nameId: 'Bow Mastery' },
+      spellLevel: {
+        apCost: 2,
+        range: 0,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        minCastInterval: 3,
+        effects: [{ effectId: 117, diceNum: 3, diceSide: 3, zoneSize: 0 }]
+      }
+    },
+    2: { id: 2, ...arrow({ rangeCanBeBoosted: true, apCost: 3 }) }
+  }
+
+  const buffed = readSpellCatalogue(gameWindow)
+  assert.strictEqual(buffed.find((spell) => spell.id === 1).rangeBoost, 3, 'the mastery is read as Portée')
+  assert.strictEqual(buffed.find((spell) => spell.id === 2).range, 5, 'the arrow is still short on its own')
+
+  const plan = planTurn(gameWindow, context({ actionPoints: 8 }))
+  assert.ok(plan.casts.length >= 2, 'the buff is not the whole turn')
+  assert.strictEqual(plan.casts[0].spellId, 1, 'it comes first')
+  assert.ok(
+    plan.casts.slice(1).some((cast) => cast.spellId === 2 && cast.hits.length > 0),
+    'and the range it grants is used to shoot in the same turn'
+  )
+
+  // A buff that opens nothing must not be cast in place of an attack.
+  const closeUp = cellFromCoordinates(13, 10)
+  state.fighters[1].data.disposition.cellId = closeUp
+  const near = planTurn(gameWindow, context({ actionPoints: 3 }))
+  assert.ok(
+    near.casts.every((cast) => cast.spellId === 2),
+    'with a single attack affordable, the points go to the attack'
+  )
+
+  console.log('ok - range, its characteristic and the buff that raises it')
+}
+
+/**
+ * A cast the server refuses must not cost the turn.
+ *
+ * "Un obstacle gêne votre vue" comes back as silence on the wire: the request
+ * is simply never answered. Waiting for a confirmation that will not come held
+ * the turn until the clock ran out; the AI has to notice, drop that cast and
+ * play something else.
+ */
+async function testRefusedCastIsReplaced() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  const logs = []
+  const combatSettings = {
+    ...combatDefaults,
+    spellMode: 'auto',
+    approachEnemies: false,
+    endTurnAfterCombo: true,
+    combo: []
+  }
+
+  // Two arrows: the strong one will be refused, the weak one must be played.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: {
+      id: 1,
+      spell: { nameId: 'Refused' },
+      spellLevel: {
+        apCost: 4,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 100, diceNum: 40, diceSide: 40, zoneSize: 0 }]
+      }
+    },
+    2: {
+      id: 2,
+      spell: { nameId: 'Allowed' },
+      spellLevel: {
+        apCost: 3,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 100, diceNum: 10, diceSide: 10, zoneSize: 0 }]
+      }
+    }
+  }
+
+  state.refuseCast = (data) => data.spellId === 1
+  state.startFight()
+
+  const dispose = initCombatAi(gameWindow, 'tab-refused', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 4000))
+
+  const casts = state.sent.filter((message) => message.name === 'GameActionFightCastRequestMessage')
+  const refused = casts.filter((message) => message.data.spellId === 1)
+  const played = casts.filter((message) => message.data.spellId === 2)
+
+  assert.ok(refused.length > 0, 'the strong spell is tried first')
+  assert.ok(
+    logs.some((line) => line.includes('refused')),
+    `the refusal is reported (${logs.join(' | ')})`
+  )
+  assert.ok(played.length > 0, 'and the turn carries on with another spell')
+
+  const sameCellTwice = refused.filter(
+    (message) => message.data.cellId === refused[0].data.cellId
+  )
+  assert.strictEqual(sameCellTwice.length, 1, 'the refused cast is never asked for twice')
+
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameFightTurnFinishMessage'),
+    'and the turn ends instead of running out the clock'
+  )
+
+  dispose()
+  console.log('ok - a refused cast is replaced, not waited on')
+}
+
+/**
+ * Taking a starting cell when the offer and the monsters arrive late.
+ *
+ * The preparation phase sends the cells you may stand on and places the
+ * monsters in no fixed order. Choosing before either is known scores every
+ * cell the same and takes the first one, which looks from the outside like a
+ * placement that does nothing at all.
+ */
+async function testPlacementWaitsForTheOffer() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-bridge.ts'))
+  const { areCellsAligned } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-bridge.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  const logs = []
+  const combatSettings = {
+    ...combatDefaults,
+    placeBeforeReady: true,
+    autoReady: true,
+    readyDelayMs: 40,
+    positioning: 'keep-distance'
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-placement', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  // The fight opens with nobody placed and no cells offered yet.
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = null
+  state.fighters[2].data.disposition.cellId = null
+  gameWindow.gui.fightManager.isFightStarted = true
+  gameWindow.gui.playerData.isFighting = true
+  state.emit('GameFightStartingMessage', {})
+
+  // Both arrive a moment later, as they do in a real preparation phase.
+  await new Promise((resolve) => setTimeout(resolve, 120))
+  state.fighters[1].data.disposition.cellId = 336
+  state.fighters[2].data.disposition.cellId = 336
+  const contact = 322
+  const shooting = 267
+  assert.ok(areCellsAligned(contact, 336), 'one offered cell is on the enemy line')
+  state.emit('GameFightPlacementPossiblePositionsMessage', { positions: [contact, shooting] })
+
+  await new Promise((resolve) => setTimeout(resolve, 900))
+
+  const placement = state.sent.filter(
+    (message) => message.name === 'GameFightPlacementPositionRequestMessage'
+  )
+  assert.strictEqual(placement.length, 1, `one starting cell is asked for (${logs.join(' | ')})`)
+  assert.strictEqual(
+    placement[0].data.cellId,
+    shooting,
+    'and it is the one furthest from the monster, not the one in contact with it'
+  )
+
+  const ready = state.sent.findIndex((message) => message.name === 'GameFightReadyMessage')
+  const placedAt = state.sent.findIndex(
+    (message) => message.name === 'GameFightPlacementPositionRequestMessage'
+  )
+  assert.ok(placedAt < ready, 'the cell is taken before pressing ready')
+
+  dispose()
+  console.log('ok - a starting cell is taken once the offer and the monsters are known')
+}
+
+/**
+ * A combo aims by the spell's own rules, not at the target's cell.
+ *
+ * Concentration is thrown from two cells away and covers a cross: a monster
+ * in melee cannot be aimed at directly, but a cell beside it catches it — and
+ * with two monsters together, one cell catches both.
+ */
+async function testComboAimsAtTheBestCell() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellFromCoordinates, cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/zones.ts'))
+  const { areaCells } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'zones.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  const logs = []
+  const combatSettings = {
+    ...combatDefaults,
+    combo: [{ id: 3, name: 'Concentration' }],
+    targetStrategy: 'nearest',
+    spreadCasts: false,
+    defaultSpellRange: 4
+  }
+
+  // Concentration off the game's own sheet: 3 AP, range 2-4, cross of 1.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    3: {
+      id: 3,
+      spell: { nameId: 'Concentration' },
+      spellLevel: {
+        apCost: 3,
+        range: 4,
+        minRange: 2,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 97, diceNum: 20, diceSide: 22, zoneShape: 43, zoneSize: 1 }]
+      }
+    }
+  }
+
+  // Two monsters side by side, one of them in melee.
+  const me = cellFromCoordinates(10, 10)
+  const melee = cellFromCoordinates(11, 10)
+  const behind = cellFromCoordinates(12, 10)
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+  state.fighters[1].data.disposition.cellId = melee
+  state.fighters[2].data.disposition.cellId = behind
+  state.startFight()
+
+  const dispose = initCombatAi(gameWindow, 'tab-aim', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 600))
+
+  const casts = state.sent.filter((message) => message.name === 'GameActionFightCastRequestMessage')
+  assert.strictEqual(casts.length, 1, `the spell is cast (${logs.join(' | ')})`)
+
+  const cellId = casts[0].data.cellId
+  assert.notStrictEqual(cellId, melee, 'not at the monster in melee, which is inside the minimum range')
+  assert.ok(cellDistance(me, cellId) >= 2, 'the cast respects the minimum range')
+
+  const covered = areaCells({ shape: 'cross', size: 1, minSize: 0 }, me, cellId)
+  assert.ok(covered.includes(melee), 'and its cross still covers the monster in melee')
+  assert.ok(covered.includes(behind), 'along with the one behind it')
+
+  dispose()
+  console.log('ok - a combo aims beside a melee monster to cover it')
+}
+
+/**
+ * A corpse is never aimed at.
+ *
+ * The client keeps a dead monster in its list until the death has played out,
+ * and reports it with no life left rather than absent. A plan made in between
+ * throws the next spell at a body — and lands it on whatever else the area
+ * happens to cover.
+ */
+async function testCorpsesAreNotTargeted() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/spell-planner.ts'))
+  const { planTurn } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'spell-planner.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: {
+      id: 1,
+      spell: { nameId: 'Arrow' },
+      spellLevel: {
+        apCost: 3,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 100, diceNum: 20, diceSide: 20, zoneSize: 0 }]
+      }
+    }
+  }
+
+  const context = (over) =>
+    Object.assign(
+      {
+        turn: 1,
+        actionPoints: 6,
+        movementPoints: 0,
+        elements: [],
+        lastCastTurn: new Map(),
+        canMove: false,
+        keepDistance: false
+      },
+      over
+    )
+
+  // The first monster has no life left but is still flagged alive.
+  state.fighters[1].data.stats.lifePoints = 0
+  const plan = planTurn(gameWindow, context({}))
+  assert.ok(plan.casts.length > 0, 'the fight goes on')
+  assert.ok(
+    plan.casts.every((cast) => !cast.hits.includes(20)),
+    'nothing is aimed at the monster with no life left'
+  )
+
+  // And a death the fight announced wins over whatever the client still lists.
+  state.fighters[1].data.stats.lifePoints = 120
+  const ignored = planTurn(gameWindow, context({ ignoreFighters: new Set([20]) }))
+  assert.ok(
+    ignored.casts.every((cast) => !cast.hits.includes(20)),
+    'a monster announced dead is left alone'
+  )
+  assert.ok(
+    ignored.casts.some((cast) => cast.hits.includes(21)),
+    'and the turn moves on to the next one'
+  )
+
+  console.log('ok - corpses are not aimed at')
+}
+
+/**
+ * A combo with a line-only spell walks onto that line.
+ *
+ * "No cell in its straight-line reach covers the target", turn after turn, is
+ * a spell that can never be cast from where the AI keeps standing. Whether to
+ * line up is not a preference when the combo holds a spell that must be
+ * thrown along an axis — it is the difference between casting and skipping.
+ */
+async function testLineSpellDrivesThePosition() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellFromCoordinates, cellDistance, areCellsAligned } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  const logs = []
+  const combatSettings = {
+    ...combatDefaults,
+    combo: [{ id: 2, name: 'Barrage' }],
+    approachEnemies: true,
+    // Even with lining up turned off, the spell's own rule decides.
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    targetStrategy: 'nearest',
+    defaultSpellRange: 7
+  }
+
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    2: {
+      id: 2,
+      spell: { nameId: 'Barrage' },
+      spellLevel: {
+        apCost: 4,
+        range: 7,
+        minRange: 1,
+        castInLine: true,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 97, diceNum: 26, diceSide: 29, zoneShape: 84, zoneSize: 1 }]
+      }
+    }
+  }
+
+  // The enemy is in range but off any axis, and the second one is far away.
+  const me = cellFromCoordinates(10, 10)
+  const enemy = cellFromCoordinates(13, 12)
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+  state.fighters[1].data.disposition.cellId = enemy
+  state.fighters[2].data.disposition.cellId = cellFromCoordinates(25, 25)
+  state.mpPerTurn = 5
+  assert.ok(!areCellsAligned(me, enemy), 'the fight opens off the enemy line')
+  state.startFight()
+
+  const dispose = initCombatAi(gameWindow, 'tab-line', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 700))
+
+  assert.strictEqual(state.moves.length, 1, `the AI moves once (${logs.join(' | ')})`)
+  const landing = state.moves[0]
+  assert.ok(areCellsAligned(landing, enemy), 'and lands on the line the spell needs')
+  assert.ok(cellDistance(landing, enemy) <= 7, 'within its range')
+
+  const casts = state.sent.filter((message) => message.name === 'GameActionFightCastRequestMessage')
+  assert.ok(casts.length > 0, 'so the spell is cast instead of skipped')
+
+  dispose()
+  console.log('ok - a line-only spell walks the AI onto its line')
+}
+
+/**
+ * A spell that grows with use is played to the end of the turn.
+ *
+ * Some spells cost a point more on each cast in the same turn. The spellbook
+ * only ever quotes the first price, so the second cast is refused for want of
+ * a point — and dropping the spell there leaves a turn half played. The right
+ * answer is to raise its price and carry on.
+ */
+async function testEscalatingSpellIsRepriced() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  const logs = []
+  const combatSettings = { ...combatDefaults, spellMode: 'auto', approachEnemies: false, combo: [] }
+
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    1: {
+      id: 1,
+      spell: { nameId: 'Harcelante' },
+      spellLevel: {
+        apCost: 2,
+        range: 8,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 100, diceNum: 15, diceSide: 15, zoneSize: 0 }]
+      }
+    }
+  }
+
+  // The game charges 2, then 3, then 4: it refuses whatever asks for less.
+  let paid = 0
+  let casts = 0
+  state.refuseCast = () => {
+    const price = 2 + casts
+    if (paid + price > 8) return true
+    // The second request is refused once, as the game would when the plan
+    // still believes the spell costs two.
+    if (casts === 1 && !state.repriced) {
+      state.repriced = true
+      return true
+    }
+    paid += price
+    casts += 1
+    return false
+  }
+
+  state.fighters[0].data.stats.actionPoints = 8
+  state.startFight()
+
+  const dispose = initCombatAi(gameWindow, 'tab-escalating', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 3000))
+
+  const requests = state.sent.filter(
+    (message) => message.name === 'GameActionFightCastRequestMessage'
+  )
+  // The same spell twice in a turn: a cooldown counts turns between casts, and
+  // the cast just played is a record, not a cooldown.
+  assert.ok(requests.length >= 3, `the spell is asked for again in the same turn (${requests.length})`)
+  assert.ok(
+    logs.some((line) => line.includes('pricing it at 3 AP')),
+    `the refusal raises the price rather than dropping the spell (${logs.join(' | ')})`
+  )
+  assert.ok(casts >= 2, `and the turn keeps casting it (${casts} accepted of ${requests.length} asked)`)
+
+  dispose()
+  console.log('ok - a spell that grows with use is re-priced, not dropped')
+}
+
+/**
+ * A kill mid-combo does not end the combo.
+ *
+ * The targets are chosen before the first cast of an entry. When one dies to
+ * it, the entries that follow were skipped outright — "no target left" — even
+ * with another monster standing well within range. And the range they were
+ * measured against was the printed one, without the character's Portée, so
+ * monsters in reach counted as out of it.
+ */
+async function testComboSurvivesAKill() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellFromCoordinates, cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  const logs = []
+  const combatSettings = {
+    ...combatDefaults,
+    combo: [{ id: 7, name: 'Harcelante' }, { id: 7, name: 'Harcelante' }],
+    targetStrategy: 'weakest',
+    spreadCasts: false,
+    approachEnemies: false,
+    defaultSpellRange: 1
+  }
+
+  // Printed range 4, boostable, and three points of Portée on the fighter:
+  // the real reach is seven.
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    7: {
+      id: 7,
+      spell: { nameId: 'Harcelante' },
+      spellLevel: {
+        apCost: 2,
+        range: 4,
+        minRange: 0,
+        rangeCanBeBoosted: true,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 100, diceNum: 15, diceSide: 15, zoneSize: 0 }]
+      }
+    }
+  }
+  state.fighters[0].data.stats.range = 3
+
+  const me = cellFromCoordinates(10, 10)
+  const dying = cellFromCoordinates(12, 10)
+  const other = cellFromCoordinates(16, 10)
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+  state.fighters[1].data.disposition.cellId = dying
+  state.fighters[1].data.stats.lifePoints = 10
+  state.fighters[2].data.disposition.cellId = other
+  state.fighters[2].data.stats.lifePoints = 300
+  assert.strictEqual(cellDistance(me, other), 6, 'the second monster is beyond the printed range')
+
+  // The first arrow kills the weakest, as it would in the game.
+  let cast = 0
+  const sendMessage = gameWindow.dofus.sendMessage
+  gameWindow.dofus.sendMessage = (name, data) => {
+    sendMessage(name, data)
+    if (name !== 'GameActionFightCastRequestMessage') return
+    cast += 1
+    if (cast === 1) {
+      setTimeout(() => {
+        state.fighters[1].data.stats.lifePoints = 0
+        state.emit('GameActionFightDeathMessage', { targetId: 20 })
+      }, 2)
+    }
+  }
+
+  state.startFight()
+  const dispose = initCombatAi(gameWindow, 'tab-kill', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 900))
+
+  const casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.strictEqual(casts.length, 2, `both combo entries are played (${logs.join(' | ')})`)
+  assert.strictEqual(casts[0].data.cellId, dying, 'the first goes to the weakest')
+  assert.strictEqual(
+    casts[1].data.cellId,
+    other,
+    'and the second to the monster still standing, six cells away on a printed range of four'
+  )
+
+  dispose()
+  console.log('ok - a kill mid-combo moves the next spell to another target')
+}
+
+/**
+ * Movement is spent after the spells, not before them.
+ *
+ * Backing away at the start of a turn spends the points that a kill has not
+ * happened yet to justify. When the target falls to the first arrow and
+ * action points remain, those points are what carry the next arrow to another
+ * monster — so keeping one's distance waits until the combo is played out.
+ */
+async function testRetreatWaitsForTheCasts() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellFromCoordinates, cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  const logs = []
+  const combatSettings = {
+    ...combatDefaults,
+    combo: [{ id: 9, name: 'Arrow' }, { id: 9, name: 'Arrow' }],
+    targetStrategy: 'weakest',
+    spreadCasts: false,
+    approachEnemies: true,
+    positioning: 'keep-distance',
+    preferLineUp: false
+  }
+
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    9: {
+      id: 9,
+      spell: { nameId: 'Arrow' },
+      spellLevel: {
+        apCost: 3,
+        range: 5,
+        minRange: 0,
+        rangeCanBeBoosted: false,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: false,
+        effects: [{ effectId: 100, diceNum: 20, diceSide: 20, zoneSize: 0 }]
+      }
+    }
+  }
+
+  // The weak one is in range; the other sits one cell beyond it.
+  const me = cellFromCoordinates(10, 10)
+  const weak = cellFromCoordinates(14, 10)
+  const far = cellFromCoordinates(16, 10)
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+  state.fighters[1].data.disposition.cellId = weak
+  state.fighters[1].data.stats.lifePoints = 10
+  state.fighters[2].data.disposition.cellId = far
+  state.fighters[2].data.stats.lifePoints = 300
+  state.mpPerTurn = 3
+  assert.strictEqual(cellDistance(me, far), 6, 'the second monster is one cell out of range')
+
+  // The first arrow kills the weak one, as it would in the game.
+  let cast = 0
+  const sendMessage = gameWindow.dofus.sendMessage
+  gameWindow.dofus.sendMessage = (name, data) => {
+    sendMessage(name, data)
+    if (name !== 'GameActionFightCastRequestMessage') return
+    cast += 1
+    if (cast === 1) {
+      setTimeout(() => {
+        state.fighters[1].data.stats.lifePoints = 0
+        state.emit('GameActionFightDeathMessage', { targetId: 20 })
+      }, 2)
+    }
+  }
+
+  state.startFight()
+  const dispose = initCombatAi(gameWindow, 'tab-retreat', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 1200))
+
+  const casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.strictEqual(casts.length, 2, `both arrows are fired (${logs.join(' | ')})`)
+  assert.strictEqual(casts[0].data.cellId, weak, 'the first at the weak one')
+  assert.strictEqual(
+    casts[1].data.cellId,
+    far,
+    'and the second at the one the movement was kept for'
+  )
+
+  dispose()
+  console.log('ok - movement waits for the spells, and carries the next one')
+}
+
+/**
+ * A wall between the character and the pack is walked around.
+ *
+ * With the line blocked, nothing can be cast from where we stand — and every
+ * cell at the same distance is just as blind, so "already at the right
+ * distance" left the character standing behind the wall turn after turn,
+ * casting nothing. A clear line is worth the walk on its own, whichever side
+ * of the obstacle it turns up on.
+ */
+async function testWalksAroundCover() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-bridge.ts'))
+  const { findPositionCell } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-bridge.js')).href}?t=${Date.now()}`
+  )
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/cells.ts'))
+  const { cellFromCoordinates, cellCoordinates, cellDistance } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'cells.js')).href}?t=${Date.now()}`
+  )
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const me = cellFromCoordinates(10, 10)
+  const monster = cellFromCoordinates(16, 10)
+  state.fighters[0].data.disposition.cellId = me
+  gameWindow.isoEngine.actorManager.userActor.cellId = me
+  state.fighters[1].data.disposition.cellId = monster
+  state.fighters[2].data.disposition.cellId = cellFromCoordinates(30, 30)
+
+  // A long wall: every cell near the character is blind, and the way around
+  // it leads away from the monster rather than towards it — which is what
+  // made "never move away from the target" freeze the character behind it.
+  const blindRows = (cellId) => {
+    const { y } = cellCoordinates(cellId)
+    return y >= 5 && y <= 15
+  }
+  gameWindow.isoEngine.mapRenderer.isInLineOfSight = (from, to) =>
+    to !== monster || !blindRows(from)
+
+  const target = {
+    id: 20,
+    teamId: 1,
+    alive: true,
+    cellId: monster,
+    life: 200,
+    maxLife: 200,
+    ap: 6,
+    mp: 3,
+    name: 'Le Ouassingue'
+  }
+
+  const move = findPositionCell(gameWindow, target, 14, 6, {
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    purpose: 'approach'
+  })
+
+  assert.ok(move, 'the character walks rather than standing behind the wall')
+  assert.ok(move.sees, 'and lands where it can see the monster')
+  assert.ok(!blindRows(move.cellId), 'having stepped out of the wall\'s shadow')
+  assert.ok(cellDistance(move.cellId, monster) <= 14, 'within the range it shoots from')
+
+  // And when the wall hides the monster from every cell in reach, standing at
+  // the right distance behind it is standing still for the fight: the
+  // character closes in until something opens up, since contact always sees.
+  // Sight opens up only right next to the monster, and the character cannot
+  // walk that far this turn: nothing it can reach sees anything.
+  gameWindow.isoEngine.mapRenderer.isInLineOfSight = (from, to) =>
+    to !== monster || cellDistance(from, monster) <= 2
+
+  const blind = findPositionCell(gameWindow, target, 11, 3, {
+    preferLineUp: false,
+    positioning: 'keep-distance',
+    tackleAware: true,
+    purpose: 'approach'
+  })
+
+  assert.ok(blind, 'a wall nothing can see past still gets a move')
+  assert.ok(
+    cellDistance(blind.cellId, monster) < cellDistance(me, monster),
+    `and it closes in rather than holding its distance (${cellDistance(me, monster)} to ${cellDistance(blind.cellId, monster)})`
+  )
+
+  delete gameWindow.isoEngine.mapRenderer.isInLineOfSight
+  console.log('ok - a blocked line is walked around, not stood behind')
+}
+
+async function testChallengeRules() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/fight-state.ts'))
+  const { deriveChallengeRules } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'fight-state.js')).href}?t=${Date.now()}`
+  )
+
+  // The wording is what says what a challenge forbids, in either language.
+  const still = deriveChallengeRules([
+    { id: 1, name: 'Statique', description: 'Ne pas se déplacer durant le combat', targetId: null }
+  ])
+  assert.strictEqual(still.noMove, true, 'a static challenge forbids moving')
+
+  const focus = deriveChallengeRules([
+    { id: 2, name: 'Focus', description: 'Attaquer un seul ennemi', targetId: 21 }
+  ])
+  assert.strictEqual(focus.singleTarget, true, 'a focus challenge allows one target')
+  assert.strictEqual(focus.focusTargetId, 21, 'and names it when the fight does')
+
+  const english = deriveChallengeRules([
+    { id: 3, name: 'Untouchable', description: 'Do not move and stay away from melee', targetId: null }
+  ])
+  assert.strictEqual(english.noMove, true, 'English wording works too')
+  assert.strictEqual(english.avoidMelee, true, 'melee is spotted')
+
+  assert.strictEqual(
+    deriveChallengeRules([{ id: 4, name: 'Riche', description: 'Gagner plus de kamas', targetId: null }]).noMove,
+    false,
+    'an unrelated challenge constrains nothing'
+  )
+
+  console.log('ok - challenges are read, not enforced')
+}
+
+async function testTurnPlanValidation() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/combat/prompt.ts'))
+  const { parseModelAnswer, resolvePlan, SYSTEM_PROMPT } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'prompt.js')).href}?t=${Date.now()}`
+  )
+
+  // A snapshot as the model would receive it: two casts from where we stand,
+  // one move, and two more casts that only exist once it has been taken.
+  const snapshot = {
+    turn: 1,
+    me: { id: 7, name: 'Tester', cell: 280, x: 0, y: 0, hp: 500, maxHp: 500, ap: 6, mp: 3, portee: 0, heldBy: [], canMove: true },
+    enemies: [],
+    allies: [],
+    spells: [
+      { id: 161, name: 'Bolt', ap: 3, range: '0-6', area: 'single cell', line: false, los: true, elements: ['fire'], cooldown: 'ready', castsLeft: 1, damage: { 1: 40 }, mastery: false, blocked: null },
+      { id: 100, name: 'Mastery', ap: 2, range: '0-0', area: 'single cell', line: false, los: false, elements: [], cooldown: 'ready', castsLeft: 1, damage: {}, mastery: true, blocked: null },
+      { id: 200, name: 'Arrow', ap: 4, range: '0-8', area: 'single cell', line: false, los: true, elements: ['earth'], cooldown: 'ready', castsLeft: null, damage: { 1: 60 }, mastery: false, blocked: null }
+    ],
+    casts: [
+      { k: 'c1', spell: 161, name: 'Bolt', cell: 294, ap: 3, hits: [1], friendly: [], damage: 40, kills: [], value: 40 },
+      { k: 'c2', spell: 100, name: 'Mastery', cell: 280, ap: 2, hits: [], friendly: [7], damage: 0, kills: [], value: 120 },
+      { k: 'c3', spell: 200, name: 'Arrow', cell: 294, ap: 4, hits: [1], friendly: [], damage: 60, kills: [], value: 60 }
+    ],
+    moves: [
+      {
+        k: 'm1',
+        cell: 266,
+        mp: 1,
+        distance: 4,
+        threats: 0,
+        sees: 1,
+        casts: [
+          { k: 'm1c1', spell: 161, name: 'Bolt', cell: 300, ap: 3, hits: [1, 2], friendly: [], damage: 80, kills: [2], value: 500 }
+        ]
+      }
+    ],
+    challenges: [],
+    notes: []
+  }
+
+  const resolved = resolvePlan(snapshot, {
+    plan: ['m1', 'm1c1', 'c1', 'm1c1', 'nonsense', 'm1'],
+    reason: 'walk then shoot'
+  })
+
+  assert.deepStrictEqual(
+    resolved.actions,
+    [
+      { type: 'move', cellId: 266, cost: 1 },
+      { type: 'cast', spellId: 161, name: 'Bolt', cellId: 300, apCost: 3, hits: [1, 2] }
+    ],
+    'the move and the cast that belongs to it survive, in order'
+  )
+  assert.ok(
+    resolved.rejected.some((line) => line.includes('c1: that cast belongs to another position')),
+    `a cast from the cell it left is refused (${resolved.rejected.join(' | ')})`
+  )
+  assert.ok(
+    resolved.rejected.some((line) => line.includes('already cast')),
+    'and the cast limit of a spell holds'
+  )
+  assert.ok(
+    resolved.rejected.some((line) => line.includes('nonsense: not an option')),
+    'an invented key is refused'
+  )
+  assert.ok(
+    resolved.rejected.some((line) => line.includes('only one move a turn')),
+    'a second move is refused'
+  )
+  assert.strictEqual(resolved.reason, 'walk then shoot', 'the reason is carried through')
+  assert.strictEqual(resolved.castsNothing, false, 'and the turn did attack')
+
+  // The action points are the hard limit, whatever the model asks for.
+  const greedy = resolvePlan(snapshot, { plan: ['c3', 'c3'] })
+  assert.strictEqual(greedy.actions.length, 1, 'six points buy one four-point cast')
+  assert.ok(
+    greedy.rejected.some((line) => line.includes('4 AP with 2 left')),
+    `and the second is refused (${greedy.rejected.join(' | ')})`
+  )
+
+  // Held in contact, no move is accepted at all.
+  const held = resolvePlan(
+    { ...snapshot, me: { ...snapshot.me, canMove: false } },
+    { plan: ['m1', 'c1'] }
+  )
+  assert.deepStrictEqual(
+    held.actions.map((action) => action.type),
+    ['cast'],
+    'the move is dropped and the cast is kept'
+  )
+  assert.ok(held.rejected.some((line) => line.includes('held in contact')), 'and says why')
+
+  // A plan that only walks is reported, so the rules can finish the turn.
+  const walking = resolvePlan(snapshot, { plan: ['m1'] })
+  assert.strictEqual(walking.castsNothing, true, 'a turn that only moves is flagged')
+
+  // The parser copes with prose around the JSON, and with the older shape.
+  const parsed = parseModelAnswer('Sure! {"plan":["c1","c2"],"why":"hit"} done')
+  assert.deepStrictEqual(parsed.plan, ['c1', 'c2'], 'the plan is extracted from the prose')
+  assert.strictEqual(parsed.reason, 'hit')
+
+  const legacy = parseModelAnswer(
+    '{"actions":[{"type":"move","cellId":266},{"type":"cast","spellId":161}],"reason":"old"}'
+  )
+  assert.deepStrictEqual(legacy.plan, ['cell:266', 'spell:161'], 'the older shape is understood')
+  const fromLegacy = resolvePlan(snapshot, legacy)
+  assert.deepStrictEqual(
+    fromLegacy.actions.map((action) => action.type),
+    ['move', 'cast'],
+    'and still produces a legal turn'
+  )
+
+  assert.strictEqual(parseModelAnswer('no json here'), null, 'garbage is refused')
+  assert.ok(SYSTEM_PROMPT.includes('"plan"'), 'the system prompt states the contract')
+
+  console.log('ok - the model can only choose legal options')
+}
+
+async function testConnectionCheck() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/game-bridge.ts'))
+  const { isConnected } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'game-bridge.js')).href}?t=${Date.now()}`
+  )
+
+  const inGame = {
+    gui: { playerData: { characterBaseInformations: { name: 'Romikie' } } },
+    isoEngine: { mapRenderer: { mapId: 1000, map: {} } }
+  }
+
+  assert.strictEqual(isConnected(inGame), true, 'being in game is enough, with no indicator')
+
+  assert.strictEqual(
+    isConnected({ ...inGame, gui: { ...inGame.gui, isConnected: () => false } }),
+    true,
+    'a character on a map wins over a build-specific false'
+  )
+
+  assert.strictEqual(
+    isConnected({ gui: { isConnected: () => false }, isoEngine: {} }),
+    false,
+    'no character and an explicit false is disconnected'
+  )
+
+  assert.strictEqual(
+    isConnected({ gui: {}, isoEngine: {} }),
+    true,
+    'a window with no indicator at all is treated as usable'
+  )
+
+  assert.strictEqual(
+    isConnected({ gui: {}, isoEngine: {}, dofus: { connectionManager: { connected: true } } }),
+    true,
+    'the connection manager flag is honoured'
+  )
+
+  assert.strictEqual(
+    isConnected({ gui: { isConnected: true }, isoEngine: {} }),
+    true,
+    'isConnected as a boolean property is honoured'
+  )
+
+  console.log('ok - connection check')
+}
+
+async function testTemplatesCompile() {
+  await bundleModule(path.join(root, 'packages/renderer/src/scripts/templates.ts'))
+  const { SCRIPT_TEMPLATES } = await import(
+    `${pathToFileURL(path.join(tmpDir, 'templates.js')).href}?t=${Date.now()}`
+  )
+
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+  assert.ok(SCRIPT_TEMPLATES.length > 0, 'templates are exported')
+
+  for (const template of SCRIPT_TEMPLATES) {
+    try {
+      new AsyncFunction('api', `"use strict";\n${template.source}\n`)
+    } catch (err) {
+      assert.fail(`Template "${template.name}" does not compile: ${err.message}`)
+    }
+  }
+
+  console.log(`ok - ${SCRIPT_TEMPLATES.length} templates compile`)
+}
+
+async function testCombatAi() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    enabled: true,
+    combo: [{ id: 161, name: 'Pressure' }, { id: 165, name: 'Bramble' }],
+    turnCombos: [],
+    targetStrategy: 'weakest',
+    approachEnemies: false,
+    // Long enough that both enemies are reachable, so the strategy decides.
+    defaultSpellRange: 12,
+    preferLineUp: false,
+    positioning: 'close-in',
+    autoReady: true,
+    turnStartDelayMs: 0,
+    castDelayMs: 0,
+    readyDelayMs: 0,
+    placeBeforeReady: false,
+    randomJitterMs: 0,
+    endTurnAfterCombo: true,
+    closeEndScreens: true
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.emit('GameFightStartingMessage', {})
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameFightReadyMessage'),
+    'the AI readies up when a fight starts'
+  )
+
+  state.startTurn(7)
+  // Each cast waits for the server to confirm it, so give the turn room.
+  await new Promise((resolve) => setTimeout(resolve, 400))
+
+  const casts = state.sent.filter((message) => message.name === 'GameActionFightCastRequestMessage')
+  assert.deepStrictEqual(casts.map((c) => c.data.spellId), [161, 165], 'the combo is cast in order')
+  assert.strictEqual(casts[0].data.cellId, 350, 'the weakest enemy cell is targeted')
+  assert.ok(
+    state.sent.some((message) => message.name === 'GameFightTurnFinishMessage'),
+    'the turn is passed once the combo is done'
+  )
+
+  // A turn belonging to another fighter must be ignored.
+  const before = state.sent.length
+  state.startTurn(20)
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  assert.strictEqual(state.sent.length, before, 'the AI only plays its own turn')
+
+  // Disabling it stops any further action.
+  combatSettings.enabled = false
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  assert.strictEqual(state.sent.length, before, 'a disabled AI does nothing')
+
+  // End of fight: the results and level-up screens must be dismissed.
+  combatSettings.enabled = true
+  state.endFight()
+  await new Promise((resolve) => setTimeout(resolve, 1200))
+
+  assert.ok(state.closedWindows.includes('fightEnd'), 'the results screen is closed')
+  assert.ok(state.closedWindows.includes('levelUp'), 'the level-up window is closed')
+  assert.ok(!state.closedWindows.includes('inventory'), 'other windows stay open')
+  assert.ok(logs.some((line) => line.includes('Closed')), 'the dismissal is logged')
+
+  dispose()
+  console.log('ok - combat AI turn')
+}
+
+async function main() {
+  const { ScriptRunner } = await bundleEngine()
+
+  await testSimpleRun(ScriptRunner)
+  await testMove(ScriptRunner)
+  await testTravel(ScriptRunner)
+  await testLoopAndStop(ScriptRunner)
+  await testRuntimeError(ScriptRunner)
+  await testSyntaxError(ScriptRunner)
+  await testApiStop(ScriptRunner)
+  await testListenersCleanedUp(ScriptRunner)
+  await testFightCombo(ScriptRunner)
+  await testTargetStrategies(ScriptRunner)
+  await testCombatAi()
+  await testMonsterHunt(ScriptRunner)
+  await testAttackUsesTheGameFlow(ScriptRunner)
+  await testAttackFallsBackToProtocol(ScriptRunner)
+  await testAttackKeepsProbingAndReports(ScriptRunner)
+  await testAttackApproach(ScriptRunner)
+  await testClosePopups(ScriptRunner)
+  await testTurnCombos()
+  await testApproachWithMp()
+  await testSelfCastAndLineUp()
+  await testRangeAndShortWalk()
+  await testKitingAndSingleMove()
+  await testSpreadCasts()
+  await testTackleAwareness()
+  await testFightMovementGoesThroughTheServer()
+  await testHumanDelays()
+  await testTurnAlwaysPassed()
+  await testTurnSynchronisation()
+  await testMovementDiscovery(ScriptRunner)
+  await testMovementReportsNoEntryPoint(ScriptRunner)
+  await testModelBrain()
+  await testPlacementAndLineOfSight()
+  await testSummonsAndInvulnerable()
+  await testPushBreaksMelee()
+  await testAntiIdle()
+  await testSpellPlanner()
+  await testSpellPlannerEdgeCases()
+  await testTurnOptimality()
+  await testActionPointBudget()
+  await testUtilitySpellsAreNotBuffs()
+  await testSightBlockedByFighters()
+  await testRangeAndItsBoost()
+  await testRefusedCastIsReplaced()
+  await testPlacementWaitsForTheOffer()
+  await testComboAimsAtTheBestCell()
+  await testCorpsesAreNotTargeted()
+  await testLineSpellDrivesThePosition()
+  await testEscalatingSpellIsRepriced()
+  await testComboSurvivesAKill()
+  await testRetreatWaitsForTheCasts()
+  await testWalksAroundCover()
+  await testChallengeRules()
+  await testTurnPlanValidation()
+  await testConnectionCheck()
+  await testTemplatesCompile()
+
+  console.log('\nAll script engine tests passed.')
+}
+
+main().catch((err) => {
+  console.error(err)
+  process.exit(1)
+})

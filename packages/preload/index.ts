@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron'
-import { IPCEvents, GameContext, NativeNotificationPayload, AppUpdateStatus } from '@dofemu/shared'
+import {
+  IPCEvents,
+  GameContext,
+  NativeNotificationPayload,
+  AppUpdateStatus,
+  OllamaRequest,
+  OllamaResponse
+} from '@dofemu/shared'
 
 const dofemuApi = {
   fetchGameContext: async (): Promise<GameContext> => {
@@ -103,6 +110,10 @@ const dofemuApi = {
     const listener = (_: IpcRendererEvent, tabId?: string) => cb(tabId)
     ipcRenderer.on(IPCEvents.NATIVE_NOTIFICATION_CLICK, listener)
     return () => { ipcRenderer.removeListener(IPCEvents.NATIVE_NOTIFICATION_CLICK, listener) }
+  },
+
+  ollamaChat: async (request: OllamaRequest): Promise<OllamaResponse> => {
+    return ipcRenderer.invoke(IPCEvents.OLLAMA_CHAT, request)
   },
 
   storeGet: async (key: string): Promise<string | null> => {
