@@ -45,6 +45,8 @@ export interface Combatant {
    * which is what most of them are.
    */
   threatRange: number
+  /** Called into the fight by another fighter rather than there from the start. */
+  summoned: boolean
   raw: Fighter
 }
 
@@ -86,6 +88,7 @@ function toCombatant(fighter: Fighter, side: Side, fallbackMp: number): Combatan
     mp,
     resistances: readResistances(fighter),
     threatRange: Math.max(1, mp) + 1,
+    summoned: fighter.summoned,
     raw: fighter
   }
 }

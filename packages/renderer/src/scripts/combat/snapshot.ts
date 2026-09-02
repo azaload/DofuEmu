@@ -4,6 +4,7 @@ import { readBattlefield, holdersOf, type Battlefield, type Combatant } from './
 import { readSpellbook, type Spellbook } from './spellbook'
 import { aimCandidates, effectiveRange, type AimContext } from './aiming'
 import {
+  damageTo,
   distanceToEnemies,
   scoreCast,
   threatCount,
@@ -48,6 +49,10 @@ export interface SnapshotFighter {
   reach: number
   /** It is standing next to us: leaving is tackled. */
   inContact: boolean
+  /** Called into the fight by another monster: worth killing last. */
+  summoned: boolean
+  /** Nothing in the spellbook takes a point off it right now — invulnerable. */
+  immune: boolean
   /** Percentage resistance per element, only the ones that are not zero. */
   resists: Partial<Record<CombatElement, number>>
 }
@@ -138,6 +143,8 @@ export interface SnapshotOptions {
   actionPoints: number
   movementPoints: number
   canMove: boolean
+  /** Only offer a cast on a summon when nothing else is in reach from there. */
+  summonsLast?: boolean
   ignoreFighters?: ReadonlySet<number>
   challenges?: FightChallenge[]
   /**
@@ -159,7 +166,8 @@ function describeFighter(
   field: Battlefield,
   fighter: Combatant,
   index: number,
-  from: number
+  from: number,
+  immune: ReadonlySet<number>
 ): SnapshotFighter {
   const point = cellCoordinates(fighter.cellId)
   const resists: Partial<Record<CombatElement, number>> = {}
@@ -183,6 +191,8 @@ function describeFighter(
     aligned: areCellsAligned(from, fighter.cellId),
     reach: fighter.threatRange,
     inContact: cellDistance(from, fighter.cellId) === 1,
+    summoned: fighter.summoned,
+    immune: immune.has(fighter.id),
     resists
   }
 }
@@ -250,7 +260,8 @@ function castsFrom(
   from: number,
   numbers: Map<number, number>,
   prefix: string,
-  limit: number
+  limit: number,
+  summonsLast: boolean
 ): SnapshotCast[] {
   const aim: AimContext = {
     grid: field.grid,
@@ -276,11 +287,27 @@ function castsFrom(
     }
   }
 
-  scored.sort((a, b) => b.value - a.value)
+  // The same rules the built-in turn plays by, so the model is never offered
+  // a cast the rules would not have made. A cast touching no enemy at all is
+  // a buff or a heal, and neither rule says anything about those.
+  const utility = (cast: ScoredCast) => cast.candidate.enemies.length === 0
+
+  // Nothing it covers can be hurt — every one of them is under a state that
+  // swallows the hit — while something else can be.
+  const lands = (cast: ScoredCast) => cast.damage.size > 0
+  let offered = scored.some(lands) ? scored.filter((cast) => utility(cast) || lands(cast)) : scored
+
+  // And a cast that only touches summons, while something else is in reach.
+  const touchesReal = (cast: ScoredCast) => cast.candidate.enemies.some((enemy) => !enemy.summoned)
+  if (summonsLast && offered.some(touchesReal)) {
+    offered = offered.filter((cast) => utility(cast) || touchesReal(cast))
+  }
+
+  offered.sort((a, b) => b.value - a.value)
 
   const seen = new Set<string>()
   const casts: SnapshotCast[] = []
-  for (const cast of scored) {
+  for (const cast of offered) {
     const key = `${cast.spell.id}:${cast.candidate.cellId}`
     if (seen.has(key)) continue
     seen.add(key)
@@ -343,6 +370,7 @@ export function buildSnapshot(
     cheapestAttack: book.cheapestAttack
   }
 
+  const summonsLast = options.summonsLast !== false
   const casts = castsFrom(
     field,
     book,
@@ -351,7 +379,8 @@ export function buildSnapshot(
     from,
     numbers,
     'c',
-    options.maxCasts ?? MAX_CASTS
+    options.maxCasts ?? MAX_CASTS,
+    summonsLast
   )
 
   const moves: SnapshotMove[] = []
@@ -399,14 +428,36 @@ export function buildSnapshot(
           option.entry.cellId,
           numbers,
           `${key}c`,
-          MAX_CASTS_PER_MOVE
+          MAX_CASTS_PER_MOVE,
+          summonsLast
         )
       })
     }
   }
 
+  // Monsters nothing in the book can take a point off: the invulnerable state
+  // is a flat reduction of several thousand, so it reads as every spell
+  // dealing zero rather than as a state to keep a table of.
+  const immune = new Set<number>(
+    book.attacks.length === 0
+      ? []
+      : state.enemies
+          .filter((enemy) =>
+            book.attacks.every((entry) => damageTo(entry.spell, enemy, field.profile) <= 0)
+          )
+          .map((enemy) => enemy.id)
+  )
+
   const holders = holdersOf(field, from)
   const notes: string[] = []
+  if (immune.size > 0) {
+    notes.push(
+      `${state.enemies
+        .filter((enemy) => immune.has(enemy.id))
+        .map((enemy) => enemy.name)
+        .join(', ')} takes nothing from any spell right now (invulnerable): aim elsewhere`
+    )
+  }
   if (holders.length > 0) {
     notes.push(
       `${holders.length} monster(s) hold the character in contact: moving is tackled, so cast from here`
@@ -414,6 +465,11 @@ export function buildSnapshot(
   }
   if (casts.length === 0 && moves.every((move) => move.casts.length === 0)) {
     notes.push('nothing can be cast from anywhere in reach this turn: walk towards the pack')
+  }
+  if (summonsLast && field.enemies.some((enemy) => enemy.summoned)) {
+    notes.push(
+      'summons are left for last: a cast on one is only offered where nothing else is in reach'
+    )
   }
   const mastery = book.masteries[0]
   if (mastery) {
@@ -438,8 +494,8 @@ export function buildSnapshot(
       heldBy: holders.map((enemy) => numbers.get(enemy.id) ?? enemy.id),
       canMove: options.canMove && holders.length === 0 && state.movementPoints > 0
     },
-    enemies: field.enemies.map((enemy, index) => describeFighter(field, enemy, index, from)),
-    allies: field.allies.map((ally, index) => describeFighter(field, ally, index, from)),
+    enemies: field.enemies.map((enemy, index) => describeFighter(field, enemy, index, from, immune)),
+    allies: field.allies.map((ally, index) => describeFighter(field, ally, index, from, immune)),
     spells: describeSpell(book, field, state, context, numbers),
     casts,
     moves,

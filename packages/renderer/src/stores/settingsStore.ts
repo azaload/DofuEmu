@@ -118,6 +118,7 @@ const defaultState = {
     spreadCasts: true,
     spellMode: 'auto' as const,
     keepMasteryUp: true,
+    summonsLast: true,
     elements: ['fire', 'earth', 'water', 'air', 'neutral'] as CombatElement[],
     brain: 'rules' as const,
     ollamaEndpoint: 'http://127.0.0.1:11434',

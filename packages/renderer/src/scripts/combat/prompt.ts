@@ -24,7 +24,9 @@ You are given JSON with these parts:
 - "enemies" and "allies": every fighter. "n" is the short number to think in.
   "hp"/"maxHp"/"hpPercent" is what they have left, "distance" how far, "los" whether
   there is a clear line to them, "reach" how far they can move plus hit next turn,
-  "resists" the percentage they resist each element.
+  "resists" the percentage they resist each element, "summoned" whether another
+  monster called it into the fight, and "immune" whether nothing in the spellbook can
+  take a point off it at all right now.
 - "spells": what the character owns. "ap" cost, "range" as min-max, "area" the shape
   it covers, "cooldown", "castsLeft", "mastery" whether it is a mastery, "blocked" the
   reason it cannot be cast this turn, and "damage" what it would really take off each
@@ -64,6 +66,12 @@ HOW TO CHOOSE, IN THIS ORDER
    monster that cannot walk up to the character cannot hit it either. Never move for
    distance alone when it costs the casts — the casts come first.
 7. Never choose a cast whose "friendly" list is not empty unless nothing else hits.
+8. Leave the summons for last. An enemy with "summoned":true was called in by another
+   monster; killing it changes nothing while the monster that called it still stands.
+   The casts offered already follow this rule, so simply take what is on the list.
+9. Never aim at an enemy with "immune":true while any other enemy can be hit. It is
+   under a state that swallows the whole hit — a few thousand points of reduction — and
+   the "damage" of a cast on it is zero. Aim at the others until the state runs out.
 
 WORKED EXAMPLE
 Given casts c1 (2 AP, hits [1], damage 40), c2 (4 AP, hits [1,2], damage 90, kills [2])

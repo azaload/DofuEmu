@@ -7,6 +7,7 @@ import { aimCandidates, effectiveRange, type AimContext } from './aiming'
 import {
   applyCast,
   castsLeft,
+  damageTo,
   distanceToEnemies,
   scoreCast,
   threatCount,
@@ -66,6 +67,11 @@ export interface TurnPlan {
   diagnostic: string | null
   /** Why each spell that was left out stayed out, for the activity log. */
   leftOut: string[]
+  /**
+   * What the turn noticed about the fight itself, rather than about a spell:
+   * a monster nothing can hurt, a summon left alone. Worth saying once.
+   */
+  notes: string[]
 }
 
 export interface PlanContext {
@@ -95,6 +101,15 @@ export interface PlanContext {
   keepDistance: boolean
   /** Put the mastery back up whenever its cooldown and the points allow. */
   keepMasteryUp?: boolean
+  /**
+   * Only aim at a summon when no other enemy is in reach.
+   *
+   * "In reach" means from the cell being considered: a summon standing in
+   * front of a monster the character can also hit is left alone, and one
+   * standing alone in front of a character that can reach nothing else is
+   * shot, because a turn spent casting nothing is worse.
+   */
+  summonsLast?: boolean
   /** A grid to share across the turn, so its caches are not rebuilt. */
   grid?: Grid
 }
@@ -168,10 +183,10 @@ function candidateCasts(
 ): ScoredCast[] {
   const aim = aimContext(state, context.grid)
 
-  const bestOf = (entry: SpellState): ScoredCast | null => {
+  const scoredOf = (entry: SpellState): ScoredCast[] => {
     const spell = entry.spell
-    if (!castsLeft(spell, state)) return null
-    if (entry.apCost > state.actionPoints) return null
+    if (!castsLeft(spell, state)) return []
+    if (entry.apCost > state.actionPoints) return []
 
     const against =
       spell.kind === 'heal'
@@ -180,16 +195,56 @@ function candidateCasts(
           ? state.friends.filter((friend) => friend.cellId === from)
           : state.enemies
 
-    let best: ScoredCast | null = null
+    const scored: ScoredCast[] = []
     for (const candidate of aimCandidates(aim, spell, from, against, AIM_LIMIT)) {
       // Asking a second time for what the server has just refused wastes the
       // turn on the same answer.
       if (plan.blockedCasts?.has(`${spell.id}:${candidate.cellId}`)) continue
-      const scored = scoreCast(candidate, entry.apCost, state, context)
-      if (!scored) continue
-      if (!best || scored.value > best.value) best = scored
+      const cast = scoreCast(candidate, entry.apCost, state, context)
+      if (cast) scored.push(cast)
     }
-    return best
+    return scored
+  }
+
+  const highest = (casts: ScoredCast[]): ScoredCast | null =>
+    casts.reduce<ScoredCast | null>(
+      (best, cast) => (!best || cast.value > best.value ? cast : best),
+      null
+    )
+
+  /**
+   * The summon rule, applied across every spell at once.
+   *
+   * It has to be one decision for the whole position, not one per spell: with
+   * a real monster in reach of the bow and only a summon in reach of the
+   * short-range spell, the short-range spell must go unused rather than spend
+   * the turn on the summon.
+   */
+  const withSummonRule = (perSpell: Map<number, ScoredCast[]>): Map<number, ScoredCast[]> => {
+    if (plan.summonsLast === false) return perSpell
+
+    const touchesReal = (cast: ScoredCast) =>
+      cast.candidate.enemies.some((enemy) => !enemy.summoned)
+
+    let anyReal = false
+    for (const casts of perSpell.values()) {
+      if (casts.some(touchesReal)) {
+        anyReal = true
+        break
+      }
+    }
+    if (!anyReal) return perSpell
+
+    const kept = new Map<number, ScoredCast[]>()
+    for (const [id, casts] of perSpell) {
+      // A cast touching no enemy at all is a buff or a heal: the rule says
+      // nothing about those.
+      kept.set(
+        id,
+        casts.filter((cast) => cast.candidate.enemies.length === 0 || touchesReal(cast))
+      )
+    }
+    return kept
   }
 
   /**
@@ -207,14 +262,17 @@ function candidateCasts(
   if (plan.keepMasteryUp !== false) {
     const boosts = book.usable.filter((entry) => entry.spell.kind === 'boost')
     for (const entry of [...boosts].sort((a, b) => Number(b.spell.isMastery) - Number(a.spell.isMastery))) {
-      const candidate = bestOf(entry)
+      const candidate = highest(scoredOf(entry))
       if (candidate) return [candidate]
     }
   }
 
+  const perSpell = new Map<number, ScoredCast[]>()
+  for (const entry of book.usable) perSpell.set(entry.spell.id, scoredOf(entry))
+
   const found: ScoredCast[] = []
-  for (const entry of book.usable) {
-    const best = bestOf(entry)
+  for (const casts of withSummonRule(perSpell).values()) {
+    const best = highest(casts)
     if (best) found.push(best)
   }
 
@@ -445,10 +503,10 @@ function leftOutReasons(
   plan: PlanContext,
   position: number,
   castIds: Set<number>,
-  grid: Grid
+  context: ScoreContext
 ): string[] {
   const reasons: string[] = []
-  const aim = aimContext(state, grid)
+  const aim = aimContext(state, context.grid)
 
   for (const entry of book.states) {
     if (castIds.has(entry.spell.id)) continue
@@ -460,7 +518,32 @@ function leftOutReasons(
     }
 
     if (entry.spell.kind === 'damage') {
-      const options = aimCandidates(aim, entry.spell, position, state.enemies, 1)
+      const options = aimCandidates(aim, entry.spell, position, state.enemies, 4)
+
+      // A spell that can only reach a summon while something else is being
+      // shot is the one case where "worth less than what was cast" would be a
+      // lie: it was not weighed at all.
+      if (
+        plan.summonsLast !== false &&
+        options.length > 0 &&
+        options.every((option) => option.enemies.every((enemy) => enemy.summoned))
+      ) {
+        reasons.push(`${name}: only a summon in reach, and summons are left for last`)
+        continue
+      }
+
+      // Everything it can reach shrugs it off entirely — the invulnerable
+      // state, or a resistance that swallows the whole hit.
+      if (
+        options.length > 0 &&
+        options.every((option) =>
+          option.enemies.every((enemy) => damageTo(entry.spell, enemy, context.profile) <= 0)
+        )
+      ) {
+        reasons.push(`${name}: everything in its reach takes nothing from it`)
+        continue
+      }
+
       if (options.length === 0) {
         const closest = distanceToEnemies(position, state.enemies)
         reasons.push(
@@ -492,7 +575,8 @@ export function planTurn(gameWindow: DofusWindow, plan: PlanContext): TurnPlan |
     casts: [],
     value: 0,
     diagnostic,
-    leftOut: []
+    leftOut: [],
+    notes: []
   })
 
   const book = readSpellbook(gameWindow, {
@@ -559,6 +643,31 @@ export function planTurn(gameWindow: DofusWindow, plan: PlanContext): TurnPlan |
     fightEndsThisTurn:
       totalLife > 0 && bestHit * Math.floor(plan.actionPoints / cheapest) >= totalLife,
     cheapestAttack: book.cheapestAttack
+  }
+
+  /**
+   * Monsters nothing in the book can take a point off.
+   *
+   * The invulnerable state is a flat reduction of several thousand, so it
+   * shows up here as every spell dealing zero — no state table to keep up to
+   * date, and it clears itself the moment the reduction expires.
+   */
+  const notes: string[] = []
+  if (book.attacks.length > 0) {
+    const untouchable = state.enemies.filter((enemy) =>
+      book.attacks.every((entry) => damageTo(entry.spell, enemy, field.profile) <= 0)
+    )
+    if (untouchable.length > 0 && untouchable.length < state.enemies.length) {
+      notes.push(
+        `${untouchable.map((enemy) => enemy.name).join(', ')} takes nothing from any spell ` +
+          '(invulnerable): aiming at the others while it lasts'
+      )
+    } else if (untouchable.length === state.enemies.length) {
+      notes.push(
+        `every enemy takes nothing from any spell (invulnerable): casting anyway, ` +
+          'the points are worth nothing kept'
+      )
+    }
   }
 
   const actions: PlannedAction[] = []
@@ -662,7 +771,8 @@ export function planTurn(gameWindow: DofusWindow, plan: PlanContext): TurnPlan |
     actions,
     casts,
     value: total,
-    leftOut: leftOutReasons(book, atEnd, plan, position, castIds, field.grid),
+    leftOut: leftOutReasons(book, atEnd, plan, position, castIds, context),
+    notes,
     diagnostic:
       actions.length === 0
         ? 'no cell brings an enemy within reach of a spell that is worth casting' +

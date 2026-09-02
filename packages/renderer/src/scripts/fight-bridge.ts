@@ -30,6 +30,16 @@ export interface Fighter {
   ap: number | null
   mp: number | null
   name: string | null
+  /**
+   * A creature another fighter called into the fight rather than one the
+   * fight started with.
+   *
+   * Worth knowing because killing one buys nothing: it leaves on its own, and
+   * the monster that called it is still standing and still summoning.
+   */
+  summoned: boolean
+  /** The fighter that called it in, when the fight says which. */
+  summonerId: number | null
   /** Raw stats block, where the resistances live. */
   stats: unknown
 }
@@ -112,8 +122,27 @@ function toFighter(raw: unknown): Fighter | null {
     ap: asNumber(stats?.actionPoints),
     mp: asNumber(stats?.movementPoints),
     name: asString(data.name) ?? asString(dict.name),
+    summoned: readSummoned(dict, data, stats),
+    summonerId: asNumber(stats?.summoner) ?? asNumber(data.summonerId) ?? null,
     stats
   }
+}
+
+/**
+ * Whether this fighter was called into the fight by another.
+ *
+ * The protocol says it outright on the fighter's statistics, but not every
+ * build exposes the same field: some carry the flag, some only the id of the
+ * summoner. Either is enough, and neither being there reads as "not a summon"
+ * — treating a real monster as one would leave it alive for the whole fight.
+ */
+function readSummoned(dict: Dict, data: Dict, stats: Dict | null): boolean {
+  if (typeof stats?.summoned === 'boolean') return stats.summoned
+  if (typeof data.summoned === 'boolean') return data.summoned
+  if (typeof dict.summoned === 'boolean') return dict.summoned
+
+  const summoner = asNumber(stats?.summoner) ?? asNumber(data.summonerId)
+  return summoner !== null && summoner !== 0
 }
 
 export function getFighters(gameWindow: DofusWindow): Fighter[] {
@@ -197,6 +226,20 @@ export function getSpells(gameWindow: DofusWindow): SpellInfo[] {
   }
 
   return []
+}
+
+/**
+ * The fighters worth attacking first: the ones nobody called in.
+ *
+ * A summon is not a target, it is a delay. Killing one costs the same points
+ * as killing the monster that called it, buys nothing that a turn of waiting
+ * would not, and leaves that monster free to call another. So they are only
+ * aimed at when there is nothing else to aim at — and then they are, because
+ * a turn spent casting nothing is worse still.
+ */
+export function realTargetsFirst<T extends { summoned: boolean }>(fighters: T[]): T[] {
+  const real = fighters.filter((fighter) => !fighter.summoned)
+  return real.length > 0 ? real : fighters
 }
 
 /** Ranks the living enemies and returns the one a strategy would attack. */

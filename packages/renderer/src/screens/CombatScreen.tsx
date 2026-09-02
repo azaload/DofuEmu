@@ -498,6 +498,15 @@ export function CombatScreen() {
             </div>
           </Row>
         )}
+        <Row
+          label="Leave summons for last"
+          desc="Only aim at a monster's summon when no other enemy is in reach"
+        >
+          <Toggle
+            checked={combat.summonsLast !== false}
+            onChange={(v) => setCombatSettings({ summonsLast: v })}
+          />
+        </Row>
         {combat.spellMode === 'auto' && (
           <Row
             label="Keep the mastery up"

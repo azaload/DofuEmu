@@ -46,6 +46,23 @@ export const FRIENDLY_FIRE = 50
 export const SELF_FIRE = 120
 export const BUFF_VALUE = 120
 export const HEAL_VALUE = 2
+/**
+ * What a cast that cannot hurt anything it covers is worth.
+ *
+ * Deliberately just above nothing: it loses to every cast that lands, and
+ * wins against passing the turn.
+ */
+export const POINTLESS_CAST = 0.01
+
+/** What a spell would really take off a fighter, after everything. */
+export function damageTo(
+  spell: SpellDetails,
+  target: Combatant,
+  profile: DamageProfile,
+  powerBonus = 0
+): number {
+  return damageWith(spell, target.resistances, profile, { damagePercent: powerBonus })
+}
 
 export interface PlanState {
   actionPoints: number
@@ -130,6 +147,12 @@ export function scoreCast(
     let value = 0
     for (const enemy of reachable) {
       const dealt = damageWith(spell, enemy.resistances, context.profile, boostOf(state))
+
+      // Nothing lands on it. A monster under the invulnerable state — a flat
+      // reduction of several thousand, as a Tronknyde puts up for a couple of
+      // turns — is not a target, however wounded it looks.
+      if (dealt <= 0) continue
+
       damage.set(enemy.id, dealt)
       value += Math.min(dealt, enemy.life)
 
@@ -147,7 +170,7 @@ export function scoreCast(
       value += Math.min(1, Math.max(0, 1 - enemy.life / full)) * FOCUS_BONUS
     }
 
-    value += (reachable.length - 1) * MULTI_HIT_BONUS
+    value += Math.max(0, damage.size - 1) * MULTI_HIT_BONUS
 
     for (const friend of candidate.friends) {
       const taken = damageWith(spell, friend.resistances, context.profile, boostOf(state))
@@ -155,8 +178,30 @@ export function scoreCast(
       value -= friend.side === 'me' ? SELF_FIRE : FRIENDLY_FIRE
     }
 
+    /**
+     * Everything this cast covers is immune to it.
+     *
+     * Worth a hair more than doing nothing at all, and nothing more: any cast
+     * that actually lands beats it by a wide margin, so it is only ever played
+     * when the whole pack is invulnerable and the points would be thrown away
+     * either way. Never at an ally's expense, though.
+     */
+    if (damage.size === 0) {
+      if (candidate.friends.length > 0) return null
+      return {
+        candidate,
+        spell,
+        apCost,
+        value: POINTLESS_CAST,
+        damage,
+        kills,
+        reason: `${reachable[0].name} takes nothing from it`
+      }
+    }
+
     if (value <= 0) return null
 
+    const hurt = reachable.filter((enemy) => damage.has(enemy.id))
     return {
       candidate,
       spell,
@@ -164,10 +209,7 @@ export function scoreCast(
       value,
       damage,
       kills,
-      reason:
-        reachable.length > 1
-          ? `${reachable.length} enemies in the area`
-          : (reachable[0].name ?? `fighter ${reachable[0].id}`)
+      reason: hurt.length > 1 ? `${hurt.length} enemies in the area` : hurt[0].name
     }
   }
 

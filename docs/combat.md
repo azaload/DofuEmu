@@ -112,8 +112,10 @@ action has already been computed and given a key**. The model picks keys.
 - **`me`** — cell, life, action and movement points, the Portée already added to the
   spell ranges, who holds it in contact, and whether moving is allowed at all.
 - **`enemies`** and **`allies`** — position, life and life percentage, distance, line of
-  sight, whether they are lined up, how far each one can move *and hit* next turn, and
-  the percentage each of them resists per element.
+  sight, whether they are lined up, how far each one can move *and hit* next turn, the
+  percentage each of them resists per element, whether it was **summoned** by another
+  monster, and whether it is **immune** — under a state nothing in the spellbook gets
+  through.
 - **`spells`** — every spell the character owns: action-point cost, range as min-max,
   area shape and size, straight line, line of sight, cooldown, casts left this turn,
   whether it is a mastery, why it cannot be cast when it cannot — and, for each enemy,
@@ -125,7 +127,10 @@ action has already been computed and given a key**. The model picks keys.
   monster from there, how many monsters could reach that cell next turn, and **the casts
   that become possible once standing there**, each with its own key.
 - **`notes`** — a line or two in plain words: held in contact, nothing in reach, the
-  mastery is ready.
+  mastery is ready, a monster nothing can hurt.
+
+The casts offered already follow the summon and invulnerability rules, so the model cannot
+choose one the built-in turn would have refused to make.
 - The fight's challenges, when the client exposes them and **Play the challenges** is on.
 
 A one- or two-billion-parameter model cannot work out geometry: ask it which cell an
@@ -371,6 +376,42 @@ them for every cast that follows, and a pull that groups a scattered pack makes 
 cast after it worth more — which the search sees, because it plans the sequence rather
 than the next cast.
 
+### What is not worth shooting
+
+Two kinds of monster cost a turn when they are aimed at, and both are left alone while
+anything else is in reach.
+
+**Summons.** With **Leave summons for last** on (the default), a creature another monster
+called into the fight is only aimed at when nothing else can be. Killing one buys nothing:
+it leaves on its own, and the monster that called it is still standing and can call
+another. The rule is applied to the whole position at once, not spell by spell — with a
+monster in reach of the bow and only a summon in reach of the short-range spell, the
+short-range spell goes unused rather than spending the turn on the summon. An area that
+covers a summon *and* something else is never held back for it.
+
+It is a hard rule, not a preference: a summon one arrow from death, with the kill bonus
+that carries, still loses to a full-health monster beside it. Turn the setting off and it
+is treated as any other enemy.
+
+A summon is recognised from the fighter's own statistics — the flag the protocol carries,
+or the id of the summoner when a build only exposes that. Neither being there reads as
+"not a summon", since treating a real monster as one would leave it alive all fight.
+
+**Monsters nothing can hurt.** The invulnerable state a monster like a Tronknyde puts up
+for a couple of turns is a **flat damage reduction of several thousand**, which is more
+than any hit. There is no state table to keep up to date: the AI works out what each spell
+would really take off each monster, and a monster every spell takes *nothing* off is not a
+target. It goes back to being one the moment the reduction expires, with nothing to reset.
+
+The turn says so once, by name: `Tronknyde takes nothing from any spell (invulnerable):
+aiming at the others while it lasts`. When the whole pack is under it the AI casts anyway
+— points left at the end of a turn are worth nothing kept — and says that instead.
+
+This one fixed a real fault underneath. A hit reduced to nothing used to fall back to the
+spell's printed dice, so an invulnerable monster looked exactly as damageable as any
+other. Zero is now an answer: only a spell whose elements the client never exposed at all
+falls back to its printed value.
+
 Statistics are looked for by what they contain rather than by where they should be: the
 first object carrying the primary characteristics wins, and the path it was found at is
 written to the log. A sheet that cannot be found is said outright, because with every
@@ -513,7 +554,10 @@ What the automatic mode still does not do:
   better moment, no keeping points for an escape.
 - **Monsters are read, not predicted.** Their reach next turn is worked out from their
   movement points; what they will actually cast is not.
-- **States and effects this code cannot name are left alone.** A spell whose effects are
+- **States are read through their numbers, not by name.** Invulnerability is caught
+  because it reduces damage to nothing; a state that changes something this code does not
+  measure — a lock, a silence, a trap — is invisible to it.
+- **Effects this code cannot name are left alone.** A spell whose effects are
   unrecognised is never cast by the planner, and is listed as such in the log rather than
   played blind.
 - **Challenges are reported, never enforced.**
@@ -587,6 +631,8 @@ replays any one of them.
 | The model's options | every offered cast re-checked for range, sight and cost |
 | The model's answers | random and invented key lists — nothing illegal may come out |
 | The mastery | cast, skipped, on cooldown, and with the setting off |
+| Summons | the flag either way round, the rule on and off, and an area covering both |
+| Invulnerability | a 5000-point reduction: the damage read as zero, the target left alone |
 | Whole fights | 200 generated fights a seed, refereed action by action |
 | Speed | a six-monster, eight-spell turn planned in under 100 ms |
 

@@ -21,7 +21,8 @@ import {
   getMyFighterId,
   getSpellRange,
   isFightStarted,
-  pickTarget,
+  orderTargets,
+  realTargetsFirst,
   targetsInRange,
   setFightReady,
   readPlacementCells,
@@ -40,7 +41,12 @@ import {
   weaponsFromSpellbook
 } from '@/scripts/combat'
 import { readRangeBonus, readSpellCatalogue, type SpellDetails } from '@/scripts/spell-catalogue'
-import { findCharacterSheet, readCharacteristic, readDamageProfile } from '@/scripts/damage'
+import {
+  damageAgainst,
+  findCharacterSheet,
+  readCharacteristic,
+  readDamageProfile
+} from '@/scripts/damage'
 import type { DofusWindow } from '@/types/dofus-window'
 
 /**
@@ -222,6 +228,42 @@ export function initCombatAi(
   const currentCell = () => getMyFighter(gameWindow)?.cellId ?? null
 
   /**
+   * The enemy the combo should be working on.
+   *
+   * The configured strategy decides, but among the monsters worth attacking:
+   * walking across the map towards a summon while its summoner stands beside
+   * it is how a turn is given away.
+   */
+  const preferredTarget = (settings: CombatSettings, spellId?: number): Fighter | null => {
+    const ordered = hurtable(orderTargets(gameWindow, settings.targetStrategy), spellId)
+    const worth = settings.summonsLast === false ? ordered : realTargetsFirst(ordered)
+    return worth[0] ?? null
+  }
+
+  /**
+   * The monsters a cast would actually take life off.
+   *
+   * The invulnerable state a monster puts up is a flat reduction of several
+   * thousand, so it shows up as every spell dealing zero. Aiming there spends
+   * the turn for nothing — but when nothing else can be hurt either, the list
+   * is handed back whole, because casting is still better than passing.
+   */
+  const hurtable = (fighters: Fighter[], spellId?: number): Fighter[] => {
+    if (fighters.length === 0) return fighters
+
+    const catalogue = readSpellCatalogue(gameWindow).filter(
+      (spell) => spell.kind === 'damage' && (spellId === undefined || spell.id === spellId)
+    )
+    if (catalogue.length === 0) return fighters
+
+    const profile = readDamageProfile(gameWindow)
+    const hurt = fighters.filter((fighter) =>
+      catalogue.some((spell) => damageAgainst(spell, fighter, profile) > 0)
+    )
+    return hurt.length > 0 ? hurt : fighters
+  }
+
+  /**
    * Follows a move request to its end. The engine walks as far as it can, which
    * is not always the cell we asked for, so the outcome is reported instead of
    * being assumed.
@@ -318,7 +360,7 @@ export function initCombatAi(
     if (!me || me.cellId === null) return 'none'
 
     const movementPoints = me.mp ?? 0
-    const target = pickTarget(gameWindow, settings.targetStrategy)
+    const target = preferredTarget(settings)
     if (!target || target.cellId === null) return 'none'
 
     const distance = cellDistance(me.cellId, target.cellId)
@@ -474,6 +516,7 @@ export function initCombatAi(
       actionPoints: me.ap ?? 0,
       movementPoints: me.mp ?? 0,
       canMove: settings.approachEnemies && !held,
+      summonsLast: settings.summonsLast !== false,
       ignoreFighters: deadFighters,
       challenges,
       catalogue
@@ -681,12 +724,27 @@ export function initCombatAi(
       // enemy in reach this plays the combo as written.
       const reachable = targetsInRange(gameWindow, range, settings.targetStrategy)
 
-      const allowed = reachable
+      // A summon in range is only a target when nothing else is: it leaves on
+      // its own, and the monster that called it is still standing. The same
+      // goes for one nothing can take a point off.
+      const worth = hurtable(reachable, spell.id)
+      if (worth.length < reachable.length) {
+        sayOnce(
+          `Leaving ${reachable.length - worth.length} invulnerable monster(s) alone: ` +
+            'nothing lands on them this turn'
+        )
+      }
+      const allowed = settings.summonsLast === false ? worth : realTargetsFirst(worth)
+      if (allowed.length < worth.length) {
+        sayOnce(
+          `Leaving ${worth.length - allowed.length} summon(s) alone: something else is in reach`
+        )
+      }
 
       const targets =
         settings.spreadCasts && allowed.length > 1
           ? allowed
-          : [allowed[0] ?? pickTarget(gameWindow, settings.targetStrategy)].filter(
+          : [allowed[0] ?? preferredTarget(settings, spell.id)].filter(
               (fighter): fighter is NonNullable<typeof fighter> => !!fighter
             )
 
@@ -846,6 +904,7 @@ export function initCombatAi(
     let reported = false
     let spentAp = 0
     let movementRefused = false
+    const noted = new Set<string>()
     refusedCasts = new Set()
     const castsPerSpell = new Map<number, number>()
 
@@ -890,6 +949,7 @@ export function initCombatAi(
         canMove: settings.approachEnemies && !held,
         keepDistance: settings.positioning === 'keep-distance',
         keepMasteryUp: settings.keepMasteryUp !== false,
+        summonsLast: settings.summonsLast !== false,
         blockedCasts: refusedCasts,
         ignoreFighters: deadFighters,
         apCosts,
@@ -899,6 +959,14 @@ export function initCombatAi(
       if (!plan) {
         log('The fight state could not be read: falling back to the combo')
         break
+      }
+
+      // What the turn noticed about the fight rather than about a spell — a
+      // monster nothing can hurt, for one. Said once, not on every re-plan.
+      for (const note of plan.notes) {
+        if (noted.has(note)) continue
+        noted.add(note)
+        log(note)
       }
 
       const action = plan.actions[0]

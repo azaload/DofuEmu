@@ -116,6 +116,14 @@ export interface CombatSettings {
    * more than the one cast it delays.
    */
   keepMasteryUp: boolean
+  /**
+   * Only aim at a monster's summon when no other enemy is in reach.
+   *
+   * A summon leaves on its own and the monster that called it can call
+   * another, so a turn spent killing one is a turn given away. It is still
+   * shot when there is nothing else to shoot: casting nothing is worse.
+   */
+  summonsLast: boolean
   /** Elements it may use when choosing on its own. */
   elements: CombatElement[]
   /** Who decides the turn: the built-in rules, or a local model. */

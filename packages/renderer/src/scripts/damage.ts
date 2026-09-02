@@ -236,9 +236,12 @@ export function damageWith(
   const extraPercent = boost?.damagePercent ?? 0
   const extraFlat = boost?.flat ?? 0
   let total = 0
+  /** At least one damaging effect carried an element this code could cost. */
+  let costed = false
 
   for (const effect of spell.effects) {
     if (effect.kind !== 'damage' || effect.element === null) continue
+    costed = true
 
     const element = effect.element
     // Damage that lands on a later turn is worth less than damage now.
@@ -256,6 +259,16 @@ export function damageWith(
     total += Math.max(0, multiplied) * timing
   }
 
-  // A spell whose elements the client does not expose still hits for something.
-  return total > 0 ? total : spell.damage
+  /**
+   * Zero is an answer, not a failure to read.
+   *
+   * A spell whose elements the client never exposed still hits for something,
+   * and falling back to its printed dice is right for that. But a spell that
+   * *was* costed and came out at nothing has been reduced to nothing by the
+   * target — the invulnerable state a monster like a Tronknyde puts up is a
+   * flat reduction of several thousand — and answering with the printed dice
+   * there is how a turn gets spent on something that cannot be hurt.
+   */
+  if (costed) return total
+  return spell.damage
 }

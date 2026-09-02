@@ -111,6 +111,8 @@ function createWorld(options) {
       maxLife: monster.maxLife ?? monster.life ?? 200,
       mp: monster.mp ?? 3,
       resists: monster.resists ?? {},
+      summoned: monster.summoned,
+      summoner: monster.summoner,
       alive: true
     })),
     allies: allies.map((ally, index) => ({
@@ -137,6 +139,8 @@ function createWorld(options) {
         actionPoints: entity.ap ?? 0,
         movementPoints: entity.mp ?? 0,
         range: entity.rangeBonus ?? 0,
+        ...(entity.summoned === undefined ? {} : { summoned: entity.summoned }),
+        ...(entity.summoner === undefined ? {} : { summoner: entity.summoner }),
         ...(entity.resists ?? {})
       },
       name: entity.name ?? 'Tester'
@@ -946,7 +950,7 @@ async function runSuite(combat, SEED) {
           { cellId: cellFromCoordinates(16, 10), life: 4000 }
         ],
         spells: { 1: brief, 2: barrage },
-        characteristics: { strength: { base: 200 } }
+        characteristics: { strength: { base: 200 }, intelligence: { base: 0 }, chance: { base: 0 }, agility: { base: 0 } }
       })
 
     const context = (over) => ({
@@ -1184,7 +1188,7 @@ async function runSuite(combat, SEED) {
           effects: [{ effectId: 97, diceNum: 30, diceSide: 34, zoneShape: 67, zoneSize: 1 }]
         })
       },
-      characteristics: { strength: { base: 200 } }
+      characteristics: { strength: { base: 200 }, intelligence: { base: 0 }, chance: { base: 0 }, agility: { base: 0 } }
     })
 
     const snapshot = buildSnapshot(world.gameWindow, {
@@ -1214,6 +1218,243 @@ async function runSuite(combat, SEED) {
     assert.strictEqual(resolved.castsNothing, false)
 
     console.log('ok - a model answer becomes a legal cast, area and all')
+  }
+
+  /* --- 13. summons are left for last --- */
+  {
+    const arrow = spellOf(1, {
+      name: 'Flèche',
+      apCost: 3,
+      range: 8,
+      effects: [{ effectId: 97, diceNum: 25, diceSide: 30, zoneSize: 0 }]
+    })
+
+    // The summoner and the thing it called in, both well within range.
+    const build = (over = {}) =>
+      createWorld({
+        myCell: cellFromCoordinates(10, 10),
+        actionPoints: 3,
+        movementPoints: 0,
+        monsters: [
+          { cellId: cellFromCoordinates(15, 10), life: 400, name: 'Tofu' },
+          { cellId: cellFromCoordinates(13, 11), life: 60, name: 'Invocation', ...over }
+        ],
+        spells: { 1: arrow },
+        characteristics: { strength: { base: 200 }, intelligence: { base: 0 }, chance: { base: 0 }, agility: { base: 0 } }
+      })
+
+    const context = (over) => ({
+      turn: 1,
+      actionPoints: 3,
+      movementPoints: 0,
+      elements: [],
+      lastCastTurn: new Map(),
+      canMove: false,
+      keepDistance: true,
+      ...over
+    })
+
+    // The flag, however this build carries it.
+    const field = readBattlefield(build({ summoned: true }).gameWindow, { turn: 1 })
+    assert.strictEqual(
+      field.enemies.find((enemy) => enemy.name === 'Invocation').summoned,
+      true,
+      'the summoned flag is read'
+    )
+    assert.strictEqual(
+      field.enemies.find((enemy) => enemy.name === 'Tofu').summoned,
+      false,
+      'and a monster the fight started with is not one'
+    )
+
+    const bySummoner = readBattlefield(build({ summoner: 20 }).gameWindow, { turn: 1 })
+    assert.strictEqual(
+      bySummoner.enemies.find((enemy) => enemy.name === 'Invocation').summoned,
+      true,
+      'a build that only names the summoner says as much'
+    )
+
+    // The summon is nearly dead and one arrow would finish it — the kill
+    // bonus makes it by far the highest-scoring cast. It is still left alone.
+    const spared = planTurn(build({ summoned: true }).gameWindow, context({}))
+    assert.strictEqual(spared.casts.length, 1, 'the turn still shoots')
+    assert.strictEqual(
+      spared.casts[0].cellId,
+      cellFromCoordinates(15, 10),
+      'at the summoner, not the summon it could have killed'
+    )
+
+    // With the setting off, the kill wins as any other cast would.
+    const greedy = planTurn(build({ summoned: true }).gameWindow, context({ summonsLast: false }))
+    assert.strictEqual(
+      greedy.casts[0].cellId,
+      cellFromCoordinates(13, 11),
+      'with the rule off the summon is killed like anything else'
+    )
+
+    // Nothing else in reach: the summon is shot rather than the turn wasted.
+    const alone = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 3,
+      movementPoints: 0,
+      monsters: [
+        { cellId: cellFromCoordinates(13, 10), life: 400, name: 'Invocation', summoned: true }
+      ],
+      spells: { 1: arrow },
+      characteristics: { strength: { base: 200 }, intelligence: { base: 0 }, chance: { base: 0 }, agility: { base: 0 } }
+    })
+    assert.strictEqual(
+      planTurn(alone.gameWindow, context({})).casts.length,
+      1,
+      'with only a summon in reach it is shot: casting nothing is worse'
+    )
+
+    // An area that covers the summoner as well is not held back by the rule.
+    const barrage = spellOf(2, {
+      name: 'Barrage',
+      apCost: 4,
+      range: 8,
+      effects: [{ effectId: 97, diceNum: 25, diceSide: 30, zoneShape: 67, zoneSize: 2 }]
+    })
+    const pair = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 4,
+      movementPoints: 0,
+      monsters: [
+        { cellId: cellFromCoordinates(15, 10), life: 400, name: 'Tofu' },
+        { cellId: cellFromCoordinates(15, 11), life: 400, name: 'Invocation', summoned: true }
+      ],
+      spells: { 2: barrage },
+      characteristics: { strength: { base: 200 }, intelligence: { base: 0 }, chance: { base: 0 }, agility: { base: 0 } }
+    })
+    const together = planTurn(pair.gameWindow, context({ actionPoints: 4 }))
+    assert.strictEqual(together.casts.length, 1, 'the area is cast')
+    assert.strictEqual(
+      together.casts[0].hits.length,
+      2,
+      'and catching the summon alongside the summoner is not held against it'
+    )
+
+    console.log('ok - summons are left for last, and shot when nothing else is in reach')
+  }
+
+  /* --- 14. an invulnerable monster is not a target --- */
+  {
+    // What the state really is: a flat reduction bigger than any hit.
+    const INVULNERABLE = {
+      earthElementReduction: 5000,
+      fireElementReduction: 5000,
+      waterElementReduction: 5000,
+      airElementReduction: 5000,
+      neutralElementReduction: 5000
+    }
+
+    const arrow = spellOf(1, {
+      name: 'Flèche',
+      apCost: 3,
+      range: 8,
+      effects: [{ effectId: 97, diceNum: 25, diceSide: 30, zoneSize: 0 }]
+    })
+
+    const world = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 3,
+      movementPoints: 0,
+      monsters: [
+        { cellId: cellFromCoordinates(13, 11), life: 80, name: 'Tronknyde', resists: INVULNERABLE },
+        { cellId: cellFromCoordinates(15, 10), life: 400, name: 'Tofu' }
+      ],
+      spells: { 1: arrow },
+      characteristics: { strength: { base: 200 }, intelligence: { base: 0 }, chance: { base: 0 }, agility: { base: 0 } }
+    })
+
+    const catalogue = readSpellCatalogue(world.gameWindow)
+    const profile = readDamageProfile(world.gameWindow)
+
+    // The number itself: a reduction that swallows the hit reads as zero, not
+    // as the spell's printed dice.
+    assert.strictEqual(
+      Math.round(damageWith(catalogue[0], readResistances({ stats: INVULNERABLE }), profile)),
+      0,
+      'a hit swallowed by the reduction is worth nothing'
+    )
+    assert.ok(
+      damageWith(catalogue[0], readResistances({ stats: {} }), profile) > 0,
+      'while the same spell hurts a monster that is not under it'
+    )
+
+    const context = (over) => ({
+      turn: 1,
+      actionPoints: 3,
+      movementPoints: 0,
+      elements: [],
+      lastCastTurn: new Map(),
+      canMove: false,
+      keepDistance: true,
+      ...over
+    })
+
+    const plan = planTurn(world.gameWindow, context({}))
+    assert.strictEqual(plan.casts.length, 1, 'the turn shoots')
+    assert.strictEqual(
+      plan.casts[0].cellId,
+      cellFromCoordinates(15, 10),
+      'at the monster that can be hurt, not the nearly dead invulnerable one'
+    )
+    assert.ok(
+      plan.notes.some((note) => note.includes('Tronknyde') && note.includes('invulnerable')),
+      `the state is detected and named (${plan.notes.join(' | ')})`
+    )
+
+    // Everything invulnerable: the points are worth nothing kept, so it casts
+    // anyway and says why.
+    const walled = createWorld({
+      myCell: cellFromCoordinates(10, 10),
+      actionPoints: 3,
+      movementPoints: 0,
+      monsters: [
+        { cellId: cellFromCoordinates(13, 10), life: 300, name: 'Tronknyde', resists: INVULNERABLE }
+      ],
+      spells: { 1: arrow },
+      characteristics: { strength: { base: 200 }, intelligence: { base: 0 }, chance: { base: 0 }, agility: { base: 0 } }
+    })
+    const anyway = planTurn(walled.gameWindow, context({}))
+    assert.strictEqual(anyway.casts.length, 1, 'it still casts when there is nothing better')
+    assert.ok(
+      anyway.notes.some((note) => note.includes('invulnerable')),
+      'and says the whole pack is under the state'
+    )
+    assert.ok(
+      anyway.casts[0].reason.includes('takes nothing'),
+      `the cast itself is honest about it (${anyway.casts[0].reason})`
+    )
+
+    // The model is told, and is offered nothing on the invulnerable one.
+    const snapshot = buildSnapshot(world.gameWindow, {
+      turn: 1,
+      elements: [],
+      lastCastTurn: new Map(),
+      actionPoints: 3,
+      movementPoints: 0,
+      canMove: false
+    })
+    const tronknyde = snapshot.enemies.find((enemy) => enemy.name === 'Tronknyde')
+    assert.strictEqual(tronknyde.immune, true, 'the snapshot flags it')
+    assert.strictEqual(
+      snapshot.enemies.find((enemy) => enemy.name === 'Tofu').immune,
+      false,
+      'and only it'
+    )
+    assert.ok(
+      snapshot.casts.every((cast) => !cast.hits.includes(tronknyde.n)),
+      'no cast on it is offered while something else can be hit'
+    )
+    assert.ok(
+      snapshot.notes.some((note) => note.includes('invulnerable')),
+      'and the model is told in words'
+    )
+
+    console.log('ok - an invulnerable monster is detected and left for the others')
   }
 
   console.log(`— seed ${SEED} clear —`)

@@ -2029,6 +2029,128 @@ async function testPlacementAndLineOfSight() {
   console.log('ok - placement keeps its distance and its line')
 }
 
+/**
+ * The combo leaves alone what it should not be shooting.
+ *
+ * Two rules, both of which cost a whole turn when they are missed: a summon
+ * killed while its summoner stands beside it, and an arrow thrown at a
+ * monster under the invulnerable state, which takes nothing from anything.
+ */
+async function testSummonsAndInvulnerable() {
+  await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
+  const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
+
+  const { gameWindow, state } = createFakeGameWindow()
+  state.startFight()
+
+  const logs = []
+  const combatSettings = {
+    ...combatDefaults,
+    combo: [{ id: 165, name: 'Bolt', range: 10 }],
+    targetStrategy: 'weakest',
+    defaultSpellRange: 10,
+    spellMode: 'combo',
+    spreadCasts: false,
+    summonsLast: true
+  }
+
+  const dispose = initCombatAi(gameWindow, 'tab-1', {
+    getSettings: () => combatSettings,
+    onLog: (message) => logs.push(message)
+  })
+
+  state.fighters[0].data.disposition.cellId = 280
+  gameWindow.isoEngine.actorManager.userActor.cellId = 280
+  state.fighters[1].data.disposition.cellId = 294 // Close, 120 life
+  state.fighters[2].data.disposition.cellId = 350 // Weak, 40 life
+
+  // The weakest of the two is a summon, and "lowest health" would take it.
+  state.fighters[2].data.stats.summoned = true
+
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  let casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.strictEqual(casts.length, 1, `one cast is made (${logs.join(' | ')})`)
+  assert.strictEqual(
+    casts[0].data.cellId,
+    294,
+    'the summoner is shot, not the weaker summon standing beside it'
+  )
+  assert.ok(
+    logs.some((line) => line.includes('summon(s) alone')),
+    `and the combo says what it left alone (${logs.join(' | ')})`
+  )
+
+  // Turned off, the strategy has the last word again.
+  state.sent.length = 0
+  logs.length = 0
+  combatSettings.summonsLast = false
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.strictEqual(casts[0].data.cellId, 350, 'with the rule off the summon is the target again')
+
+  // Now the invulnerable state: a flat reduction bigger than any hit. The
+  // spell has to be one the client really describes, or nothing can be worked
+  // out about what it would take off.
+  state.sent.length = 0
+  logs.length = 0
+  combatSettings.summonsLast = true
+  delete state.fighters[2].data.stats.summoned
+
+  gameWindow.gui.playerData.characters.mainCharacter.spellData.spells = {
+    165: {
+      id: 165,
+      spell: { nameId: 'Bolt' },
+      spellLevel: {
+        apCost: 3,
+        range: 10,
+        minRange: 0,
+        castInLine: false,
+        castInDiagonal: false,
+        castTestLos: true,
+        effects: [{ effectId: 97, diceNum: 25, diceSide: 30, zoneSize: 0 }]
+      }
+    }
+  }
+  gameWindow.gui.playerData.characters.mainCharacter.characteristics = {
+    strength: { base: 200 },
+    intelligence: { base: 0 },
+    chance: { base: 0 },
+    agility: { base: 0 }
+  }
+  for (const element of ['earth', 'fire', 'water', 'air', 'neutral']) {
+    state.fighters[2].data.stats[`${element}ElementReduction`] = 5000
+  }
+
+  state.emit('GameFightTurnEndMessage', { id: 7 })
+  state.startTurn(20)
+  state.emit('GameFightTurnEndMessage', { id: 20 })
+  state.startTurn(7)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+
+  casts = state.sent.filter((m) => m.name === 'GameActionFightCastRequestMessage')
+  assert.ok(casts.length > 0, `the turn still casts (${logs.join(' | ')})`)
+  assert.strictEqual(
+    casts[0].data.cellId,
+    294,
+    'the monster that can be hurt is shot, not the invulnerable one'
+  )
+  assert.ok(
+    logs.some((line) => line.includes('invulnerable')),
+    `and the state is named in the log (${logs.join(' | ')})`
+  )
+
+  dispose()
+  console.log('ok - the combo leaves summons and invulnerable monsters alone')
+}
+
 async function testPushBreaksMelee() {
   await bundleModule(path.join(root, 'packages/renderer/src/mods/combat-ai.ts'))
   const { initCombatAi } = await import(`${pathToFileURL(combatBundlePath).href}?t=${Date.now()}`)
@@ -4473,6 +4595,7 @@ async function main() {
   await testMovementReportsNoEntryPoint(ScriptRunner)
   await testModelBrain()
   await testPlacementAndLineOfSight()
+  await testSummonsAndInvulnerable()
   await testPushBreaksMelee()
   await testAntiIdle()
   await testSpellPlanner()
